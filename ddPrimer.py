@@ -62,6 +62,7 @@ class Config:
     RESTRICTION_SITE = "GGCC"
     PENALTY_MAX = 5.0
     MAX_PRIMER_PAIRS_PER_SEGMENT = 3
+    PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
     
     # Validation options
     VALIDATION_MODE = "TOLERANT"  # "STRICT" or "TOLERANT"
@@ -759,6 +760,7 @@ class MAFProcessor:
     def parse_maf_chunk(chunk_lines):
         """
         Parse a chunk of MAF format lines into alignment records.
+        Improved to handle multiple sequences per alignment block.
         
         Args:
             chunk_lines (list): List of MAF file lines
@@ -767,35 +769,27 @@ class MAFProcessor:
             list: List of alignment dictionaries
         """
         alignments = []
-        current_alignment = {}
+        current_alignment = {"sequences": []}
 
         for line in chunk_lines:
             line = line.strip()
             if line.startswith('a '):
                 # Start of a new alignment block
-                if current_alignment and 'ref_name' in current_alignment and 'query_name' in current_alignment:
+                if current_alignment["sequences"]:
                     alignments.append(current_alignment)
-                current_alignment = {}
+                current_alignment = {"sequences": []}
             elif line.startswith('s '):
                 fields = line.split()
                 if len(fields) >= 7:  # Make sure we have enough fields
-                    seq_name = fields[1]
-                    start = int(fields[2])
-                    sequence = fields[6]
-
-                    if 'ref_name' not in current_alignment:
-                        # First sequence in block = reference
-                        current_alignment['ref_name'] = seq_name
-                        current_alignment['ref_start'] = start + 1  # Convert to 1-based
-                        current_alignment['ref_sequence'] = sequence
-                    else:
-                        # Second sequence in block = query
-                        current_alignment['query_name'] = seq_name
-                        current_alignment['query_start'] = start + 1
-                        current_alignment['query_sequence'] = sequence
+                    seq_entry = {
+                        "name": fields[1],
+                        "start": int(fields[2]) + 1,  # Convert to 1-based
+                        "sequence": fields[6]
+                    }
+                    current_alignment["sequences"].append(seq_entry)
 
         # Don't forget the last alignment
-        if current_alignment and 'ref_name' in current_alignment and 'query_name' in current_alignment:
+        if current_alignment["sequences"]:
             alignments.append(current_alignment)
 
         return alignments
@@ -917,90 +911,137 @@ class MAFProcessor:
     def collect_segments_from_alignments(cls, alignments, genes):
         """
         Process a batch of alignments and collect segments meeting criteria.
-        Modified to adapt based on validation mode.
-        
-        Args:
-            alignments (list): List of alignment dictionaries
-            genes (list): List of gene dictionaries
-            
-        Returns:
-            list: List of segment dictionaries
+        Handles multiple genomes in MAF files by comparing all sequence pairs.
         """
         chunk_segments = []
         
         for aln in alignments:
-            chr_name = aln['ref_name']
-            ref_start = aln['ref_start']
-            ref_seq = aln['ref_sequence']
-            qry_seq = aln['query_sequence']
-
-            # ref_start is the 1-based coordinate of the first base in ref_seq
-            # so the ith base of ref_seq is at genome position ref_start + i - 1
-
+            # Skip alignment blocks with fewer than 2 sequences
+            if len(aln["sequences"]) < 2:
+                continue
+                
+            # Process each gene
             for gene in genes:
-                if gene['chr'] != chr_name:
-                    continue
-
-                # Overlap range
-                gene_start = gene['start'] - Config.GENE_OVERLAP_MARGIN
-                gene_end = gene['end'] + Config.GENE_OVERLAP_MARGIN
-
-                # If this alignment doesn't overlap the gene region, skip
-                aln_ref_end = ref_start + len(ref_seq.replace('-', '')) - 1
-                if aln_ref_end < gene_start or ref_start > gene_end:
-                    continue
-
-                # Overlapping portion
-                overlap_start = max(ref_start, gene_start)
-                overlap_end = min(aln_ref_end, gene_end)
-
-                # Indices relative to the alignment's first base (0-based)
-                aln_offset_start = overlap_start - ref_start
-                aln_offset_end = aln_offset_start + (overlap_end - overlap_start) + 1
-
-                # Make sure we don't go out of bounds
-                if aln_offset_start < 0:
-                    aln_offset_start = 0
-                if aln_offset_end > len(ref_seq):
-                    aln_offset_end = len(ref_seq)
-
-                # Extract the overlapping fragments
-                ref_fragment = ref_seq[aln_offset_start:aln_offset_end]
-                qry_fragment = qry_seq[aln_offset_start:aln_offset_end]
-
-                # Get segments based on validation mode
-                if Config.VALIDATION_MODE == "STRICT":
-                    # Split on mismatches for strict mode
-                    segments_to_process = cls.split_on_mismatches(ref_fragment, qry_fragment)
-                else:
-                    # Keep whole fragments for tolerant validation
-                    if len(ref_fragment.replace('-', '')) >= Config.MIN_SEGMENT_LENGTH:
-                        # Remove indels for segment processing
-                        cleaned_fragment = ''.join([r for r, q in zip(ref_fragment, qry_fragment) 
-                                                  if r != '-' and q != '-'])
-                        segments_to_process = [cleaned_fragment] if len(cleaned_fragment) >= Config.MIN_SEGMENT_LENGTH else []
-                    else:
-                        segments_to_process = []
-
-                # Further split perfect segments on restriction sites
-                for segment in segments_to_process:
-                    # Use re.split to handle overlapping restriction sites
-                    subfragments = re.split(f'(?={Config.RESTRICTION_SITE})', segment)
-                    for i, frag in enumerate(subfragments):
-                        # Remove the restriction site prefix if present (except for first fragment)
-                        if i > 0 and frag.startswith(Config.RESTRICTION_SITE):
-                            frag = frag[len(Config.RESTRICTION_SITE):]
+                # Find all sequences in this alignment that overlap with the gene
+                matching_seqs = []
+                for seq in aln["sequences"]:
+                    chr_name = seq["name"]
+                    
+                    # Skip sequences that don't match the gene's chromosome
+                    if gene['chr'] != chr_name:
+                        continue
                         
-                        if len(frag) >= Config.MIN_SEGMENT_LENGTH:
-                            n_existing = sum(1 for s in chunk_segments if s['gene'] == gene['id'])
-                            chunk_segments.append({
-                                "gene": gene['id'],
-                                "index": n_existing + 1,
-                                "sequence": frag
-                            })
+                    seq_start = seq["start"]
+                    seq_sequence = seq["sequence"]
+                    
+                    # Calculate sequence end position
+                    seq_end = seq_start + len(seq_sequence.replace('-', '')) - 1
+                    
+                    # Overlap range for the gene
+                    gene_start = gene['start'] - Config.GENE_OVERLAP_MARGIN
+                    gene_end = gene['end'] + Config.GENE_OVERLAP_MARGIN
+                    
+                    # If this sequence doesn't overlap the gene region, skip
+                    if seq_end < gene_start or seq_start > gene_end:
+                        continue
+                        
+                    # Overlapping portion
+                    overlap_start = max(seq_start, gene_start)
+                    overlap_end = min(seq_end, gene_end)
+                    
+                    # Indices relative to the alignment's first base (0-based)
+                    aln_offset_start = overlap_start - seq_start
+                    aln_offset_end = aln_offset_start + (overlap_end - overlap_start) + 1
+                    
+                    # Make sure we don't go out of bounds
+                    if aln_offset_start < 0:
+                        aln_offset_start = 0
+                    if aln_offset_end > len(seq_sequence):
+                        aln_offset_end = len(seq_sequence)
+                    
+                    # This sequence overlaps with the gene, add it to matching sequences
+                    matching_seqs.append({
+                        "name": chr_name,
+                        "start": seq_start,
+                        "sequence": seq_sequence,
+                        "aln_offset_start": aln_offset_start,
+                        "aln_offset_end": aln_offset_end
+                    })
+                
+                # If we found at least one matching sequence, process all pairs
+                if len(matching_seqs) >= 1:
+                    # For each matching sequence, compare it with all other sequences in the alignment
+                    for i, ref_seq in enumerate(matching_seqs):
+                        ref_fragment = ref_seq["sequence"][ref_seq["aln_offset_start"]:ref_seq["aln_offset_end"]]
+                        
+                        # Compare with all other sequences in the alignment
+                        for qry_seq in aln["sequences"]:
+                            # Skip self-comparison
+                            if qry_seq["name"] == ref_seq["name"]:
+                                continue
+                                
+                            # Extract corresponding fragment from the query sequence
+                            # Make sure query sequence is long enough
+                            if len(qry_seq["sequence"]) <= ref_seq["aln_offset_end"]:
+                                continue
+                                
+                            qry_fragment = qry_seq["sequence"][ref_seq["aln_offset_start"]:ref_seq["aln_offset_end"]]
+                            
+                            # Get segments based on validation mode
+                            if Config.VALIDATION_MODE == "STRICT":
+                                segments_to_process = cls.split_on_mismatches(ref_fragment, qry_fragment)
+                            else:
+                                if len(ref_fragment.replace('-', '')) >= Config.MIN_SEGMENT_LENGTH:
+                                    cleaned_fragment = ''.join([r for r, q in zip(ref_fragment, qry_fragment) 
+                                                            if r != '-' and q != '-'])
+                                    segments_to_process = [cleaned_fragment] if len(cleaned_fragment) >= Config.MIN_SEGMENT_LENGTH else []
+                                else:
+                                    segments_to_process = []
+                            
+                            # Process segments
+                            for segment in segments_to_process:
+                                # Split on restriction sites
+                                subfragments = re.split(f'(?={Config.RESTRICTION_SITE})', segment)
+                                for j, frag in enumerate(subfragments):
+                                    # Remove the restriction site prefix if present
+                                    if j > 0 and frag.startswith(Config.RESTRICTION_SITE):
+                                        frag = frag[len(Config.RESTRICTION_SITE):]
+                                    
+                                    if len(frag) >= Config.MIN_SEGMENT_LENGTH:
+                                        # Find where this segment appears in the original fragment
+                                        segment_start_in_fragment = ref_fragment.find(frag)
+                                        
+                                        if segment_start_in_fragment != -1:
+                                            # Calculate actual genomic positions
+                                            real_offset = ref_seq["aln_offset_start"] + segment_start_in_fragment
+                                            
+                                            # Calculate positions in both genomes
+                                            ref_bases_count = len(ref_seq["sequence"][:real_offset].replace('-', ''))
+                                            ref_pos = ref_seq["start"] + ref_bases_count - 1
+                                            
+                                            qry_bases_count = len(qry_seq["sequence"][:real_offset].replace('-', ''))
+                                            qry_pos = qry_seq["start"] + qry_bases_count - 1
+                                            
+                                            n_existing = sum(1 for s in chunk_segments 
+                                                        if s['gene'] == gene['id'] and 
+                                                            s['ref_chr'] == ref_seq["name"] and
+                                                            s['qry_chr'] == qry_seq["name"])
+                                            
+                                            # Create an identifier that records both genomes
+                                            pair_id = f"{ref_seq['name']}_{qry_seq['name']}"
+                                            
+                                            chunk_segments.append({
+                                                "gene": gene['id'],
+                                                "index": n_existing + 1,
+                                                "sequence": frag,
+                                                "ref_chr": ref_seq["name"],
+                                                "ref_pos": ref_pos,
+                                                "qry_chr": qry_seq["name"],
+                                                "qry_pos": qry_pos,
+                                                "genome_pair": pair_id  # Add this to track which genome pair this segment belongs to
+                                            })
         
         return chunk_segments
-
 
 ##############################################################################
 #                        Sequence Validation 
@@ -1084,7 +1125,7 @@ class SequenceValidator:
         if not sequence or len(sequence) < Config.MIN_SEGMENT_LENGTH:
             return None, None
         if Config.VALIDATION_MODE == "STRICT":
-            print(f"⚠️ STRICT MODE: Checking exact match for {sequence}")
+            pass
         
         # Generate cache key and check cache first (fast path)
         genome_id = hash(tuple(sorted(genome_dict.keys())))
@@ -1727,6 +1768,12 @@ class Primer3Processor:
                 left_seq = p.get("left_sequence", "")
                 right_seq = p.get("right_sequence", "")
                 probe_seq = p.get("internal_sequence", "")
+                
+                # Check if we need to reverse complement the probe based on C/G content
+                probe_reversed = False
+                if Config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
+                    probe_seq, probe_reversed = Utils.ensure_more_c_than_g(probe_seq)
+                    
                 ls, ll = p.get("left_start"), p.get("left_len")
                 rs, rl = p.get("right_start"), p.get("right_len")
 
@@ -1744,6 +1791,7 @@ class Primer3Processor:
                     "Probe": probe_seq,
                     "Probe Tm": p.get("internal_tm", None),
                     "Probe Penalty": p.get("internal_penalty", None),
+                    "Probe Reversed": probe_reversed,  # Add this field to track reversals
                     "Pair Penalty": p.get("pair_penalty", None),
                     "Amplicon": ampseq,
                     "Length": p.get("product_size", None)
@@ -1819,7 +1867,6 @@ class Primer3Processor:
         
         return records
 
-
 ##############################################################################
 #                     Amplicon Location
 ##############################################################################
@@ -1830,7 +1877,7 @@ class AmpliconLocator:
     def find_amplicon_locations_batch(batch_data):
         """
         Find the locations of a batch of amplicons in multiple genomes.
-        Uses SequenceValidator's optimized methods.
+        Uses improved search strategies for better matching.
         
         Args:
             batch_data (tuple): Tuple of (amplicon_seqs, genome_dicts)
@@ -1840,7 +1887,7 @@ class AmpliconLocator:
         """
         amplicon_seqs, genome_dicts = batch_data
         results = []
- 
+
         for seq in amplicon_seqs:
             if pd.notnull(seq):
                 # Since we're processing one genome at a time
@@ -1852,13 +1899,66 @@ class AmpliconLocator:
                 else:
                     # Ensure genome_dicts is treated as a dictionary
                     genome_dict = {"default": genome_dicts} if isinstance(genome_dicts, str) else genome_dicts
-                location = SequenceValidator.matches_with_tolerance(seq, genome_dict)
-                results.append(location)
+                
+                # Try primary exact match first (faster)
+                primary_match = False
+                for chrom, chrom_seq in genome_dict.items():
+                    if seq in chrom_seq:
+                        pos = chrom_seq.find(seq) + 1  # Convert to 1-based position
+                        results.append((chrom, pos))
+                        primary_match = True
+                        break
+                
+                if not primary_match:
+                    # Try alternate strategies if exact match fails
+                    # Strategy 1: Check both ends of the amplicon (for primer regions)
+                    if len(seq) >= 40:
+                        left_end = seq[:20]
+                        right_end = seq[-20:]
+                        
+                        best_match = None
+                        
+                        for chrom, chrom_seq in genome_dict.items():
+                            left_pos = chrom_seq.find(left_end)
+                            if left_pos >= 0:
+                                # Check if a matching region of appropriate length follows
+                                potential_region = chrom_seq[left_pos:left_pos + len(seq)]
+                                if len(potential_region) >= len(seq) * 0.9:  # Allow for some mismatch
+                                    # Count mismatches
+                                    mismatches = sum(1 for a, b in zip(seq, potential_region) if a != b)
+                                    if mismatches <= Config.ALLOW_AMP_MISMATCHES:
+                                        best_match = (chrom, left_pos + 1)
+                                        break  # Good enough match
+                            
+                            # Try right end if left end didn't work
+                            right_pos = chrom_seq.find(right_end)
+                            if right_pos >= 0:
+                                # Check if a matching region of appropriate length precedes
+                                start_pos = max(0, right_pos - (len(seq) - len(right_end)))
+                                potential_region = chrom_seq[start_pos:right_pos + len(right_end)]
+                                if len(potential_region) >= len(seq) * 0.9:  # Allow for some mismatch
+                                    # Count mismatches
+                                    aligned_region = potential_region[-len(seq):] if len(potential_region) > len(seq) else potential_region
+                                    padded_region = aligned_region.ljust(len(seq), 'X')  # Pad if needed
+                                    mismatches = sum(1 for a, b in zip(seq, padded_region) if a != b)
+                                    if mismatches <= Config.ALLOW_AMP_MISMATCHES:
+                                        best_match = (chrom, start_pos + 1)
+                                        break  # Good enough match
+                        
+                        if best_match:
+                            results.append(best_match)
+                        else:
+                            # Strategy 2: Try the Levenshtein fuzzy search as fallback
+                            location = SequenceValidator.matches_with_tolerance(seq, genome_dict)
+                            results.append(location)
+                    else:
+                        # For short sequences, just use the original fuzzy search
+                        location = SequenceValidator.matches_with_tolerance(seq, genome_dict)
+                        results.append(location)
             else:
                 results.append((None, None))
- 
-        return results
 
+        return results
 
 ##############################################################################
 #                     NUPACK ΔG Calculation
@@ -1987,6 +2087,35 @@ class Utils:
         seq = seq.upper()
         gc_count = sum(1 for base in seq if base in "GC")
         return (gc_count / len(seq)) * 100 if seq else 0
+
+    @staticmethod
+    def ensure_more_c_than_g(seq):
+        """
+        Check if a sequence has more Cs than Gs. If not, return the reverse complement.
+        
+        Args:
+            seq (str): DNA sequence
+            
+        Returns:
+            tuple: (possibly_reversed_sequence, was_reversed)
+        """
+        if not seq or not isinstance(seq, str):
+            return seq, False
+            
+        seq = seq.upper()
+        c_count = seq.count('C')
+        g_count = seq.count('G')
+        
+        if c_count >= g_count:
+            return seq, False  # No need to reverse
+        
+        # Need to reverse complement
+        complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 
+                    'N': 'N', 'R': 'Y', 'Y': 'R', 'S': 'S', 
+                    'W': 'W', 'K': 'M', 'M': 'K', 'B': 'V', 
+                    'D': 'H', 'H': 'D', 'V': 'B'}
+        rev_comp = ''.join(complement.get(base, base) for base in reversed(seq))
+        return rev_comp, True
 
 
 ##############################################################################
@@ -2683,6 +2812,9 @@ class PrimerDesignPipeline:
                 lambda alns: MAFProcessor.collect_segments_from_alignments(alns, self.genes), 
                 Config.MAF_CHUNK_SIZE
             )
+            for seg in maf_segments:
+                # Standardize sequence ID and index format
+                seg['id'] = f"{seg['gene']}_{seg['index']}"
             self.segments.extend(maf_segments)
 
         if not self.segments:
@@ -2690,6 +2822,23 @@ class PrimerDesignPipeline:
             sys.exit(1)
 
         print(f"\nExtracted {len(self.segments)} initial segments from MAF files.")
+        
+        # Debug: Print examples of segments with their coordinates
+        if Config.DEBUG_MODE:
+            print("\nDEBUG: Examples of extracted segments with coordinates:")
+            for i, seg in enumerate(self.segments[:5]):  # Print first 5 segments
+                print(f"Segment {i+1}:")
+                print(f"  Gene: {seg['gene']}, Index: {seg['index']}")
+                print(f"  Sequence start: {seg['sequence'][:30]}...")
+                if 'ref_chr' in seg and 'ref_pos' in seg:
+                    print(f"  Ref location: {seg['ref_chr']}:{seg['ref_pos']}")
+                    print(f"  Qry location: {seg['qry_chr']}:{seg['qry_pos']}")
+                else:
+                    print("  No location information stored for this segment")
+            
+            # Check how many segments have location information
+            segments_with_locations = sum(1 for seg in self.segments if 'ref_chr' in seg and 'ref_pos' in seg)
+            print(f"\nDEBUG: {segments_with_locations}/{len(self.segments)} segments have location information")
     
     def validate_segments(self):
         """Validate segments against all genomes."""
@@ -2769,18 +2918,16 @@ class PrimerDesignPipeline:
             # Process outputs as they complete
             if Config.SHOW_PROGRESS:
                 for future in tqdm(concurrent.futures.as_completed(batch_futures), 
-                                     total=len(batch_futures), 
-                                     desc="Processing Primer3 batches"):
+                                    total=len(batch_futures), 
+                                    desc="Processing Primer3 batches"):
                     stdout_data = future.result()
                     if stdout_data:
-                        batch_records = Primer3Processor.parse_primer3_batch(stdout_data)
-                        all_records.extend(batch_records)
+                        all_records.extend(Primer3Processor.parse_primer3_batch(stdout_data))
             else:
                 for future in concurrent.futures.as_completed(batch_futures):
                     stdout_data = future.result()
                     if stdout_data:
-                        batch_records = Primer3Processor.parse_primer3_batch(stdout_data)
-                        all_records.extend(batch_records)
+                        all_records.extend(Primer3Processor.parse_primer3_batch(stdout_data))
 
         # Create dataframe from records
         df = pd.DataFrame(all_records)
@@ -2882,29 +3029,108 @@ class PrimerDesignPipeline:
     
     def find_locations(self, df):
         """Find the genomic locations of amplicons across all genomes."""
-        amplicon_seqs = df["Amplicon"].tolist()
-        batch_size = Config.BATCH_SIZE
-        seq_batches = list(Utils.chunks(amplicon_seqs, batch_size))
+        # First, try to get locations from stored segment positions
+        df["Ref Chromosome"] = None
+        df["Ref Start"] = None
+        df["Qry Chromosome"] = None
+        df["Qry Start"] = None
         
-        # Initialize storage for results
-        ref_results, qry_results = [], []
-        extra_results = {f"Extra_{i+1}": [] for i in range(len(self.extra_genomes))} if self.extra_genomes else {}
+        # Create a segment location map
+        segment_locations = {
+            f"{seg['gene']}_{seg['index']}": {
+                "ref_chr": seg["ref_chr"],
+                "ref_pos": seg["ref_pos"],
+                "qry_chr": seg["qry_chr"],
+                "qry_pos": seg["qry_pos"]
+            }
+            for seg in self.segments if "ref_chr" in seg and "ref_pos" in seg
+        }
+        
+        if Config.DEBUG_MODE:
+            print(f"\nDEBUG: Built location map with {len(segment_locations)} entries")
+            print("\nDEBUG: Examples of segment location keys:")
+            for key in list(segment_locations.keys())[:5]:  # Print first 5 keys
+                print(f"  {key}")
+            
+            print("\nDEBUG: Examples of primer dataframe sequence IDs:")
+            for i, row in df.head(5).iterrows():
+                print(f"  {row['Sequence']}_{row['Index']}")
+        
+        # Try to use stored locations first
+        match_count = 0
+        for i, row in df.iterrows():
+            seq_id = f"{row['Sequence']}_{row['Index']}"
+            if seq_id in segment_locations:
+                loc = segment_locations[seq_id]
+                df.at[i, "Ref Chromosome"] = loc["ref_chr"]
+                df.at[i, "Ref Start"] = loc["ref_pos"]
+                df.at[i, "Qry Chromosome"] = loc["qry_chr"]
+                df.at[i, "Qry Start"] = loc["qry_pos"]
+                match_count += 1
+            elif Config.DEBUG_MODE:
+                print(f"DEBUG: Could not match ID: {seq_id}")
+        
+        if Config.DEBUG_MODE:
+            print(f"\nDEBUG: Found locations for {match_count} out of {len(df)} primers")
+        
+        # For rows without location information, fall back to sequence search
+        missing_ref = df["Ref Chromosome"].isnull()
+        missing_qry = df["Qry Chromosome"].isnull()
+        
+        if Config.DEBUG_MODE:
+            print(f"\nDEBUG: Total sequences: {len(df)}")
+            print(f"DEBUG: Sequences missing Ref location: {missing_ref.sum()}")
+            print(f"DEBUG: Sequences missing Qry location: {missing_qry.sum()}")
+        
+        # Only do sequence search if there are missing locations
+        if missing_ref.any() or missing_qry.any():
+            print(f"\nFalling back to sequence search for {missing_ref.sum()} reference and {missing_qry.sum()} query locations")
+            amplicon_seqs = df.loc[missing_ref | missing_qry, "Amplicon"].tolist()
+            batch_size = Config.BATCH_SIZE
+            seq_batches = list(Utils.chunks(amplicon_seqs, batch_size))
+            
+            # Initialize storage for results
+            ref_results, qry_results = [], []
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
-            # Process reference genome locations
-            ref_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.ref_genome))
-                        for batch in seq_batches]
-            for future in concurrent.futures.as_completed(ref_futures):
-                ref_results.extend(future.result())
+            with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
+                # Process reference genome locations
+                if missing_ref.any():
+                    ref_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.ref_genome))
+                                for batch in seq_batches]
+                    for future in concurrent.futures.as_completed(ref_futures):
+                        ref_results.extend(future.result())
 
-            # Process query genome locations
-            qry_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.qry_genome))
-                        for batch in seq_batches]
-            for future in concurrent.futures.as_completed(qry_futures):
-                qry_results.extend(future.result())
+                # Process query genome locations
+                if missing_qry.any():
+                    qry_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.qry_genome))
+                                for batch in seq_batches]
+                    for future in concurrent.futures.as_completed(qry_futures):
+                        qry_results.extend(future.result())
+            
+            # Update DataFrame with sequence search results
+            missing_indices = df.index[missing_ref | missing_qry].tolist()
+            
+            if Config.DEBUG_MODE:
+                found_ref = sum(1 for r in ref_results if r[0] is not None)
+                found_qry = sum(1 for r in qry_results if r[0] is not None)
+                print(f"DEBUG: Sequence search found {found_ref}/{len(ref_results)} ref locations")
+                print(f"DEBUG: Sequence search found {found_qry}/{len(qry_results)} qry locations")
+            
+            for i, idx in enumerate(missing_indices):
+                if i < len(ref_results) and missing_ref.iloc[missing_indices.index(idx)]:
+                    df.at[idx, "Ref Chromosome"], df.at[idx, "Ref Start"] = ref_results[i]
+                if i < len(qry_results) and missing_qry.iloc[missing_indices.index(idx)]:
+                    df.at[idx, "Qry Chromosome"], df.at[idx, "Qry Start"] = qry_results[i]
 
-            # Process extra genomes if provided
-            if self.extra_genomes:
+        # Process extra genomes if provided
+        if self.extra_genomes:
+            extra_results = {f"Extra_{i+1}": [] for i in range(len(self.extra_genomes))}
+            
+            amplicon_seqs = df["Amplicon"].tolist()
+            batch_size = Config.BATCH_SIZE
+            seq_batches = list(Utils.chunks(amplicon_seqs, batch_size))
+            
+            with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
                 for i, genome in enumerate(self.extra_genomes):
                     genome_name = f"Extra_{i+1}"
                     extra_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, genome))
@@ -2912,14 +3138,51 @@ class PrimerDesignPipeline:
                     for future in concurrent.futures.as_completed(extra_futures):
                         extra_results[genome_name].extend(future.result())
 
-        # Update DataFrame
-        df["Ref Chromosome"], df["Ref Start"] = zip(*ref_results)
-        df["Qry Chromosome"], df["Qry Start"] = zip(*qry_results)
-
-        # Add extra genome results dynamically
-        if self.extra_genomes:
+            # Add extra genome results dynamically
             for genome_name, results in extra_results.items():
                 df[f"{genome_name} Chromosome"], df[f"{genome_name} Start"] = zip(*results)
+
+        # Final summary with improved error reporting
+        if Config.DEBUG_MODE:
+            print(f"\nDEBUG: Final location statistics:")
+            print(f"DEBUG: Sequences with Ref location: {df['Ref Chromosome'].notnull().sum()}/{len(df)}")
+            print(f"DEBUG: Sequences with Qry location: {df['Qry Chromosome'].notnull().sum()}/{len(df)}")
+            for i, genome in enumerate(self.extra_genomes):
+                genome_name = f"Extra_{i+1}"
+                col = f"{genome_name} Chromosome"
+                print(f"DEBUG: Sequences with {genome_name} location: {df[col].notnull().sum()}/{len(df)}")
+            
+            # Identify sequences that couldn't be located in any genome
+            missing_both = df[df['Ref Chromosome'].isnull() & df['Qry Chromosome'].isnull()]
+            
+            if not missing_both.empty:
+                print(f"\nDEBUG: {len(missing_both)} sequences could not be located in any genome:")
+                for _, row in missing_both.iterrows():
+                    amplicon = row['Amplicon']
+                    if pd.notnull(amplicon):
+                        print(f"  Sequence: {row['Sequence']}, Index: {row['Index']}")
+                        print(f"  Amplicon length: {len(amplicon)}")
+                        
+                        # Check for potential issues that might prevent matching
+                        gc_content = Utils.calculate_gc(amplicon)
+                        repeats = Utils.has_disallowed_repeats(amplicon)
+                        ambiguous = 'N' in amplicon
+                        
+                        print(f"  GC content: {gc_content:.1f}%, Has disallowed repeats: {repeats}, Contains N: {ambiguous}")
+                        
+                        # Check 20bp on each end of the amplicon for features that might hinder mapping
+                        start_seq = amplicon[:20] if len(amplicon) >= 20 else amplicon
+                        end_seq = amplicon[-20:] if len(amplicon) >= 20 else amplicon
+                        print(f"  Starts with: {start_seq}, Ends with: {end_seq}")
+                        
+                        # Check exact match for 30bp subsections to help diagnose partial matches
+                        if len(amplicon) >= 60:
+                            subsections = [amplicon[:30], amplicon[len(amplicon)//2-15:len(amplicon)//2+15], amplicon[-30:]]
+                            for i, subsec in enumerate(subsections):
+                                ref_match = any(subsec in seq for seq in self.ref_genome.values())
+                                qry_match = any(subsec in seq for seq in self.qry_genome.values())
+                                sec_name = "start" if i == 0 else "middle" if i == 1 else "end"
+                                print(f"  {sec_name} 30bp: Exists in Ref: {ref_match}, Exists in Qry: {qry_match}")
 
         return df
     
@@ -2972,7 +3235,7 @@ class PrimerDesignPipeline:
             "Sequence", "Index", "Template",
             "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
             "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
-            "Pair Penalty", "Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST1", 
+            "Pair Penalty", "Probe", "Probe Tm", "Probe Penalty", "Probe Reversed", "Probe dG", "Probe BLAST1", 
             "Probe BLAST2", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
         ]
         # Add location columns in alternating order
