@@ -2905,7 +2905,7 @@ class PrimerDesignPipeline:
                 
                 # Submit jobs and keep track of which batch each future corresponds to
                 for batch_idx, batch in enumerate(seq_batches):
-                    future = executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, [genome]))
+                    future = executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, genome))
                     genome_futures.append((future, batch_idx, len(batch)))
                 
                 # Initialize a list of the correct size for this genome with None placeholders
