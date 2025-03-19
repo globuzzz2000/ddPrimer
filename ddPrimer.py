@@ -27,15 +27,12 @@ import shutil
 import platform
 import tkinter as tk
 from tkinter import filedialog
-from io import StringIO
 from tqdm import tqdm
 from multiprocessing import cpu_count
 from itertools import combinations
 import concurrent.futures
 import functools
 import pandas as pd
-import random
-import glob
 import nupack
 import argparse
 
@@ -48,7 +45,7 @@ class Config:
     ONLY_LASTZ_MULTIZ = False          # Run only LastZ/MultiZ alignments
     RUN_MATCH_CHECKER = False          # Run only the Match Checker
     RUN_MATCH_CHECKER_ON_OUTPUT = False # Run Match Checker on pipeline output
-    DEBUG_MODE = False                 # Debug logging mode (enable with --debug flag)
+    DEBUG_MODE = False                 # Debug logging mode (enable with --debug flag))
     
     # Performance settings
     NUM_PROCESSES = max(1, int(cpu_count() * 0.75))  # Use 75% of cores
@@ -67,9 +64,9 @@ class Config:
     MAX_PRIMER_PAIRS_PER_SEGMENT = 3
     
     # Validation options
-    VALIDATION_MODE = "STRICT"  # "STRICT" or "TOLERANT"
+    VALIDATION_MODE = "TOLERANT"  # "STRICT" or "TOLERANT"
     ALLOW_AMP_MISMATCHES = 2  # Number of mismatches allowed in amplicon for TOLERANT mode
-    ALLOW_AMP_MISMATCH_PERCENT = 2  # Percentage of mismatches allowed (0 = use absolute count)
+    ALLOW_AMP_MISMATCH_PERCENT = 5  # Percentage of mismatches allowed (0 = use absolute count)
     MAX_SEARCH_LENGTH = 1000000  # Limit search in large chromosomes to improve performance
 
     # Tool paths
@@ -1086,6 +1083,8 @@ class SequenceValidator:
         # Skip invalid sequences
         if not sequence or len(sequence) < Config.MIN_SEGMENT_LENGTH:
             return None, None
+        if Config.VALIDATION_MODE == "STRICT":
+            print(f"⚠️ STRICT MODE: Checking exact match for {sequence}")
         
         # Generate cache key and check cache first (fast path)
         genome_id = hash(tuple(sorted(genome_dict.keys())))
@@ -1845,7 +1844,15 @@ class AmpliconLocator:
         for seq in amplicon_seqs:
             if pd.notnull(seq):
                 # Since we're processing one genome at a time
-                location = SequenceValidator.matches_with_tolerance(seq, genome_dicts[0])
+                if isinstance(genome_dicts, dict):
+                    if len(genome_dicts) == 1:
+                        genome_dict = next(iter(genome_dicts.values()))  # Use the single genome dictionary
+                    else:
+                        genome_dict = genome_dicts  # Pass all genome dictionaries
+                else:
+                    # Ensure genome_dicts is treated as a dictionary
+                    genome_dict = {"default": genome_dicts} if isinstance(genome_dicts, str) else genome_dicts
+                location = SequenceValidator.matches_with_tolerance(seq, genome_dict)
                 results.append(location)
             else:
                 results.append((None, None))
@@ -2190,7 +2197,7 @@ class MatchChecker:
             genome_seqs[record.id] = str(record.seq).upper()
         
         # Load query sequences
-        if primer_file.endswith(".csv"):
+        if (primer_file.endswith(".csv")):
             df = pd.read_csv(primer_file)
         else:
             df = pd.read_excel(primer_file)
@@ -2474,13 +2481,14 @@ class PrimerDesignPipeline:
         # Load additional genomes if needed
         num_extra = max(0, self.num_genomes - 2)
         if num_extra > 0:
-            print(f"Select {num_extra} additional genomes for filtering:")
+            print(f"Select {num_extra} additional genomes for filtering")
             for i in range(num_extra):
                 extra_path = FileUtilities.get_file(f"Select {i+1}. Additional FASTA File", 
-                                                  [("FASTA Files", "*.fasta *.fa *.fna"), ("All Files", "*.*")])
+                                                    [("FASTA Files", "*.fasta *.fa *.fna"), ("All Files", "*.*")])
                 self.extra_genome_paths.append(extra_path)
                 self.extra_genomes.append(FileUtilities.load_fasta(extra_path))
 
+        # Load GFF3 annotation file
         print("Select the GFF3 Annotation File")
         self.gff_path = FileUtilities.get_file("Select GFF3 Annotation File", 
                                              [("GFF3 Files", "*.gff3 *.gff"), ("All Files", "*.*")])
@@ -2624,8 +2632,6 @@ class PrimerDesignPipeline:
             ordered_maf_files = []
             unmatched_maf_files = list(self.maf_files)  # Copy to track unmatched files
             
-            print("\nOrdering MAF files to ensure consistent MultiZ input:")
-            
             # First pass: match by filename patterns
             for pair in expected_pairs:
                 patterns = expected_patterns[pair]
@@ -2651,10 +2657,6 @@ class PrimerDesignPipeline:
                 print("  Warning: Some MAF files could not be matched by name pattern.")
                 print("  Appending unmatched files at the end. Results may be inconsistent.")
                 ordered_maf_files.extend(unmatched_maf_files)
-            
-            # Print the final order
-            for i, file in enumerate(ordered_maf_files):
-                print(f"  {i+1}. {os.path.basename(file)}")
             
             # Use the ordered files for MultiZ
             command = f'"{Config.MULTIZ_PATH}" ' + " ".join(f'"{file}"' for file in ordered_maf_files) + f' > "{multiz_output_file}"'
@@ -2767,8 +2769,8 @@ class PrimerDesignPipeline:
             # Process outputs as they complete
             if Config.SHOW_PROGRESS:
                 for future in tqdm(concurrent.futures.as_completed(batch_futures), 
-                                 total=len(batch_futures), 
-                                 desc="Processing Primer3 batches"):
+                                     total=len(batch_futures), 
+                                     desc="Processing Primer3 batches"):
                     stdout_data = future.result()
                     if stdout_data:
                         batch_records = Primer3Processor.parse_primer3_batch(stdout_data)
@@ -2879,93 +2881,50 @@ class PrimerDesignPipeline:
         return df
     
     def find_locations(self, df):
-        """
-        Find the genomic locations of amplicons in all genomes.
-        
-        Args:
-            df (pandas.DataFrame): DataFrame with primer design results
-            
-        Returns:
-            pandas.DataFrame: DataFrame with location information
-        """
+        """Find the genomic locations of amplicons across all genomes."""
         amplicon_seqs = df["Amplicon"].tolist()
         batch_size = Config.BATCH_SIZE
         seq_batches = list(Utils.chunks(amplicon_seqs, batch_size))
         
-        genome_results = [[] for _ in range(len(self.extra_genomes) + 2)]  # Ref, Qry, and extras
-        
-        genomes = [self.ref_genome, self.qry_genome] + self.extra_genomes
-        genome_labels = ["Ref", "Qry"] + [f"Extra_{i+1}" for i in range(len(self.extra_genomes))]
-        
+        # Initialize storage for results
+        ref_results, qry_results = [], []
+        extra_results = {f"Extra_{i+1}": [] for i in range(len(self.extra_genomes))} if self.extra_genomes else {}
+
         with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
-            for idx, genome in enumerate(genomes):
-                Config.debug(f"Processing {genome_labels[idx]} genome locations...")
-                # Create list to store futures for this genome
-                genome_futures = []
-                
-                # Submit jobs and keep track of which batch each future corresponds to
-                for batch_idx, batch in enumerate(seq_batches):
-                    future = executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, genome))
-                    genome_futures.append((future, batch_idx, len(batch)))
-                
-                # Initialize a list of the correct size for this genome with None placeholders
-                # This ensures we maintain the correct order
-                results_for_genome = [(None, None)] * len(amplicon_seqs)
-                
-                # Process results as they complete
-                for future_info in concurrent.futures.as_completed([f[0] for f in genome_futures]):
-                    # Find which batch this future corresponds to
-                    for future, batch_idx, batch_size in genome_futures:
-                        if future_info is future:
-                            try:
-                                # Get the result and handle any exceptions
-                                batch_results = future.result()
-                                
-                                if batch_results:
-                                    # Calculate start position in the overall sequence list
-                                    start_pos = batch_idx * batch_size
-                                    # Update the appropriate positions in results_for_genome
-                                    for i, result in enumerate(batch_results):
-                                        if i < batch_size and start_pos + i < len(results_for_genome):
-                                            results_for_genome[start_pos + i] = result
-                            except Exception as e:
-                                Config.debug(f"Error processing batch {batch_idx} for {genome_labels[idx]}: {str(e)}")
-                                # Leave the placeholder (None, None) in place
-                
-                # Store results for this genome
-                genome_results[idx] = results_for_genome
-        
-        # Update DataFrame with results
-        for idx, label in enumerate(genome_labels):
-            # Fill in chromosome and start values, ensuring that None values 
-            # in results don't cause unpacking errors
-            chrom_values = []
-            start_values = []
-            
-            for res in genome_results[idx]:
-                if res and res != (None, None):
-                    chrom, start = res
-                    chrom_values.append(chrom)
-                    start_values.append(start)
-                else:
-                    chrom_values.append(None)
-                    start_values.append(None)
-            
-            df[f"{label} Chromosome"] = chrom_values
-            df[f"{label} Start"] = start_values
-        
+            # Process reference genome locations
+            ref_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.ref_genome))
+                        for batch in seq_batches]
+            for future in concurrent.futures.as_completed(ref_futures):
+                ref_results.extend(future.result())
+
+            # Process query genome locations
+            qry_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, self.qry_genome))
+                        for batch in seq_batches]
+            for future in concurrent.futures.as_completed(qry_futures):
+                qry_results.extend(future.result())
+
+            # Process extra genomes if provided
+            if self.extra_genomes:
+                for i, genome in enumerate(self.extra_genomes):
+                    genome_name = f"Extra_{i+1}"
+                    extra_futures = [executor.submit(AmpliconLocator.find_amplicon_locations_batch, (batch, genome))
+                                    for batch in seq_batches]
+                    for future in concurrent.futures.as_completed(extra_futures):
+                        extra_results[genome_name].extend(future.result())
+
+        # Update DataFrame
+        df["Ref Chromosome"], df["Ref Start"] = zip(*ref_results)
+        df["Qry Chromosome"], df["Qry Start"] = zip(*qry_results)
+
+        # Add extra genome results dynamically
+        if self.extra_genomes:
+            for genome_name, results in extra_results.items():
+                df[f"{genome_name} Chromosome"], df[f"{genome_name} Start"] = zip(*results)
+
         return df
     
     def run_nupack(self, df):
-        """
-        Calculate thermodynamic properties using NUPACK.
-        
-        Args:
-            df (pandas.DataFrame): DataFrame with primer design results
-            
-        Returns:
-            pandas.DataFrame: DataFrame with thermodynamic properties
-        """
+        """Calculate thermodynamic properties using NUPACK."""
         print("\nCalculating NUPACK ΔG...")
         
         with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
@@ -3015,14 +2974,21 @@ class PrimerDesignPipeline:
             "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
             "Pair Penalty", "Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST1", 
             "Probe BLAST2", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
-        ] + [f"{label} Chromosome" for label in ["Ref", "Qry"] + [f"Extra_{i+1}" for i in range(len(self.extra_genomes))]] \
-        + [f"{label} Start" for label in ["Ref", "Qry"] + [f"Extra_{i+1}" for i in range(len(self.extra_genomes))]]
+        ]
+        # Add location columns in alternating order
+        location_cols = []
+        for label in ["Ref", "Qry"] + [f"Extra_{i+1}" for i in range(len(self.extra_genomes))]:
+            location_cols.append(f"{label} Chromosome")
+            location_cols.append(f"{label} Start")
+
+        final_cols += location_cols
         
         # Reorder columns
         df = df[final_cols]
 
-        # Create a Primers directory in the script folder if it doesn't exist
-        primers_dir = os.path.join(self.script_dir, "Primers")
+        # Create a Primers directory in the parent folder of the input files if it doesn't exist
+        input_dir = os.path.dirname(self.ref_path)
+        primers_dir = os.path.join(input_dir, "primers")
         os.makedirs(primers_dir, exist_ok=True)
         
         # Generate filename based on genome names
