@@ -160,5 +160,25 @@ class AnnotationProcessor:
                 for future in concurrent.futures.as_completed(futures):
                     genes.extend(future.result())
 
-        print(f"Loaded {len(genes)} entries from GFF.")
         return genes
+
+    @staticmethod
+    def extract_gene_name(sequence_id):
+        """
+        Extract just the gene name from a sequence identifier that follows the format Chr_Fragment_Gene.
+        
+        Args:
+            sequence_id (str): The full sequence identifier
+            
+        Returns:
+            str: The extracted gene name
+        """
+        # Split by underscore
+        parts = sequence_id.split("_")
+        
+        # For format Chr_Fragment_Gene, return the third part if it exists
+        if len(parts) >= 3:
+            return parts[2]  # Return the Gene part
+        
+        # If the ID doesn't have enough parts, return the original
+        return sequence_id

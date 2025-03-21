@@ -10,5 +10,4 @@ This subpackage contains utility functions:
 
 from .sequence_utils import SequenceUtils
 from .file_utils import FileUtils
-from .ui_utils import UIUtils
 from .common_utils import CommonUtils

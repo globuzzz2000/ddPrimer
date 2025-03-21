@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Primer Design Pipeline
-
+S
 A streamlined script that:
 1. Prompts the user to provide a FASTA and a VCF file
 2. Extracts variants from VCF and masks the FASTA file
@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 # Import package modules using the __init__.py structure
 from .config import Config
-from .utils import FileUtils, UIUtils
+from .utils import FileUtils
 from .core import (
     SNPMaskingProcessor, 
     Primer3Processor, 
@@ -198,7 +198,7 @@ def run_pipeline():
         total_variants = sum(len(positions) for positions in variants.values())
         logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
         
-        logger.info("\nLoading sequences from FASTA file...")
+        logger.debug("\nLoading sequences from FASTA file...")
         try:
             sequences = FileUtils.load_fasta(fasta_file)
             logger.debug(f"Sequences loaded successfully from {fasta_file}")
@@ -206,9 +206,9 @@ def run_pipeline():
             logger.error(f"Error loading FASTA: {e}")
             logger.debug(traceback.format_exc())
             raise
-        logger.info(f"Loaded {len(sequences)} sequences")
+        logger.debug(f"Loaded {len(sequences)} sequences")
         
-        logger.info("\nMasking variants in sequences...")
+        logger.debug("\nMasking variants in sequences...")
         masked_sequences = {}
         seq_items = list(sequences.items())
         if Config.SHOW_PROGRESS:
@@ -306,7 +306,7 @@ def run_pipeline():
             logger.warning("No valid fragments for primer design after N filtering. Exiting.")
             return None
 
-        logger.info(f"Running Primer3 on {len(primer3_inputs)} fragments...")
+        logger.debug(f"Running Primer3 on {len(primer3_inputs)} fragments...")
         try:
             logger.debug(f"Primer3 settings: Min Size={Config.PRIMER_MIN_SIZE}, Opt Size={Config.PRIMER_OPT_SIZE}, Max Size={Config.PRIMER_MAX_SIZE}")
             logger.debug(f"Primer3 Tm settings: Min={Config.PRIMER_MIN_TM}, Opt={Config.PRIMER_OPT_TM}, Max={Config.PRIMER_MAX_TM}")
@@ -339,7 +339,7 @@ def run_pipeline():
             logger.error(f"Error in penalty filtering: {e}")
             logger.debug(traceback.format_exc())
             raise
-        logger.info(f"After penalty filtering: {len(df)}/{initial_count} primers")
+        logger.debug(f"After penalty filtering: {len(df)}/{initial_count} primers")
         
         # Filter by repeats
         try:
@@ -350,7 +350,7 @@ def run_pipeline():
             logger.error(f"Error in repeat filtering: {e}")
             logger.debug(traceback.format_exc())
             raise
-        logger.info(f"After repeat filtering: {len(df)}/{initial_count} primers")
+        logger.debug(f"After repeat filtering: {len(df)}/{initial_count} primers")
         
         # Filter by GC content
         try:
@@ -361,7 +361,7 @@ def run_pipeline():
             logger.error(f"Error in GC content filtering: {e}")
             logger.debug(traceback.format_exc())
             raise
-        logger.info(f"After GC% filtering: {len(df)}/{initial_count} primers")
+        logger.info(f"After filtering: {len(df)}/{initial_count} primers")
         
         # Process internal oligos (reverse complement if needed)
         try:
@@ -381,7 +381,7 @@ def run_pipeline():
         logger.info("\nCalculating thermodynamic properties with NUPACK...")
         
         # Calculate deltaG for forward primers
-        logger.info("Calculating ΔG for forward primers...")
+        logger.debug("Calculating ΔG for forward primers...")
         try:
             logger.debug(f"NUPACK settings: Temp={Config.NUPACK_TEMPERATURE}°C, Na={Config.NUPACK_SODIUM}M, Mg={Config.NUPACK_MAGNESIUM}M")
             if Config.SHOW_PROGRESS:
@@ -396,7 +396,7 @@ def run_pipeline():
             raise
         
         # Calculate deltaG for reverse primers
-        logger.info("Calculating ΔG for reverse primers...")
+        logger.debug("Calculating ΔG for reverse primers...")
         try:
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing reverse primers")
@@ -411,7 +411,7 @@ def run_pipeline():
         
         # Calculate deltaG for probes if present
         if "Probe" in df.columns:
-            logger.info("Calculating ΔG for probes...")
+            logger.debug("Calculating ΔG for probes...")
             try:
                 if Config.SHOW_PROGRESS:
                     tqdm.pandas(desc="Processing probes")
@@ -429,7 +429,7 @@ def run_pipeline():
                 raise
         
         # Calculate deltaG for amplicons
-        logger.info("Calculating ΔG for amplicons...")
+        logger.debug("Calculating ΔG for amplicons...")
         try:
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing amplicons")
@@ -446,7 +446,6 @@ def run_pipeline():
         logger.info("\nRunning BLAST for specificity checking...")
         
         # Run BLAST for forward primers
-        logger.info("BLASTing forward primers...")
         try:
             logger.debug(f"BLAST settings: Word Size={Config.BLAST_WORD_SIZE}, E-value={Config.BLAST_EVALUE}")
             blast_results_f = []
@@ -468,7 +467,6 @@ def run_pipeline():
             raise
         
         # Run BLAST for reverse primers
-        logger.info("BLASTing reverse primers...")
         try:
             blast_results_r = []
             primers_r = df["Primer R"].tolist()
@@ -490,7 +488,6 @@ def run_pipeline():
         
         # Run BLAST for probes if present
         if "Probe" in df.columns:
-            logger.info("BLASTing probes...")
             try:
                 blast_results_p = []
                 probes = df["Probe"].tolist()
@@ -529,27 +526,33 @@ def run_pipeline():
             return None
         
         # Step 9: Save results
-        logger.info("\nSaving results...")
-        
+        logger.debug("\nSaving results...")
+
         # Create output directory
-        output_dir = args.output if args is not None and args.output else os.path.join(os.path.dirname(fasta_file), "primers")
+        output_dir = args.output if args is not None and args.output else os.path.join(os.path.dirname(fasta_file), "Primers")
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
-        
-        # Create filename with timestamp
+
+        # Create filename
         fasta_name = os.path.splitext(os.path.basename(fasta_file))[0]
-        vcf_name = os.path.splitext(os.path.basename(vcf_file))[0]
-        
-        output_file = os.path.join(output_dir, f"primers_{fasta_name}_{vcf_name}.xlsx")
+        output_file = os.path.join(output_dir, f"Primers_{fasta_name}.xlsx")
         logger.debug(f"Output file will be: {output_file}")
-        
+
+        # Extract gene names from sequence IDs
+        logger.debug("Extracting gene names from sequence IDs")
+        if "Sequence" in df.columns:
+            # Create a new "Gene" column with just the gene name using the function from AnnotationProcessor
+            df["Gene"] = df["Sequence"].apply(AnnotationProcessor.extract_gene_name)
+            # Remove the original "Sequence" column
+            df = df.drop("Sequence", axis=1)
+
         # Define column order
         columns = [
-            "Sequence", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST",
+            "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST",
             "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST",
             "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG", "Chromosome", "Location",
         ]
-        
+
         # Add probe columns if present
         if "Probe" in df.columns:
             probe_cols = [
@@ -563,24 +566,24 @@ def run_pipeline():
                     columns.insert(idx, col)
             
             logger.debug(f"Added probe columns to output: {', '.join(probe_cols)}")
-        
-        # Select columns that exist in the DataFrame
+
+        # Ensure all columns in the list exist in the DataFrame
         columns = [col for col in columns if col in df.columns]
-        
-        # Reorder and save
+
+        # Reorder the columns
         df = df[columns]
+
+        # Save with formatting using the utility function
         try:
-            df.to_excel(output_file, index=False)
-            logger.debug(f"Successfully wrote results to Excel file: {output_file}")
+            output_path = FileUtils.save_formatted_excel(df, output_file, logger=logger)
+            logger.info(f"Results saved to: {output_path}")
         except Exception as e:
-            logger.error(f"Error writing to Excel file: {e}")
-            logger.debug(traceback.format_exc())
-            raise
-        
-        logger.info(f"\nResults saved to: {output_file}")
-        logger.info(f"Total primer pairs: {len(df)}")
-        
-        return output_file
+            # Fallback if importing FileUtils fails for some reason
+            logger.error(f"Error using FileUtils: {e}")
+            logger.warning("Falling back to basic Excel export")
+            df.to_excel(output_file, index=False)
+            logger.info(f"Results saved to: {output_file} (without formatting)")
+
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
         logger.debug(traceback.format_exc())

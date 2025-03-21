@@ -97,7 +97,6 @@ class SNPMaskingProcessor:
         if not variant_positions:
             return sequence
             
-        print(f"Masking {len(variant_positions)} variants in sequence of length {len(sequence)}.")
         sequence_list = list(sequence)
         
         # Mask variant positions with padding
@@ -215,7 +214,6 @@ class SNPMaskingProcessor:
         if not variant_positions:
             return sequence
             
-        print(f"Masking {len(variant_positions)} variants in sequence of length {len(sequence)}.")
         sequence_list = list(sequence)
         
         # Mask variant positions with padding

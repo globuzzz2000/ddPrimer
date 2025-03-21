@@ -8,8 +8,18 @@ import os
 import sys
 import platform
 import tkinter as tk
+import pandas as pd
 from tkinter import filedialog
 from ..config import Config
+
+# Optional imports for Excel formatting
+try:
+    import openpyxl
+    from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
+    from openpyxl.utils import get_column_letter
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
 
 
 class FileUtils:
@@ -121,9 +131,6 @@ class FileUtils:
             str or list: Selected file path(s) or None if cancelled
         """
         try:
-            import tkinter as tk
-            from tkinter import filedialog
-
             root = tk.Tk()
             root.withdraw()
 
@@ -368,3 +375,172 @@ class FileUtils:
         
         Config.debug(f"Loaded {len(sequences)} sequences from FASTA file")
         return sequences
+    
+    @staticmethod
+    def save_formatted_excel(df, output_file, logger=None):
+        """
+        Save DataFrame to Excel with specific formatting.
+        If openpyxl is not available, falls back to standard pandas Excel export.
+        
+        Args:
+            df (pandas.DataFrame): DataFrame with primer results
+            output_file (str): Path to save the formatted Excel file
+            logger (logging.Logger, optional): Logger for debug messages
+            
+        Returns:
+            str: Path to the saved Excel file
+        """
+        
+        # When openpyxl is available, apply full formatting
+        try:
+            # Log actions if logger is provided
+            if logger:
+                logger.debug(f"Saving formatted Excel file to: {output_file}")
+            
+            # First, save with pandas to get a basic Excel file
+            df.to_excel(output_file, index=False, engine='openpyxl')
+            
+            # Now open the file for formatting
+            workbook = openpyxl.load_workbook(output_file)
+            worksheet = workbook.active
+            
+            # Get the number of rows and columns
+            max_row = worksheet.max_row
+            max_col = worksheet.max_column
+            
+            # Freeze panes - freeze first column and first two rows
+            worksheet.freeze_panes = 'B3'
+            
+            # Create styles
+            header_font = Font(bold=True)
+            sequence_fill = PatternFill(
+                start_color='D9D9D9',  # Light gray
+                end_color='D9D9D9',
+                fill_type='solid'
+            )
+            centered_alignment = Alignment(horizontal='center', vertical='center')
+            
+            # Apply column width
+            for col_num in range(1, max_col + 1):
+                col_letter = get_column_letter(col_num)
+                worksheet.column_dimensions[col_letter].width = 10.83
+            
+            # Apply row height
+            for row_num in range(1, max_row + 1):
+                worksheet.row_dimensions[row_num].height = 16
+            
+            # Identify column groupings for merging headers
+            column_groups = {
+                "Gene": None,  # No merging for Gene
+                "Primer F": ["Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST"],
+                "Primer R": ["Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST", "Pair Penalty"],
+            }
+            
+            # Add Probe group if present
+            if "Probe" in df.columns:
+                column_groups["Probe"] = ["Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST"]
+            
+            # Add Amplicon group
+            column_groups["Amplicon"] = ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG", 
+                                        "Chromosome", "Location"]
+            
+            # Prepare for header merging - get column indices
+            header_merges = []
+            gene_col = None
+            
+            # First, find the Gene column index
+            for col_idx, col_name in enumerate(df.columns, 1):
+                if col_name == "Gene":
+                    gene_col = col_idx
+                    break
+            
+            # If Gene column wasn't found, use the first column
+            if gene_col is None:
+                gene_col = 1
+            
+            # Now find column groups for merging
+            for main_header, subheaders in column_groups.items():
+                if subheaders:
+                    indices = [idx + 1 for idx, name in enumerate(df.columns) if name in subheaders]
+                    if indices:
+                        start_idx = min(indices)
+                        end_idx = max(indices)
+                        header_merges.append((start_idx, end_idx, main_header))
+            
+            # Insert a new row for main headers
+            worksheet.insert_rows(1)
+            max_row += 1
+            
+            # Add main headers BEFORE merging
+            for start_col, end_col, header_text in header_merges:
+                if start_col > 0 and end_col > 0 and start_col <= max_col and end_col <= max_col:
+                    # Add header text first
+                    cell = worksheet.cell(row=1, column=start_col)
+                    cell.value = header_text
+                    cell.font = header_font
+                    cell.alignment = centered_alignment
+                    
+                    # Then merge cells
+                    merge_range = f"{get_column_letter(start_col)}1:{get_column_letter(end_col)}1"
+                    worksheet.merge_cells(merge_range)
+            
+            # Handle Gene header separately (merges vertically)
+            if gene_col is not None and gene_col <= max_col:
+                # Set value first
+                gene_cell = worksheet.cell(row=1, column=gene_col)
+                gene_cell.value = "Gene"  # Use explicit "Gene" text
+                gene_cell.font = header_font
+                gene_cell.alignment = centered_alignment
+                
+                # Then merge
+                gene_merge_range = f"{get_column_letter(gene_col)}1:{get_column_letter(gene_col)}2"
+                worksheet.merge_cells(gene_merge_range)
+            
+            # Apply bold to all header cells (row 2)
+            for col_num in range(1, max_col + 1):
+                cell = worksheet.cell(row=2, column=col_num)
+                cell.font = header_font
+                cell.alignment = centered_alignment
+                cell.border = None
+            
+            # Special formatting for sequence columns
+            sequence_cols = []
+            
+            # Identify sequence columns
+            for col_idx, col_name in enumerate(df.columns, 1):
+                # Apply sequence fill to Primer F, Primer R, Probe, and Amplicon columns
+                if col_name in ["Primer F", "Primer R", "Probe", "Amplicon"]:
+                    sequence_cols.append(col_idx)
+            
+            # Apply special formatting to sequence cells
+            for row_num in range(3, max_row + 1):  # Start from first data row
+                for col_idx in sequence_cols:
+                    if col_idx <= max_col:  # Ensure column exists
+                        cell = worksheet.cell(row=row_num, column=col_idx)
+                        cell.fill = sequence_fill
+
+            # Center-align all non-header, non-merged cells
+            for row_num in range(3, max_row + 1):
+                for col_num in range(1, max_col + 1):
+                    cell = worksheet.cell(row=row_num, column=col_num)
+                    if not isinstance(cell, openpyxl.cell.cell.MergedCell):
+                        cell.alignment = centered_alignment
+            
+            # Save the workbook
+            workbook.save(output_file)
+            
+            return output_file
+            
+        except Exception as e:
+            # If formatting fails, fall back to standard save
+            if logger:
+                logger.error(f"Error applying Excel formatting: {e}")
+                logger.warning("Falling back to standard Excel export")
+            
+            # Basic fallback save
+            df.to_excel(output_file, index=False)
+            
+            if logger:
+                logger.info(f"Excel file saved to: {output_file} (without formatting)")
+            
+            return output_file
