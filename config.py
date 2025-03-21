@@ -55,9 +55,12 @@ class Config:
     MAX_SEARCH_LENGTH = 1000000  # Limit search in large chromosomes to improve performance
     
     #############################################################################
-    #                           Tool Paths
+    #                           BLAST Database Options
     #############################################################################
-    MULTIZ_PATH = "/Library/Application Support/ddPrimer/Multiz/multiz"
+    DB_FASTA = None            # Path to a FASTA file to create a BLAST database from
+    DB_OUTPUT_DIR = None       # Custom output directory for the BLAST database
+    DB_NAME = None             # Custom name for the BLAST database
+    USE_CUSTOM_DB = False      # Whether to use a custom database or the default
     DB_PATH = "/Library/Application Support/ddPrimer/Tair DB/TAIR10_db"
     
     # BLAST+ parameters
@@ -358,6 +361,20 @@ class Config:
                             min_val, max_val = r.split('-')
                             ranges.append([int(min_val), int(max_val)])
                     cls.PRIMER_PRODUCT_SIZE_RANGE = ranges
+            
+            # Handle BLAST database options
+            if "DB_FASTA" in settings:
+                cls.DB_FASTA = settings["DB_FASTA"]
+                cls.USE_CUSTOM_DB = True
+            
+            if "DB_OUTPUT_DIR" in settings:
+                cls.DB_OUTPUT_DIR = settings["DB_OUTPUT_DIR"]
+                
+            if "DB_NAME" in settings:
+                cls.DB_NAME = settings["DB_NAME"]
+                
+            if "DB_PATH" in settings:
+                cls.DB_PATH = settings["DB_PATH"]
             
             return True
         except Exception as e:

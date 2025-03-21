@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 # Import package modules using the __init__.py structure
 from .config import Config
-from .utils import FileUtils
+from .utils import FileUtils, BlastDBCreator
 from .core import (
     SNPMaskingProcessor, 
     Primer3Processor, 
@@ -101,6 +101,7 @@ def setup_logging(debug=False):
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
+
     parser.add_argument('--fasta', help='Input FASTA file')
     parser.add_argument('--vcf', help='VCF file with variants')
     parser.add_argument('--gff', help='GFF annotation file')
@@ -108,6 +109,10 @@ def parse_arguments():
     parser.add_argument('--config', help='Configuration file')
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    # BLAST database creation
+    parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
+    parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
+    parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (optional)')
     return parser.parse_args()
 
 
@@ -127,11 +132,52 @@ def run_pipeline():
     if args is not None and args.cli:
         FileUtils.use_cli = True
         logger.debug("CLI mode enforced via command line argument")
-    
+
     # Load custom configuration if provided
     if args is not None and args.config:
         logger.debug(f"Loading custom configuration from {args.config}")
         Config.load_from_file(args.config)
+
+    # Handle BLAST database overrides from CLI
+    if args is not None and args.dbfasta:
+        logger.debug(f"Command-line override for DB_FASTA: {args.dbfasta}")
+        Config.DB_FASTA = args.dbfasta
+        Config.USE_CUSTOM_DB = True
+
+        if args.dbname:
+            Config.DB_NAME = args.dbname
+            logger.debug(f"Command-line override for DB_NAME: {args.dbname}")
+
+        if args.dboutdir:
+            Config.DB_OUTPUT_DIR = args.dboutdir
+            logger.debug(f"Command-line override for DB_OUTPUT_DIR: {args.dboutdir}")
+
+    # Handle BLAST database creation if enabled
+    if Config.USE_CUSTOM_DB and Config.DB_FASTA:
+        try:
+            logger.info(f"\nCreating custom BLAST database from {Config.DB_FASTA}...")
+            logger.debug(f"Calling create_db with:")
+            logger.debug(f"  fasta_file: {Config.DB_FASTA}")
+            logger.debug(f"  output_dir: {Config.DB_OUTPUT_DIR}")
+            logger.debug(f"  db_name: {Config.DB_NAME}")
+
+            # Create the database
+            db_path = BlastDBCreator.create_db(
+                Config.DB_FASTA,
+                output_dir=Config.DB_OUTPUT_DIR,
+                db_name=Config.DB_NAME,
+                logger=logger
+            )
+
+            # Update the DB_PATH in Config
+            Config.DB_PATH = db_path
+            logger.info(f"Using custom BLAST database: {db_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to create custom BLAST database: {str(e)}")
+            logger.warning("Continuing with default BLAST database")
+    else:
+        logger.debug(f"Using default BLAST database: {Config.DB_PATH}")
     
     logger.info("=== Primer Design Pipeline ===")
     
