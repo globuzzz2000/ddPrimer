@@ -21,28 +21,45 @@ class PrimerProcessor:
     """Handles primer processing and filtering operations."""
     
     @staticmethod
-    def filter_by_penalty(primers, max_penalty=None):
+    def filter_by_penalty(df, max_penalty=None):
         """
-        Filter primers by penalty threshold.
+        Filter primers by penalty scores.
         
         Args:
-            primers (list): List of primer dictionaries or DataFrame
-            max_penalty (float): Maximum penalty threshold (default: from Config)
+            df (pandas.DataFrame): DataFrame with primer data
+            max_penalty (float): Maximum allowed penalty (default: from Config)
             
         Returns:
-            list: Filtered primer dictionaries
+            pandas.DataFrame: Filtered DataFrame
         """
+        from ..config import Config
+        import logging
+        
         if max_penalty is None:
             max_penalty = Config.PENALTY_MAX
         
-        # Convert to DataFrame if not already
-        df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
+        # Handle empty DataFrame
+        if df.empty:
+            logging.warning("Empty DataFrame - no primers to filter")
+            return df
         
-        # Filter by penalty
+        # Check if required column exists
+        if "Pair Penalty" not in df.columns:
+            logging.warning("'Pair Penalty' column not found in filter_by_penalty method")
+            logging.debug(f"Available columns: {df.columns.tolist()}")
+            
+            # Try to create it from individual penalties
+            if "Penalty F" in df.columns and "Penalty R" in df.columns:
+                logging.debug("Creating 'Pair Penalty' from individual penalties")
+                df["Pair Penalty"] = df["Penalty F"] + df["Penalty R"]
+            else:
+                logging.warning("Cannot create 'Pair Penalty' - missing individual penalties")
+                # Add a default high value
+                df["Pair Penalty"] = max_penalty * 2
+        
+        # Now filter
         df = df[df["Pair Penalty"] <= max_penalty].reset_index(drop=True)
-        
-        # Return as list of dictionaries or DataFrame
-        return df.to_dict('records') if not isinstance(primers, pd.DataFrame) else df
+        return df
     
     @staticmethod
     def filter_by_repeats(primers):
