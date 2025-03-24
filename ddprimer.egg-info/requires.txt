@@ -1,5 +1,0 @@
-biopython
-pandas
-numpy
-tqdm
-primer3-py
