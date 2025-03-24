@@ -19,6 +19,7 @@ def CrossSpeciesWorkflow(args, output_dir, logger):
     from ..cross_species import LastZRunner, MAFParser
     from ..utils import FileUtils
     from ..core import SNPMaskingProcessor
+    from ..config import Config
     
     # Initialize processors
     maf_parser = MAFParser()
@@ -45,22 +46,24 @@ def CrossSpeciesWorkflow(args, output_dir, logger):
             raise ValueError("Second species FASTA (--second-fasta) is required for alignment")
         
         logger.info("\n>>> Running LastZ alignment between genomes <<<")
+
         # Create alignment directory
-        alignment_dir = os.path.join(output_dir, "alignment")
-        os.makedirs(alignment_dir, exist_ok=True)
-        
+        input_dir = os.path.dirname(os.path.abspath(args.fasta))
+        alignments_dir = os.path.join(input_dir, "Alignments")
+        os.makedirs(alignments_dir, exist_ok=True)
+                    
         # Ensure lastz_options include MAF format
         lastz_options = args.lastz_options
         if "--format=maf" not in lastz_options and "-f maf" not in lastz_options:
             lastz_options += " --format=maf"
-        
+                    
         # Run LastZ alignment
         try:
             lastz_runner = LastZRunner()
             maf_file = lastz_runner.run_parallel_alignment(
                 args.fasta,
                 args.second_fasta,
-                alignment_dir,
+                alignments_dir,  # Use the alignments_dir directly, not alignment_dir
                 lastz_options
             )
             logger.info(f"LastZ alignment completed: {maf_file}")
@@ -233,5 +236,22 @@ def CrossSpeciesWorkflow(args, output_dir, logger):
     
     logger.info(f"Created fully masked reference genome: {final_masked_path}")
     logger.info(f"Ready for primer design on {len(final_masked_sequences)} masked sequences")
+
+    # Clean up intermediate files if not in debug mode
+    if not Config.DEBUG_MODE:
+        try:
+            # List of files to clean up
+            files_to_clean = [
+                os.path.join(output_dir, "masked_reference.fasta"),
+                final_masked_path  # This is final_masked.fasta
+            ]
+            
+            for file_path in files_to_clean:
+                if os.path.exists(file_path):
+                    logger.debug(f"Cleaning up intermediate file: {file_path}")
+                    os.remove(file_path)
+        except Exception as e:
+            logger.warning(f"Error during cleanup of masked files: {e}")
+            logger.debug(traceback.format_exc())
     
     return final_masked_sequences, coordinate_map

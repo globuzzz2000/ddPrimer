@@ -440,9 +440,16 @@ class FileUtils:
             if "Probe" in df.columns:
                 column_groups["Probe"] = ["Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST"]
             
-            # Add Amplicon group
-            column_groups["Amplicon"] = ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG", 
-                                        "Chromosome", "Location"]
+            # Add Amplicon group with cross-species columns if present
+            amplicon_group = ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG", "Chromosome", "Location"]
+            
+            # Add cross-species columns to the Amplicon group if they exist
+            if "Qry Chromosome" in df.columns:
+                amplicon_group.append("Qry Chromosome")
+            if "Qry Location" in df.columns:
+                amplicon_group.append("Qry Location")
+                
+            column_groups["Amplicon"] = amplicon_group
             
             # Prepare for header merging - get column indices
             header_merges = []
@@ -519,12 +526,61 @@ class FileUtils:
                         cell = worksheet.cell(row=row_num, column=col_idx)
                         cell.fill = sequence_fill
 
+            # Get column indices for Location and Qry Location
+            location_col_idx = None
+            qry_location_col_idx = None
+            
+            for col_idx, col_name in enumerate(df.columns, 1):
+                if col_name == "Location":
+                    location_col_idx = col_idx
+                elif col_name == "Qry Location":
+                    qry_location_col_idx = col_idx
+            
+            # Format Location columns as numbers (if they exist)
+            if location_col_idx:
+                for row_num in range(3, max_row + 1):
+                    cell = worksheet.cell(row=row_num, column=location_col_idx)
+                    if cell.value and isinstance(cell.value, str):
+                        # Handle ranges (e.g., "1000-2000")
+                        if "-" in cell.value:
+                            # Keep as text but ensure proper alignment
+                            cell.alignment = Alignment(horizontal='right', vertical='center')
+                        else:
+                            try:
+                                # Convert to number
+                                cell.value = int(cell.value)
+                                cell.number_format = '#,##0'
+                            except (ValueError, TypeError):
+                                # If conversion fails, keep as is
+                                pass
+            
+            # Format Qry Location column as number (if it exists)
+            if qry_location_col_idx:
+                for row_num in range(3, max_row + 1):
+                    cell = worksheet.cell(row=row_num, column=qry_location_col_idx)
+                    if cell.value and isinstance(cell.value, str):
+                        # Handle ranges (e.g., "1000-2000")
+                        if "-" in cell.value:
+                            # Keep as text but ensure proper alignment
+                            cell.alignment = Alignment(horizontal='right', vertical='center')
+                        else:
+                            try:
+                                # Convert to number
+                                cell.value = int(cell.value)
+                                cell.number_format = '#,##0'
+                            except (ValueError, TypeError):
+                                # If conversion fails, keep as is
+                                pass
+
             # Center-align all non-header, non-merged cells
             for row_num in range(3, max_row + 1):
                 for col_num in range(1, max_col + 1):
                     cell = worksheet.cell(row=row_num, column=col_num)
                     if not isinstance(cell, openpyxl.cell.cell.MergedCell):
-                        cell.alignment = centered_alignment
+                        # Don't override number alignment for Location columns
+                        if (col_num != location_col_idx and col_num != qry_location_col_idx) or \
+                        not cell.value or not isinstance(cell.value, (int, float)):
+                            cell.alignment = centered_alignment
             
             # Save the workbook
             workbook.save(output_file)

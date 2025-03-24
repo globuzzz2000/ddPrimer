@@ -10,6 +10,7 @@ class Config:
     RUN_MATCH_CHECKER = False           # Run only the Match Checker
     RUN_MATCH_CHECKER_ON_OUTPUT = False # Run Match Checker on pipeline output
     DEBUG_MODE = False                   # Debug logging mode (enable with --debug flag)
+    DISABLE_INTERNAL_OLIGO = False      # Disable internal oligo design
     
     #############################################################################
     #                           Performance Settings

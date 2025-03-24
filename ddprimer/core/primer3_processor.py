@@ -201,88 +201,109 @@ class Primer3Processor:
 
         # Helper function: finalize the current record
         def finalize_record():
-            """
-            Save up to 3 pairs that meet penalty requirements.
-            """
-            nonlocal current_id, pairs, sequence_template
+                """
+                Save up to 3 pairs that meet penalty requirements.
+                """
+                nonlocal current_id, pairs, sequence_template
 
-            if not current_id or not pairs:
-                return
+                if not current_id or not pairs:
+                    return
 
-            acceptable = []
-            for p in pairs:
-                pair_penalty = p.get("pair_penalty", 999)
-                probe_penalty = p.get("internal_penalty", 999)  # if no probe
-                if pair_penalty <= self.config.PENALTY_MAX and probe_penalty <= self.config.PENALTY_MAX:
-                    acceptable.append(p)
+                acceptable = []
+                for p in pairs:
+                    pair_penalty = p.get("pair_penalty", 999)
+                    if not self.config.DISABLE_INTERNAL_OLIGO:
+                        # Only check probe penalty if internal oligos are enabled
+                        probe_penalty = p.get("internal_penalty", 999)
+                        if pair_penalty <= self.config.PENALTY_MAX and probe_penalty <= self.config.PENALTY_MAX:
+                            acceptable.append(p)
+                    else:
+                        # Ignore probe penalty if internal oligos are disabled
+                        if pair_penalty <= self.config.PENALTY_MAX:
+                            acceptable.append(p)
 
-            # take up to MAX_PRIMER_PAIRS_PER_SEGMENT
-            acceptable = acceptable[:self.config.MAX_PRIMER_PAIRS_PER_SEGMENT]
-            for p in acceptable:
-                left_seq = p.get("left_sequence", "")
-                right_seq = p.get("right_sequence", "")
-                probe_seq = p.get("internal_sequence", "")
-                
-                # Check if we need to reverse complement the probe based on C/G content
-                probe_reversed = False
-                if self.config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
-                    probe_seq, probe_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
+                # take up to MAX_PRIMER_PAIRS_PER_SEGMENT
+                acceptable = acceptable[:self.config.MAX_PRIMER_PAIRS_PER_SEGMENT]
+                for p in acceptable:
+                    left_seq = p.get("left_sequence", "")
+                    right_seq = p.get("right_sequence", "")
                     
-                ls, ll = p.get("left_start"), p.get("left_len")
-                rs, rl = p.get("right_start"), p.get("right_len")
-                internal_start = p.get("internal_start")
-                internal_len = p.get("internal_len")
-
-                ampseq = get_amplicon(sequence_template, ls, ll, rs, rl)
-                
-                # Get chromosome and location info from fragment_info
-                frag_info = fragment_info.get(current_id, {})
-                chromosome = frag_info.get("chr", "")
-                
-                # Calculate absolute positions based on fragment coordinates
-                fragment_start = frag_info.get("start", 1)
-                
-                # Adjust the primer positions to absolute coordinates
-                abs_left_start = None
-                if ls is not None:
-                    abs_left_start = fragment_start + ls - 1
+                    # Only get probe sequence if internal oligos are enabled
+                    probe_seq = ""
+                    probe_reversed = False
+                    if not self.config.DISABLE_INTERNAL_OLIGO:
+                        probe_seq = p.get("internal_sequence", "")
+                        
+                        # Check if we need to reverse complement the probe based on C/G content
+                        if self.config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
+                            probe_seq, probe_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
+                            
+                    ls, ll = p.get("left_start"), p.get("left_len")
+                    rs, rl = p.get("right_start"), p.get("right_len")
                     
-                # Format the location as a range
-                location = ""
-                if abs_left_start is not None:
-                    location = f"{abs_left_start}"
-                
-                rec = {
-                    "Sequence": current_id, 
-                    "Index": p["idx"],
-                    "Template": sequence_template,
-                    "Primer F": left_seq,
-                    "Tm F": p.get("left_tm", None),
-                    "Penalty F": p.get("left_penalty", None),
-                    "Primer F Start": ls,  # Include these position values
-                    "Primer F Len": ll,
-                    "Primer R": right_seq,
-                    "Tm R": p.get("right_tm", None),
-                    "Penalty R": p.get("right_penalty", None),
-                    "Primer R Start": rs,  # Include these position values
-                    "Primer R Len": rl,
-                    "Probe": probe_seq,
-                    "Probe Tm": p.get("internal_tm", None),
-                    "Probe Penalty": p.get("internal_penalty", None),
-                    "Probe Start": internal_start,  # Include probe position if available
-                    "Probe Len": internal_len,
-                    "Probe Reversed": probe_reversed,
-                    "Pair Penalty": p.get("pair_penalty", None),
-                    "Amplicon": ampseq,
-                    "Length": p.get("product_size", None),
-                    "Chromosome": chromosome,
-                    "Location": location
-                }
-                records.append(rec)
+                    # Only get internal positions if internal oligos are enabled
+                    internal_start = None
+                    internal_len = None
+                    if not self.config.DISABLE_INTERNAL_OLIGO:
+                        internal_start = p.get("internal_start")
+                        internal_len = p.get("internal_len")
 
-            current_id = None
-            sequence_template = ""
-            pairs = []
+                    ampseq = get_amplicon(sequence_template, ls, ll, rs, rl)
+                    
+                    # Get chromosome and location info from fragment_info
+                    frag_info = fragment_info.get(current_id, {})
+                    chromosome = frag_info.get("chr", "")
+                    
+                    # Calculate absolute positions based on fragment coordinates
+                    fragment_start = frag_info.get("start", 1)
+                    
+                    # Adjust the primer positions to absolute coordinates
+                    abs_left_start = None
+                    if ls is not None:
+                        abs_left_start = fragment_start + ls - 1
+                        
+                    # Format the location as a range
+                    location = ""
+                    if abs_left_start is not None:
+                        location = f"{abs_left_start}"
+                    
+                    rec = {
+                        "Sequence": current_id, 
+                        "Index": p["idx"],
+                        "Template": sequence_template,
+                        "Primer F": left_seq,
+                        "Tm F": p.get("left_tm", None),
+                        "Penalty F": p.get("left_penalty", None),
+                        "Primer F Start": ls,
+                        "Primer F Len": ll,
+                        "Primer R": right_seq,
+                        "Tm R": p.get("right_tm", None),
+                        "Penalty R": p.get("right_penalty", None),
+                        "Primer R Start": rs,
+                        "Primer R Len": rl,
+                        "Pair Penalty": p.get("pair_penalty", None),
+                        "Amplicon": ampseq,
+                        "Length": p.get("product_size", None),
+                        "Chromosome": chromosome,
+                        "Location": location
+                    }
+                    
+                    # Only add probe-related fields if internal oligos are enabled
+                    if not self.config.DISABLE_INTERNAL_OLIGO:
+                        rec.update({
+                            "Probe": probe_seq,
+                            "Probe Tm": p.get("internal_tm", None),
+                            "Probe Penalty": p.get("internal_penalty", None),
+                            "Probe Start": internal_start,
+                            "Probe Len": internal_len,
+                            "Probe Reversed": probe_reversed
+                        })
+                        
+                    records.append(rec)
+
+                current_id = None
+                sequence_template = ""
+                pairs = []
 
         lines = stdout_data.splitlines()
         for line in lines:

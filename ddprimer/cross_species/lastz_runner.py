@@ -198,8 +198,8 @@ class LastZRunner:
         qry_basename = os.path.splitext(os.path.basename(qry_path))[0]
         
         # Create output directory and Alignments directly inside it
-        output_dir = self.create_directory(output_dir)
-        alignments_dir = self.create_directory(os.path.join(output_dir, "Alignments"))
+        input_dir = os.path.dirname(ref_path)
+        alignments_dir = self.create_directory(os.path.join(input_dir, "Alignments"))
         temp_dir = self.create_directory(os.path.join(output_dir, "temp"))
         
         # Track .fai files created by samtools

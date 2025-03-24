@@ -31,3 +31,20 @@ setup(
     ],
     python_requires=">=3.7",
 )
+
+def main():
+    try:
+        success = run_pipeline()
+        if success:
+            logger.info("\n=== Pipeline completed successfully ===")
+        else:
+            logger.info("\n=== Pipeline completed with no results ===")
+        return 0
+    except Exception as e:
+        logger.error(f"\n!!! Pipeline failed: {str(e)}")
+        traceback.print_exc()
+        return 1
+    finally:
+        # Redirect stderr to suppress the C++ cleanup messages
+        import sys, os
+        sys.stderr = open(os.devnull, 'w')

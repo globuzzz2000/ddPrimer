@@ -118,6 +118,7 @@ def parse_arguments():
     parser.add_argument('--config', help='Configuration file')
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
     # BLAST database creation
     parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
     parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
@@ -148,7 +149,7 @@ def parse_arguments():
         if not args.maf_file and not args.second_fasta:
             parser.error("Cross-species alignment requires either --maf-file or --second-fasta")
         if not args.maf_file and not args.fasta:
-            parser.error("Reference genome FASTA file (--fasta) is required")
+            parser.error("Reference genome FASTA (--fasta) is required for alignment")
         if args.second_fasta and not args.second_vcf:
             parser.error("Second species VCF file (--second-vcf) is required for variant filtering")
     
@@ -176,8 +177,16 @@ def run_pipeline():
     if args is not None and args.config:
         logger.debug(f"Loading custom configuration from {args.config}")
         Config.load_from_file(args.config)
+
+    # Apply nooligo setting if specified
+    if args is not None and args.nooligo:
+        logger.info("Internal oligo (probe) design is disabled")
+        # Modify both settings
+        Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
+        Config.DISABLE_INTERNAL_OLIGO = True
     
-    # Handle BLAST database creation (code remains the same)...
+    # Handle BLAST database creation if needed
+    # (code for this would remain here)
     
     logger.info("=== Primer Design Pipeline ===")
     
@@ -312,7 +321,6 @@ def run_pipeline():
             elif reference_file:
                 if args.maf_file:
                     # For MAF files, use the parent directory of the "Alignments" folder
-                    # This assumes your MAF file is in an "Alignments" directory
                     maf_dir = os.path.dirname(os.path.abspath(args.maf_file))
                     if os.path.basename(maf_dir) == "Alignments":
                         # If it's in an Alignments folder, go up one level
@@ -332,212 +340,25 @@ def run_pipeline():
             os.makedirs(output_dir, exist_ok=True)
             logger.debug(f"Created output directory: {output_dir}")
             
-            # Create temporary directory for intermediate files
-            temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
-            logger.debug(f"Created temporary directory: {temp_dir}")
+            # We'll create the temporary directory right before calling CrossSpeciesWorkflow
             
-            # ---------- IMPROVED CROSS-SPECIES WORKFLOW ----------
+            # ---------- USE CROSS-SPECIES WORKFLOW FUNCTION ----------
             
-            # Step 1: Handle MAF file (pre-computed or generate new one)
-            maf_file = args.maf_file
-            if not maf_file:
-                logger.info("\n>>> Running LastZ alignment between genomes <<<")
-
-                lastz_options = args.lastz_options
-                if "--format=maf" not in lastz_options and "-f maf" not in lastz_options:
-                    lastz_options += " --format=maf"
-                
-                alignment_dir = os.path.dirname(output_dir)
-                
-                # Run LastZ alignment
-                try:
-                    lastz_runner = LastZRunner()
-                    maf_file = lastz_runner.run_parallel_alignment(
-                        args.fasta,
-                        args.second_fasta,
-                        alignment_dir,  # Use parent directory for alignments
-                        lastz_options
-                    )
-                    logger.info(f"LastZ alignment completed: {maf_file}")
-                except Exception as e:
-                    logger.error(f"Error running LastZ alignment: {e}")
-                    logger.debug(traceback.format_exc())
-                    raise
-            
-            # Step 2: Parse MAF file and identify conserved regions
-            logger.info("\n>>> Parsing alignment and identifying conserved regions <<<")
+            # Call the CrossSpeciesWorkflow function to handle the cross-species primer design
+            logger.info("\n>>> Running Cross-Species Primer Design Workflow <<<")
             try:
-                # Initialize MAF parser
-                maf_parser = MAFParser()
+                # Create temporary directory for intermediate files if needed by the workflow
+                if not temp_dir:
+                    temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
+                    logger.debug(f"Created temporary directory: {temp_dir}")
                 
-                # First analyze the MAF file to understand its structure
-                maf_analysis = maf_parser.analyze_maf_file(maf_file)
-                logger.debug(f"MAF file contains {maf_analysis['alignment_count']} alignment blocks")
-                logger.debug(f"Reference sequences: {', '.join(maf_analysis['ref_seq_ids'][:5])}...")
-                logger.debug(f"Query sequences: {', '.join(maf_analysis['query_seq_ids'][:5])}...")
-                
-                # Parse MAF file
-                alignments = maf_parser.parse_maf_file(maf_file)
-                
-                # Identify conserved regions
-                conserved_regions = maf_parser.identify_conserved_regions(
-                    args.min_identity,
-                    args.min_length
-                )
-                
-                # Generate coordinate mapping between reference and query genomes
-                coordinate_map = maf_parser.generate_coordinate_map(conserved_regions)
-                logger.debug("Generated coordinate mapping between reference and second genome")
-                
-                total_regions = sum(len(regions) for regions in conserved_regions.values())
-                logger.info(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
+                masked_sequences, coordinate_map = CrossSpeciesWorkflow(args, output_dir, logger)
+                logger.info(f"Cross-species workflow completed with {len(masked_sequences)} masked sequences")
             except Exception as e:
-                logger.error(f"Error processing MAF file: {e}")
+                logger.error(f"Error in cross-species workflow: {e}")
                 logger.debug(traceback.format_exc())
                 raise
-            
-            # Step 3: Prepare for masking by getting variants from both species
-            ref_variants = {}
-            second_variants = {}
-            
-            # Get reference genome variants if VCF provided
-            if args.vcf:
-                logger.info("\n>>> Extracting variants from reference genome VCF <<<")
-                try:
-                    snp_processor = SNPMaskingProcessor()
-                    ref_variants = snp_processor.get_variant_positions(args.vcf)
-                    total_ref_variants = sum(len(positions) for positions in ref_variants.values())
-                    logger.info(f"Extracted {total_ref_variants} variants from reference genome")
-                except Exception as e:
-                    logger.error(f"Error extracting reference variants: {e}")
-                    logger.debug(traceback.format_exc())
-                    raise
-            
-            # Get second species variants if VCF provided
-            if args.second_vcf:
-                logger.info("\n>>> Extracting variants from second species VCF <<<")
-                try:
-                    snp_processor = SNPMaskingProcessor() if not 'snp_processor' in locals() else snp_processor
-                    second_variants = snp_processor.get_variant_positions(args.second_vcf)
-                    total_second_variants = sum(len(positions) for positions in second_variants.values())
-                    logger.info(f"Extracted {total_second_variants} variants from second species genome")
-                except Exception as e:
-                    logger.error(f"Error extracting second species variants: {e}")
-                    logger.debug(traceback.format_exc())
-                    raise
-            
-            # Step 4: Load or generate reference sequences
-            reference_sequences = {}
-            
-            # If we have a pre-computed MAF and don't need to run alignment
-            if not args.fasta:
-                # Generate reference sequences from the MAF file
-                logger.info("\n>>> Generating reference sequences from MAF file <<<")
-                try:
-                    reference_sequences = maf_parser.extract_reference_sequences_from_maf()
-                    logger.debug(f"Generated {len(reference_sequences)} reference sequences from MAF file")
-                    
-                    # Write to a temporary FASTA file for later use if needed
-                    temp_ref_fasta = os.path.join(temp_dir, "ref_from_maf.fasta")
-                    with open(temp_ref_fasta, 'w') as f:
-                        for seq_id, seq in reference_sequences.items():
-                            f.write(f">{seq_id}\n{seq}\n")
-                    
-                    logger.debug(f"Wrote reference sequences to temporary file: {temp_ref_fasta}")
-                    
-                except Exception as e:
-                    logger.error(f"Error generating reference sequences from MAF: {e}")
-                    logger.debug(traceback.format_exc())
-                    raise
-            else:
-                # Load reference sequences from provided FASTA
-                logger.info("\n>>> Loading reference sequences from FASTA file <<<")
-                try:
-                    reference_sequences = FileUtils.load_fasta(args.fasta)
-                    logger.debug(f"Loaded {len(reference_sequences)} sequences from reference FASTA")
-                except Exception as e:
-                    logger.error(f"Error loading reference FASTA: {e}")
-                    logger.debug(traceback.format_exc())
-                    raise
-            
-            # Step 5: Apply masking to the reference sequences
-            logger.info("\n>>> Creating masked genome with conserved regions and masked variants <<<")
-            
-            # First create a masked reference with only conserved regions - use temporary file
-            masked_fasta_path = os.path.join(temp_dir, "masked_reference.fasta")
-            try:
-                maf_parser.mask_non_conserved_regions(
-                    reference_sequences,
-                    masked_fasta_path,
-                    conserved_regions,
-                    args.min_identity
-                )
-                logger.debug(f"Created alignment-masked reference genome: {masked_fasta_path}")
-            except Exception as e:
-                logger.error(f"Error masking non-conserved regions: {e}")
-                logger.debug(traceback.format_exc())
-                raise
-            
-            # Load the alignment-masked sequences
-            alignment_masked_sequences = FileUtils.load_fasta(masked_fasta_path)
-            logger.debug(f"Loaded {len(alignment_masked_sequences)} alignment-masked sequences")
-            
-            # Map second species variants to reference coordinates
-            if second_variants:
-                logger.info("\n>>> Mapping second species variants to reference coordinates <<<")
-                try:
-                    mapped_second_variants = maf_parser.map_second_variants_to_reference(second_variants, coordinate_map)
-                    logger.debug(f"Mapped variants from second species to {len(mapped_second_variants)} reference chromosomes")
-                except Exception as e:
-                    logger.error(f"Error mapping second species variants: {e}")
-                    logger.debug(traceback.format_exc())
-                    mapped_second_variants = {}
-            else:
-                mapped_second_variants = {}
-            
-            # Now mask variants from both species
-            final_masked_sequences = {}
-            
-            logger.info("\n>>> Masking variants in conserved regions <<<")
-            # Process each sequence
-            for seq_id, sequence in alignment_masked_sequences.items():
-                # Get variants for reference genome
-                ref_seq_variants = ref_variants.get(seq_id, set())
                 
-                # Get mapped variants from second species
-                second_seq_variants = mapped_second_variants.get(seq_id, set())
-                
-                # Combine variants from both genomes
-                all_variants = ref_seq_variants.union(second_seq_variants)
-                logger.debug(f"Sequence {seq_id}: {len(ref_seq_variants)} reference variants, "
-                           f"{len(second_seq_variants)} mapped second species variants, "
-                           f"{len(all_variants)} total variants")
-                
-                # Mask all variants in the sequence
-                if all_variants:
-                    logger.debug(f"Masking {len(all_variants)} variants in {seq_id}...")
-                    try:
-                        variant_masked_seq = snp_processor.mask_variants(sequence, all_variants)
-                        final_masked_sequences[seq_id] = variant_masked_seq
-                    except Exception as e:
-                        logger.error(f"Error masking variants in {seq_id}: {e}")
-                        logger.debug(traceback.format_exc())
-                        raise
-                else:
-                    logger.debug(f"No variants to mask in {seq_id}")
-                    final_masked_sequences[seq_id] = sequence
-            
-            # Write final masked sequences to temporary file for debugging/verification
-            final_masked_path = os.path.join(temp_dir, "final_masked.fasta")
-            with open(final_masked_path, 'w') as f:
-                for seq_id, seq in final_masked_sequences.items():
-                    f.write(f">{seq_id}\n{seq}\n")
-            
-            logger.info(f"Created fully masked reference genome: {final_masked_path}")
-            
-            # Use the final masked sequences for primer design
-            masked_sequences = final_masked_sequences
-            
             # Set GFF file for downstream processing
             gff_file = args.gff
             
@@ -650,6 +471,8 @@ def run_pipeline():
                 else:
                     logger.debug(f"No variants to mask in {seq_id}")
                     masked_sequences[seq_id] = sequence
+        
+        # ----- COMMON PROCESSING FOR BOTH MODES AFTER MASKED SEQUENCES ARE GENERATED -----
         
         # Step 4: Load gene annotations
         logger.info("\nLoading gene annotations from GFF file...")
@@ -944,7 +767,7 @@ def run_pipeline():
             return None
         
         # Step 10: Map primer coordinates to second genome if cross-species alignment was performed
-        if args is not None and args.alignment and coordinate_map:
+        if cross_species_mode and coordinate_map:
             logger.debug("\nMapping primer coordinates to second genome...")
             
             # Add columns for second genome data
@@ -958,14 +781,18 @@ def run_pipeline():
                 # Handle the case where Location might not contain a dash
                 if "-" in str(row["Location"]):
                     parts = row["Location"].split("-")
-                    start_pos = parts[0]
+                    start_pos = int(parts[0])
                 else:
-                    start_pos = str(row["Location"])
+                    try:
+                        start_pos = int(row["Location"])
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid location format for index {idx}: {row['Location']}")
+                        continue
                 
                 if chrom in coordinate_map:
                     # Try to map forward primer position
                     try:
-                        for pos in range(int(start_pos), int(start_pos) + len(row["Primer F"])):
+                        for pos in range(start_pos, start_pos + len(row["Primer F"])):
                             if pos in coordinate_map[chrom]:
                                 mapping = coordinate_map[chrom][pos]
                                 df.at[idx, "Qry Chromosome"] = mapping["qry_src"]
@@ -996,15 +823,20 @@ def run_pipeline():
             # Create filename with both species names
             output_file = os.path.join(output_dir, f"Primers_{ref_fasta_name}_vs_{second_fasta_name}.xlsx")
         else:
-            fasta_name = os.path.splitext(os.path.basename(fasta_file))[0]
-            output_file = os.path.join(output_dir, f"Primers_{fasta_name}.xlsx")
+            # Make sure to handle the case where reference_file might be None
+            if reference_file:
+                fasta_name = os.path.splitext(os.path.basename(reference_file))[0]
+                output_file = os.path.join(output_dir, f"Primers_{fasta_name}.xlsx")
+            else:
+                # Use a generic name if reference_file is None
+                output_file = os.path.join(output_dir, "Primers_output.xlsx")
             
         logger.debug(f"Output file will be: {output_file}")
 
         # Extract gene names from sequence IDs
         logger.debug("Extracting gene names from sequence IDs")
         if "Sequence" in df.columns:
-            # Create a new "Gene" column with just the gene name using the function from AnnotationProcessor
+            # Create a new "Gene" column with just the gene name
             df["Gene"] = df["Sequence"].apply(AnnotationProcessor.extract_gene_name)
             # Remove the original "Sequence" column
             df = df.drop("Sequence", axis=1)
@@ -1017,7 +849,7 @@ def run_pipeline():
         ]
 
         # Add second genome columns if available
-        if args is not None and args.alignment and coordinate_map:
+        if cross_species_mode and coordinate_map:
             second_genome_cols = [
                 "Qry Chromosome", "Qry Location"
             ]
@@ -1048,36 +880,30 @@ def run_pipeline():
         try:
             output_path = FileUtils.save_formatted_excel(df, output_file, logger=logger)
             logger.info(f"Results saved to: {output_path}")
+            success = True
         except Exception as e:
             # Fallback if importing FileUtils fails for some reason
             logger.error(f"Error using FileUtils: {e}")
             logger.warning("Falling back to basic Excel export")
-            df.to_excel(output_file, index=False)
-            logger.info(f"Results saved to: {output_file} (without formatting)")
-
+            
+            try:
+                df.to_excel(output_file, index=False)
+                logger.info(f"Results saved to: {output_file} (without formatting)")
+                success = True
+            except Exception as ex:
+                logger.error(f"Failed to save results: {ex}")
+                success = False
+        
         try:
             if temp_dir and os.path.exists(temp_dir):
                 logger.debug(f"Cleaning up temporary directory: {temp_dir}")
                 shutil.rmtree(temp_dir)
         except Exception as e:
             logger.warning(f"Error cleaning up temporary files: {e}")
-
-        return output_path
-
+    
     except Exception as e:
-        logger.error(f"Pipeline failed: {str(e)}")
+        logger.error(f"Unhandled exception during pipeline execution: {e}")
         logger.debug(traceback.format_exc())
         raise
-
-
-
-if __name__ == "__main__":
-    try:
-        output_file = run_pipeline()
-        if output_file:
-            logger.info("\n=== Pipeline completed successfully ===")
-        else:
-            logger.info("\n=== Pipeline completed with no results ===")
-    except Exception as e:
-        logger.error(f"\n!!! Pipeline failed: {str(e)}")
-        traceback.print_exc()
+    
+    return success
