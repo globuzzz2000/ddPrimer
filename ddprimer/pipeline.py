@@ -29,6 +29,7 @@ from .config import Config
 from .utils import (
     FileUtils, 
     BlastDBCreator,
+    SequenceUtils
 )
 from .core import (
     SNPMaskingProcessor, 
@@ -106,7 +107,6 @@ def setup_logging(debug=False):
     
     return log_file
 
-
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
@@ -114,6 +114,7 @@ def parse_arguments():
     parser.add_argument('--fasta', help='Input FASTA file')
     parser.add_argument('--vcf', help='VCF file with variants')
     parser.add_argument('--gff', help='GFF annotation file')
+    parser.add_argument('--direct', nargs='?', const=True, help='CSV or Excel file with sequence name and sequence columns (shortcut mode)')
     parser.add_argument('--output', help='Output directory')
     parser.add_argument('--config', help='Configuration file')
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
@@ -143,6 +144,10 @@ def parse_arguments():
     
     args = parser.parse_args()
 
+    # Check for conflicting options
+    if args.direct and (args.fasta or args.vcf or args.gff or args.alignment):
+        parser.error("--direct cannot be used with --fasta, --vcf, --gff, or --alignment options")
+    
     if args.alignment and not (args.maf_file or args.second_fasta):
         pass
     elif args.alignment:
@@ -185,14 +190,16 @@ def run_pipeline():
         Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
         Config.DISABLE_INTERNAL_OLIGO = True
     
-    # Handle BLAST database creation if needed
-    # (code for this would remain here)
+    # Initialize the Primer3Processor early to avoid reference issues
+    primer3_processor = Primer3Processor(Config)
     
     logger.info("=== Primer Design Pipeline ===")
     
     try:
         # Check if cross-species alignment is enabled
         cross_species_mode = args is not None and args.alignment
+        # Check if direct mode is enabled
+        direct_sequence_mode = args is not None and args.direct
         
         # Track reference file for determining output directory
         reference_file = None
@@ -340,10 +347,6 @@ def run_pipeline():
             os.makedirs(output_dir, exist_ok=True)
             logger.debug(f"Created output directory: {output_dir}")
             
-            # We'll create the temporary directory right before calling CrossSpeciesWorkflow
-            
-            # ---------- USE CROSS-SPECIES WORKFLOW FUNCTION ----------
-            
             # Call the CrossSpeciesWorkflow function to handle the cross-species primer design
             logger.info("\n>>> Running Cross-Species Primer Design Workflow <<<")
             try:
@@ -361,6 +364,52 @@ def run_pipeline():
                 
             # Set GFF file for downstream processing
             gff_file = args.gff
+            
+        # ---------- DIRECT SEQUENCE MODE ----------
+        elif direct_sequence_mode:
+            logger.info("=== Direct Sequence Mode Enabled ===")
+            
+            # Get the input file - handle both when --direct is specified alone or with a file
+            if args.direct is True:  # --direct was used without a specified file
+                sequence_file = FileUtils.get_sequences_file()
+            else:  # --direct was used with a specified file
+                sequence_file = args.direct
+                
+            reference_file = sequence_file
+            logger.debug(f"Direct sequence file selection successful: {sequence_file}")
+            
+            # Now determine output directory based on reference file
+            if args.output:
+                output_dir = args.output
+            elif reference_file:
+                # Use the directory of the reference file
+                input_dir = os.path.dirname(os.path.abspath(reference_file))
+                output_dir = os.path.join(input_dir, "Primers")
+            else:
+                # Fallback to current directory if no reference file
+                output_dir = os.path.join(os.getcwd(), "Primers")
+            
+            # Create output directory
+            os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Created output directory: {output_dir}")
+            
+            # Create temporary directory for intermediate files
+            temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
+            logger.debug(f"Created temporary directory: {temp_dir}")
+            
+            # Load sequences directly from the provided file
+            logger.info("\nLoading sequences from input file...")
+            try:
+                masked_sequences = FileUtils.load_sequences_from_table(sequence_file)
+                logger.debug(f"Loaded {len(masked_sequences)} sequences from {sequence_file}")
+            except Exception as e:
+                logger.error(f"Error loading sequences from file: {e}")
+                logger.debug(traceback.format_exc())
+                raise
+            
+            # Create an empty genes dictionary since we don't have GFF
+            genes = {}
+            gff_file = None  # No GFF file in this mode
             
         # ---------- SINGLE SPECIES MODE ----------
         else:
@@ -474,59 +523,161 @@ def run_pipeline():
         
         # ----- COMMON PROCESSING FOR BOTH MODES AFTER MASKED SEQUENCES ARE GENERATED -----
         
-        # Step 4: Load gene annotations
-        logger.info("\nLoading gene annotations from GFF file...")
-        try:
-            genes = AnnotationProcessor.load_genes_from_gff(gff_file)
-            logger.debug(f"Gene annotations loaded successfully from {gff_file}")
-        except Exception as e:
-            logger.error(f"Error loading gene annotations: {e}")
-            logger.debug(traceback.format_exc())
-            raise
-        logger.info(f"Loaded {len(genes)} gene annotations")
-        
-        # Step 5: Filter sequences by restriction sites and gene overlap
+        # Step 1: Load gene annotations (skip in direct mode)
+        if not direct_sequence_mode:
+            logger.info("\nLoading gene annotations from GFF file...")
+            try:
+                genes = AnnotationProcessor.load_genes_from_gff(gff_file)
+                logger.debug(f"Gene annotations loaded successfully from {gff_file}")
+                logger.info(f"Loaded {len(genes)} gene annotations")
+            except Exception as e:
+                logger.error(f"Error loading gene annotations: {e}")
+                logger.debug(traceback.format_exc())
+                raise
+                
+        # Step 2: Filter sequences by restriction sites
         logger.info("\nFiltering sequences by restriction sites...")
         try:
             logger.debug(f"Using restriction site pattern: {Config.RESTRICTION_SITE}")
+            
+            # Log sequence stats before restriction site cutting
+            logger.debug(f"Sequences before restriction site cutting:")
+            for seq_id, seq in masked_sequences.items():
+                logger.debug(f"  {seq_id}: {len(seq)} bp")
+            
+            # Use the standard restriction site method for all modes
             restriction_fragments = SequenceProcessor.cut_at_restriction_sites(masked_sequences)
+            
+            # Log detailed information about restriction fragments
+            logger.debug("Restriction fragments after cutting:")
+            for fragment in restriction_fragments:
+                logger.debug(f"  {fragment['id']}: {len(fragment['sequence'])} bp, chr={fragment.get('chr', 'NA')}, "
+                            f"start={fragment.get('start', 'NA')}, end={fragment.get('end', 'NA')}")
+            
             logger.debug("Restriction site filtering completed successfully")
         except Exception as e:
             logger.error(f"Error in restriction site filtering: {e}")
             logger.debug(traceback.format_exc())
             raise
         logger.info(f"Generated {len(restriction_fragments)} fragments after restriction site cutting")
-        
-        logger.info("\nFiltering sequences by gene overlap...")
-        try:
-            logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
-            filtered_fragments = SequenceProcessor.filter_by_gene_overlap(restriction_fragments, genes)
-            logger.debug("Gene overlap filtering completed successfully")
-        except Exception as e:
-            logger.error(f"Error in gene overlap filtering: {e}")
-            logger.debug(traceback.format_exc())
-            raise
-        logger.info(f"Retained {len(filtered_fragments)} fragments after gene overlap filtering")
+
+        # Step 3: Filter by gene overlap (skip in direct mode)
+        if direct_sequence_mode:
+            logger.debug("Skipping gene overlap filtering in direct sequence mode")
+            
+            # Process fragments for direct mode, simplifying structure
+            simplified_fragments = []
+            for fragment in restriction_fragments:
+                # Extract the base sequence ID (without any fragment numbers)
+                base_id = fragment["id"].split("_frag")[0]
+                
+                # Create a simplified fragment with ONLY what we need
+                # Explicitly exclude location data for direct mode
+                simplified_fragment = {
+                    "id": fragment["id"],
+                    "sequence": fragment["sequence"],
+                    "Gene": base_id  # Explicitly set Gene to base_id for direct mode
+                }
+                simplified_fragments.append(simplified_fragment)
+            
+            filtered_fragments = simplified_fragments
+            logger.debug(f"Prepared {len(filtered_fragments)} fragments for direct mode")
+            
+            # Log fragment contents
+            logger.debug("Direct mode fragments after processing:")
+            for i, frag in enumerate(filtered_fragments):
+                if i < 5 or i >= len(filtered_fragments) - 5:  # Log first and last 5 fragments
+                    logger.debug(f"  {frag['id']}: Gene={frag['Gene']}, length={len(frag['sequence'])} bp")
+                elif i == 5 and len(filtered_fragments) > 10:
+                    logger.debug(f"  ... ({len(filtered_fragments) - 10} more fragments) ...")
+        else:
+            logger.info("\nFiltering sequences by gene overlap...")
+            try:
+                logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
+                filtered_fragments = SequenceProcessor.filter_by_gene_overlap(restriction_fragments, genes)
+                logger.debug("Gene overlap filtering completed successfully")
+            except Exception as e:
+                logger.error(f"Error in gene overlap filtering: {e}")
+                logger.debug(traceback.format_exc())
+                raise
+            logger.info(f"Retained {len(filtered_fragments)} fragments after gene overlap filtering")
         
         if not filtered_fragments:
             logger.warning("No valid fragments for primer design. Exiting.")
             return None
         
-        # Step 6: Design primers with Primer3
+        if direct_sequence_mode and Config.DEBUG_MODE:
+            logger.debug("\n=== DIRECT MODE DIAGNOSTIC INFO ===")
+            logger.debug(f"Number of input sequences: {len(masked_sequences)}")
+            logger.debug(f"Number of fragments after processing: {len(filtered_fragments)}")
+            
+            # Check which sequences changed during processing
+            changed_sequences = []
+            unchanged_sequences = []
+            
+            for fragment in filtered_fragments:
+                seq_id = fragment["id"]
+                if seq_id in masked_sequences:
+                    original_seq = masked_sequences[seq_id]
+                    current_seq = fragment["sequence"]
+                    
+                    if original_seq == current_seq:
+                        unchanged_sequences.append(seq_id)
+                    else:
+                        changed_sequences.append({
+                            "id": seq_id,
+                            "original_length": len(original_seq),
+                            "current_length": len(current_seq),
+                            "difference": len(original_seq) - len(current_seq)
+                        })
+                else:
+                    # This is a fragment derived from an original sequence
+                    logger.debug(f"Fragment {seq_id} is derived from an original sequence")
+            
+            if changed_sequences:
+                logger.debug("Sequences changed during processing:")
+                for info in changed_sequences:
+                    logger.debug(f"  {info['id']}: {info['original_length']} → {info['current_length']} (diff: {info['difference']})")
+            else:
+                logger.debug("All sequences preserved their original content")
+            
+            # Check specific Primer3 parameters to ensure they match between modes
+            logger.debug("\nPrimer3 Parameter Summary:")
+            key_params = ["PRIMER_PRODUCT_SIZE_RANGE", "PRIMER_MIN_SIZE", "PRIMER_OPT_SIZE", "PRIMER_MAX_SIZE", 
+                        "PRIMER_MIN_TM", "PRIMER_OPT_TM", "PRIMER_MAX_TM", "PRIMER_MIN_GC", "PRIMER_MAX_GC"]
+            
+            settings = primer3_processor.config.PRIMER3_SETTINGS
+            for param in key_params:
+                value = settings.get(param, "Not set")
+                logger.debug(f"  {param}: {value}")
+            
+            logger.debug("=== END DIAGNOSTIC INFO ===\n")
+
+        # Step 4: Design primers with Primer3
         logger.info("\nDesigning primers with Primer3...")
-        primer3_processor = Primer3Processor(Config)
 
         # Prepare input blocks for Primer3
         primer3_inputs = []
         fragment_info = {}  # Create a dictionary to store fragment information
 
+        # Log fragment information before Primer3 processing
+        logger.debug(f"Preparing {len(filtered_fragments)} fragments for Primer3...")
+
         for fragment in filtered_fragments:
-            # Store fragment information for later use
-            fragment_info[fragment["id"]] = {
-                "chr": fragment.get("chr", ""),
-                "start": fragment.get("start", 1),
-                "end": fragment.get("end", len(fragment["sequence"]))
-            }
+            # Store fragment information differently based on mode
+            if direct_sequence_mode:
+                # For direct mode, only store minimal information - explicitly exclude location
+                fragment_info[fragment["id"]] = {
+                    "gene": fragment.get("Gene", fragment["id"])
+                }
+            else:
+                # For regular mode, store location information
+                fragment_info[fragment["id"]] = {
+                    "chr": fragment.get("chr", ""),
+                    "start": fragment.get("start", 1),
+                    "end": fragment.get("end", len(fragment["sequence"])),
+                    "gene": fragment.get("Gene", fragment["id"].split("_")[-1])
+                }
             
             # Create primer3 input
             primer3_input = {
@@ -541,10 +692,27 @@ def run_pipeline():
                 primer3_input["SEQUENCE_TARGET"] = [target_start, target_len]
                 logger.debug(f"Added target region [{target_start}, {target_len}] for {fragment['id']}")
             
+            # Log detailed information for diagnostic purposes
+            if len(primer3_inputs) < 5:  # Only log the first 5 sequences to avoid overwhelming logs
+                logger.debug(f"Primer3 input for {fragment['id']}:")
+                logger.debug(f"  Sequence length: {len(fragment['sequence'])} bp")
+                logger.debug(f"  Sequence: {fragment['sequence'][:50]}...{fragment['sequence'][-50:] if len(fragment['sequence']) > 100 else ''}")
+                if direct_sequence_mode:
+                    logger.debug(f"  Gene name: {fragment.get('Gene', 'Not set')}")
+                else:
+                    logger.debug(f"  Location: chr={fragment.get('chr', 'NA')}, start={fragment.get('start', 'NA')}, end={fragment.get('end', 'NA')}")
+            
             primer3_inputs.append(primer3_input)
 
+        # Log a sample of the fragment_info dictionary
+        logger.debug("Fragment info sample (first 5 entries):")
+        sample_entries = list(fragment_info.items())[:5]
+        for frag_id, info in sample_entries:
+            logger.debug(f"  {frag_id}: {info}")
+
+        # Run primer3
         if not primer3_inputs:
-            logger.warning("No valid fragments for primer design after N filtering. Exiting.")
+            logger.warning("No valid fragments for primer design after filtering. Exiting.")
             return None
 
         logger.debug(f"Running Primer3 on {len(primer3_inputs)} fragments...")
@@ -554,16 +722,30 @@ def run_pipeline():
             
             # Use parallel processing with progress bar
             primer3_output = primer3_processor.run_primer3_batch_parallel(primer3_inputs)
+            logger.debug(f"Primer3 execution completed, processing results...")
             
             # Pass fragment_info to the parse method
             primer_results = primer3_processor.parse_primer3_batch(primer3_output, fragment_info)
-            logger.debug("Primer3 execution completed successfully")
+            logger.debug(f"Primer3 execution completed successfully, found {len(primer_results)} primer pairs")
+            
+            # Log a sample of the primer results
+            if primer_results and len(primer_results) > 0:
+                logger.debug("Primer results sample (first result):")
+                sample_result = primer_results[0]
+                for key, value in sample_result.items():
+                    if key in ["Primer F", "Primer R", "Amplicon", "Gene"]:
+                        logger.debug(f"  {key}: {value}")
+                
         except Exception as e:
             logger.error(f"Error running Primer3: {e}")
             logger.debug(traceback.format_exc())
             raise
+
+        if not primer_results or len(primer_results) == 0:
+            logger.warning("No primers were designed by Primer3. Exiting.")
+            return None
         
-        # Step 7: Filter primers
+        # Step 5: Filter primers
         logger.info("\nFiltering primers...")
         
         # Convert to DataFrame
@@ -595,7 +777,7 @@ def run_pipeline():
         
         # Filter by GC content
         try:
-            logger.debug(f"Filtering by GC content: Min={Config.PRIMER_MIN_GC}, Max={Config.PRIMER_MAX_GC}")
+            logger.debug(f"Filtering by GC content: Min={Config.SEQUENCE_MIN_GC}, Max={Config.SEQUENCE_MAX_GC}")
             df = PrimerProcessor.filter_by_gc_content(df)
             logger.debug("GC content filtering completed successfully")
         except Exception as e:
@@ -618,7 +800,7 @@ def run_pipeline():
             logger.warning("No primers passed filtering. Exiting.")
             return None
         
-        # Step 8: Run NUPACK for thermodynamics
+        # Step 6: Run NUPACK for thermodynamics
         logger.info("\nCalculating thermodynamic properties with NUPACK...")
         
         # Calculate deltaG for forward primers
@@ -683,7 +865,7 @@ def run_pipeline():
             logger.debug(traceback.format_exc())
             raise
         
-        # Step 9: Run BLAST for specificity
+        # Step 7: Run BLAST for specificity
         logger.info("\nRunning BLAST for specificity checking...")
         
         # Run BLAST for forward primers
@@ -766,7 +948,7 @@ def run_pipeline():
             logger.warning("No primers passed BLAST filtering. Exiting.")
             return None
         
-        # Step 10: Map primer coordinates to second genome if cross-species alignment was performed
+        # Step 8: Map primer coordinates to second genome if cross-species alignment was performed
         if cross_species_mode and coordinate_map:
             logger.debug("\nMapping primer coordinates to second genome...")
             
@@ -805,10 +987,58 @@ def run_pipeline():
             
             logger.debug(f"Successfully mapped {mapped_count}/{len(df)} primers to second genome")
         
-        # Step 11: Save results
+        # For direct mode, check if any sequences didn't get primers and add them to the results
+        if direct_sequence_mode:
+            logger.debug("Checking for sequences without primers...")
+            
+            # Get all sequence IDs that have primers
+            sequences_with_primers = set()
+            if "Gene" in df.columns:
+                # Get all sequence names from the Gene column that have valid primers
+                valid_primers_mask = df["Primer F"] != "No suitable primers found"
+                valid_genes = df.loc[valid_primers_mask, "Gene"].astype(str).unique()
+                sequences_with_primers.update(valid_genes)
+            
+            # Get all input sequence IDs
+            all_input_sequences = set(masked_sequences.keys())
+            
+            # Find sequences without primers
+            sequences_without_primers = all_input_sequences - sequences_with_primers
+            
+            logger.debug(f"All input sequences: {len(all_input_sequences)}")
+            logger.debug(f"Sequences with primers: {len(sequences_with_primers)}")
+            logger.debug(f"Sequences without primers: {len(sequences_without_primers)}")
+            
+            if sequences_without_primers:
+                logger.debug(f"Adding rows for {len(sequences_without_primers)} sequences without primers")
+                
+                # Create rows for sequences without primers
+                no_primer_rows = []
+                for seq_id in sequences_without_primers:
+                    # Create a row with only the necessary columns to avoid dtype issues
+                    row = {
+                        "Gene": seq_id,
+                        "Primer F": "No suitable primers found"
+                    }
+                    
+                    # Add the row to our list
+                    no_primer_rows.append(row)
+                
+                # Add these rows to the DataFrame
+                if no_primer_rows:
+                    # Create a new DataFrame with just the minimal set of columns
+                    no_primer_df = pd.DataFrame(no_primer_rows)
+                    
+                    # Concatenate with the original DataFrame
+                    # This avoids the FutureWarning by not including empty columns
+                    df = pd.concat([df, no_primer_df], ignore_index=True, sort=False)
+                    logger.debug(f"Added {len(no_primer_rows)} rows for sequences without primers")
+            
+        
+        # Step 9: Save results
         logger.debug("\nSaving results...")
 
-        # Create filename
+        # Create filename based on mode
         if cross_species_mode:
             if args.fasta:
                 ref_fasta_name = os.path.splitext(os.path.basename(args.fasta))[0]
@@ -822,59 +1052,69 @@ def run_pipeline():
             
             # Create filename with both species names
             output_file = os.path.join(output_dir, f"Primers_{ref_fasta_name}_vs_{second_fasta_name}.xlsx")
+        elif direct_sequence_mode:
+            # For direct sequence mode
+            input_file_name = os.path.splitext(os.path.basename(reference_file))[0]
+            output_file = os.path.join(output_dir, f"Primers_{input_file_name}.xlsx")
         else:
-            # Make sure to handle the case where reference_file might be None
+            # Standard mode
             if reference_file:
                 fasta_name = os.path.splitext(os.path.basename(reference_file))[0]
                 output_file = os.path.join(output_dir, f"Primers_{fasta_name}.xlsx")
             else:
                 # Use a generic name if reference_file is None
                 output_file = os.path.join(output_dir, "Primers_output.xlsx")
-            
+
         logger.debug(f"Output file will be: {output_file}")
 
-        # Extract gene names from sequence IDs
-        logger.debug("Extracting gene names from sequence IDs")
-        if "Sequence" in df.columns:
-            # Create a new "Gene" column with just the gene name
-            df["Gene"] = df["Sequence"].apply(AnnotationProcessor.extract_gene_name)
-            # Remove the original "Sequence" column
-            df = df.drop("Sequence", axis=1)
-
-        # Define column order
-        columns = [
-            "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST",
-            "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST",
-            "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG", "Chromosome", "Location",
+        # Define a base set of columns that should appear in all modes
+        base_columns = [
+            "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
+            "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
+            "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
         ]
 
-        # Add second genome columns if available
-        if cross_species_mode and coordinate_map:
-            second_genome_cols = [
-                "Qry Chromosome", "Qry Location"
-            ]
-            columns.extend(second_genome_cols)
-            logger.debug(f"Added second genome columns to output: {', '.join(second_genome_cols)}")
+        # Add location columns only if not in direct mode
+        if not direct_sequence_mode:
+            location_columns = ["Chromosome", "Location"]
+            for col in location_columns:
+                if col in df.columns:
+                    base_columns.append(col)
+
+            # Add cross-species columns if available
+            cross_species_cols = ["Qry Chromosome", "Qry Location"]
+            for col in cross_species_cols:
+                if col in df.columns and not df[col].isna().all():
+                    base_columns.append(col)
 
         # Add probe columns if present
         if "Probe" in df.columns:
             probe_cols = [
                 "Probe", "Probe Tm", "Probe Penalty", "Probe dG", 
-                "Probe BLAST"
+                "Probe BLAST1", "Probe BLAST2"
             ]
             # Insert probe columns after primer columns
-            idx = columns.index("Pair Penalty") + 1
+            idx = base_columns.index("Pair Penalty") + 1
             for col in reversed(probe_cols):
                 if col in df.columns:
-                    columns.insert(idx, col)
+                    base_columns.insert(idx, col)
             
-            logger.debug(f"Added probe columns to output: {', '.join(probe_cols)}")
+            logger.debug(f"Added probe columns to output: {', '.join([c for c in probe_cols if c in df.columns])}")
+
+        # For direct mode, explicitly remove any location columns that might have been added
+        if direct_sequence_mode:
+            columns = [col for col in base_columns if col not in ['Chromosome', 'Location', 'Qry Chromosome', 'Qry Location']]
+        else:
+            columns = base_columns
 
         # Ensure all columns in the list exist in the DataFrame
         columns = [col for col in columns if col in df.columns]
 
         # Reorder the columns
         df = df[columns]
+
+        # Debug the final column list
+        logger.debug(f"Final output columns: {', '.join(columns)}")
 
         # Save with formatting using the utility function
         try:
@@ -883,7 +1123,7 @@ def run_pipeline():
             success = True
         except Exception as e:
             # Fallback if importing FileUtils fails for some reason
-            logger.error(f"Error using FileUtils: {e}")
+            logger.error(f"Error saving Excel file: {e}")
             logger.warning("Falling back to basic Excel export")
             
             try:
@@ -894,6 +1134,7 @@ def run_pipeline():
                 logger.error(f"Failed to save results: {ex}")
                 success = False
         
+        # Cleanup temporary files
         try:
             if temp_dir and os.path.exists(temp_dir):
                 logger.debug(f"Cleaning up temporary directory: {temp_dir}")

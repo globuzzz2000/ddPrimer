@@ -37,7 +37,7 @@ class Config:
     PRIMER_PRODUCT_SIZE_RANGE = [[90, 200]]
     
     # Pipeline parameters
-    MIN_SEGMENT_LENGTH = 100
+    MIN_SEGMENT_LENGTH = PRIMER_PRODUCT_SIZE_RANGE[0][0]
     RETAIN_TYPES = "gene"  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
     FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
     COUNT_AMBIGUOUS_AS_MISMATCH = False
@@ -46,6 +46,8 @@ class Config:
     PENALTY_MAX = 5.0
     MAX_PRIMER_PAIRS_PER_SEGMENT = 3
     PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
+    SEQUENCE_MIN_GC = 50.0
+    SEQUENCE_MAX_GC = 60.0
     
     #############################################################################
     #                           Validation Options
@@ -62,7 +64,7 @@ class Config:
     DB_OUTPUT_DIR = None       # Custom output directory for the BLAST database
     DB_NAME = None             # Custom name for the BLAST database
     USE_CUSTOM_DB = False      # Whether to use a custom database or the default
-    DB_PATH = "/Library/Application Support/ddPrimer/Tair DB/TAIR10_db"
+    DB_PATH = "/Library/Application Support/Blast_DBs/Tair DB/TAIR10_db"
     
     # BLAST+ parameters
     BLAST_WORD_SIZE = 7
@@ -411,3 +413,4 @@ class Config:
         """
         if Config.DEBUG_MODE:
             print(f"[DEBUG] {message}")
+

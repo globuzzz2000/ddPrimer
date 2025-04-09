@@ -268,7 +268,7 @@ class Primer3Processor:
                         location = f"{abs_left_start}"
                     
                     rec = {
-                        "Sequence": current_id, 
+                        "Gene": frag_info.get("gene", current_id),
                         "Index": p["idx"],
                         "Template": sequence_template,
                         "Primer F": left_seq,

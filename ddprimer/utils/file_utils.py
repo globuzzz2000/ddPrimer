@@ -393,6 +393,9 @@ class FileUtils:
         
         # When openpyxl is available, apply full formatting
         try:
+            if not HAS_OPENPYXL:
+                raise ImportError("openpyxl is not available")
+                
             # Log actions if logger is provided
             if logger:
                 logger.debug(f"Saving formatted Excel file to: {output_file}")
@@ -408,8 +411,9 @@ class FileUtils:
             max_row = worksheet.max_row
             max_col = worksheet.max_column
             
-            # Freeze panes - freeze first column and first two rows
-            worksheet.freeze_panes = 'B3'
+            # Create a new row for our custom headers before doing anything else
+            worksheet.insert_rows(1)
+            max_row += 1
             
             # Create styles
             header_font = Font(bold=True)
@@ -419,174 +423,105 @@ class FileUtils:
                 fill_type='solid'
             )
             centered_alignment = Alignment(horizontal='center', vertical='center')
+            left_alignment = Alignment(horizontal='left', vertical='center')
             
-            # Apply column width
+            # Create a dictionary to map column names to their indices
+            column_map = {}
+            header_texts = []
+            
+            # First apply basic formatting to all cells before merging
             for col_num in range(1, max_col + 1):
                 col_letter = get_column_letter(col_num)
-                worksheet.column_dimensions[col_letter].width = 10.83
+                worksheet.column_dimensions[col_letter].width = 15  # Slightly wider columns
+                
+                # Set header row formatting in row 2 (original headers)
+                cell2 = worksheet.cell(row=2, column=col_num)
+                cell2.font = header_font
+                cell2.alignment = centered_alignment
+                
+
+                # Merge "Gene" header if applicable
+                if cell2.value == "Gene":
+                    cell1 = worksheet.cell(row=1, column=col_num)
+                    cell1.value = "Gene"
+                    cell1.font = header_font
+                    cell1.alignment = centered_alignment
+                    cell1.border = openpyxl.styles.borders.Border()
+                    worksheet.merge_cells(start_row=1, start_column=col_num, end_row=2, end_column=col_num)
+
+                # Get the header text and store it
+                header_text = cell2.value
+                header_texts.append(header_text)
+                column_map[header_text] = col_num
+                
+                # Format data cells
+                for row_num in range(3, max_row + 1):
+                    cell = worksheet.cell(row=row_num, column=col_num)
+                    
+                    # Apply sequence fill to Primer F, Primer R, Probe, and Amplicon columns
+                    if header_text in ["Primer F", "Primer R", "Probe", "Amplicon"]:
+                        cell.fill = sequence_fill
+                    
+                    # Special handling for "No suitable primers found" cells - left-align these
+                    if cell.value == "No suitable primers found":
+                        cell.alignment = left_alignment
+                    else:
+                        # Center alignment for all other cells
+                        cell.alignment = centered_alignment
             
-            # Apply row height
-            for row_num in range(1, max_row + 1):
-                worksheet.row_dimensions[row_num].height = 16
+            # Freeze panes - freeze first column and first two rows
+            worksheet.freeze_panes = 'B3'
             
-            # Identify column groupings for merging headers
-            column_groups = {
-                "Gene": None,  # No merging for Gene
-                "Primer F": ["Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST"],
-                "Primer R": ["Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST", "Pair Penalty"],
+            # Group the columns for our custom header row
+            header_groups = {
+                "Gene": [],
+                "Forward Primer": ["Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2"],
+                "Reverse Primer": ["Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2", "Pair Penalty"],
+                "Probe": ["Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST1", "Probe BLAST2"],
+                "Amplicon": ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG"],
+                "Location": ["Chromosome", "Location", "Qry Chromosome", "Qry Location"]
             }
             
-            # Add Probe group if present
-            if "Probe" in df.columns:
-                column_groups["Probe"] = ["Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST"]
-            
-            # Add Amplicon group with cross-species columns if present
-            amplicon_group = ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG", "Chromosome", "Location"]
-            
-            # Add cross-species columns to the Amplicon group if they exist
-            if "Qry Chromosome" in df.columns:
-                amplicon_group.append("Qry Chromosome")
-            if "Qry Location" in df.columns:
-                amplicon_group.append("Qry Location")
+            # Add the group headers safely by first checking if any columns from each group exist
+            for group_name, headers in header_groups.items():
+                # Filter to only include headers that actually exist in our DataFrame
+                existing_headers = [h for h in headers if h in header_texts]
                 
-            column_groups["Amplicon"] = amplicon_group
-            
-            # Prepare for header merging - get column indices
-            header_merges = []
-            gene_col = None
-            
-            # First, find the Gene column index
-            for col_idx, col_name in enumerate(df.columns, 1):
-                if col_name == "Gene":
-                    gene_col = col_idx
-                    break
-            
-            # If Gene column wasn't found, use the first column
-            if gene_col is None:
-                gene_col = 1
-            
-            # Now find column groups for merging
-            for main_header, subheaders in column_groups.items():
-                if subheaders:
-                    indices = [idx + 1 for idx, name in enumerate(df.columns) if name in subheaders]
-                    if indices:
-                        start_idx = min(indices)
-                        end_idx = max(indices)
-                        header_merges.append((start_idx, end_idx, main_header))
-            
-            # Insert a new row for main headers
-            worksheet.insert_rows(1)
-            max_row += 1
-            
-            # Add main headers BEFORE merging
-            for start_col, end_col, header_text in header_merges:
-                if start_col > 0 and end_col > 0 and start_col <= max_col and end_col <= max_col:
-                    # Add header text first
-                    cell = worksheet.cell(row=1, column=start_col)
-                    cell.value = header_text
-                    cell.font = header_font
-                    cell.alignment = centered_alignment
+                if not existing_headers:
+                    if logger:
+                        logger.debug(f"Skipping group '{group_name}' as none of its columns exist")
+                    continue
                     
-                    # Then merge cells
-                    merge_range = f"{get_column_letter(start_col)}1:{get_column_letter(end_col)}1"
-                    worksheet.merge_cells(merge_range)
-            
-            # Handle Gene header separately (merges vertically)
-            if gene_col is not None and gene_col <= max_col:
-                # Set value first
-                gene_cell = worksheet.cell(row=1, column=gene_col)
-                gene_cell.value = "Gene"  # Use explicit "Gene" text
-                gene_cell.font = header_font
-                gene_cell.alignment = centered_alignment
+                # Find column indices for existing headers
+                col_indices = [column_map[h] for h in existing_headers]
                 
-                # Then merge
-                gene_merge_range = f"{get_column_letter(gene_col)}1:{get_column_letter(gene_col)}2"
-                worksheet.merge_cells(gene_merge_range)
-            
-            # Apply bold to all header cells (row 2)
-            for col_num in range(1, max_col + 1):
-                cell = worksheet.cell(row=2, column=col_num)
-                cell.font = header_font
-                cell.alignment = centered_alignment
-                cell.border = None
-            
-            # Special formatting for sequence columns
-            sequence_cols = []
-            
-            # Identify sequence columns
-            for col_idx, col_name in enumerate(df.columns, 1):
-                # Apply sequence fill to Primer F, Primer R, Probe, and Amplicon columns
-                if col_name in ["Primer F", "Primer R", "Probe", "Amplicon"]:
-                    sequence_cols.append(col_idx)
-            
-            # Apply special formatting to sequence cells
-            for row_num in range(3, max_row + 1):  # Start from first data row
-                for col_idx in sequence_cols:
-                    if col_idx <= max_col:  # Ensure column exists
-                        cell = worksheet.cell(row=row_num, column=col_idx)
-                        cell.fill = sequence_fill
-
-            # Get column indices for Location and Qry Location
-            location_col_idx = None
-            qry_location_col_idx = None
-            
-            for col_idx, col_name in enumerate(df.columns, 1):
-                if col_name == "Location":
-                    location_col_idx = col_idx
-                elif col_name == "Qry Location":
-                    qry_location_col_idx = col_idx
-            
-            # Format Location columns as numbers (if they exist)
-            if location_col_idx:
-                for row_num in range(3, max_row + 1):
-                    cell = worksheet.cell(row=row_num, column=location_col_idx)
-                    if cell.value and isinstance(cell.value, str):
-                        # Handle ranges (e.g., "1000-2000")
-                        if "-" in cell.value:
-                            # Keep as text but ensure proper alignment
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-                        else:
-                            try:
-                                # Convert to number
-                                cell.value = int(cell.value)
-                                cell.number_format = '#,##0'
-                            except (ValueError, TypeError):
-                                # If conversion fails, keep as is
-                                pass
-            
-            # Format Qry Location column as number (if it exists)
-            if qry_location_col_idx:
-                for row_num in range(3, max_row + 1):
-                    cell = worksheet.cell(row=row_num, column=qry_location_col_idx)
-                    if cell.value and isinstance(cell.value, str):
-                        # Handle ranges (e.g., "1000-2000")
-                        if "-" in cell.value:
-                            # Keep as text but ensure proper alignment
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-                        else:
-                            try:
-                                # Convert to number
-                                cell.value = int(cell.value)
-                                cell.number_format = '#,##0'
-                            except (ValueError, TypeError):
-                                # If conversion fails, keep as is
-                                pass
-
-            # Center-align all non-header, non-merged cells
-            for row_num in range(3, max_row + 1):
-                for col_num in range(1, max_col + 1):
-                    cell = worksheet.cell(row=row_num, column=col_num)
-                    if not isinstance(cell, openpyxl.cell.cell.MergedCell):
-                        # Don't override number alignment for Location columns
-                        if (col_num != location_col_idx and col_num != qry_location_col_idx) or \
-                        not cell.value or not isinstance(cell.value, (int, float)):
-                            cell.alignment = centered_alignment
+                if col_indices:
+                    start_col = min(col_indices)
+                    end_col = max(col_indices)
+                    
+                    # Add the group header
+                    group_cell = worksheet.cell(row=1, column=start_col)
+                    group_cell.value = group_name
+                    group_cell.font = header_font
+                    group_cell.alignment = centered_alignment
+                    
+                    # Merge if there's more than one column
+                    if start_col != end_col:
+                        merge_range = f"{get_column_letter(start_col)}1:{get_column_letter(end_col)}1"
+                        try:
+                            worksheet.merge_cells(merge_range)
+                            if logger:
+                                logger.debug(f"Merged cells for group '{group_name}' ({merge_range})")
+                        except Exception as e:
+                            # If merge fails, just leave as individual cells
+                            if logger:
+                                logger.debug(f"Could not merge range {merge_range}: {e}")
             
             # Save the workbook
             workbook.save(output_file)
             
             return output_file
-            
+                
         except Exception as e:
             # If formatting fails, fall back to standard save
             if logger:
@@ -600,3 +535,90 @@ class FileUtils:
                 logger.info(f"Excel file saved to: {output_file} (without formatting)")
             
             return output_file
+
+        
+    @staticmethod
+    def load_sequences_from_table(file_path):
+        """
+        Load sequences from a CSV or Excel file.
+        
+        Args:
+            file_path (str): Path to CSV or Excel file
+            
+        Returns:
+            dict: Dictionary of sequence ID to sequence
+        """
+        import logging
+        logger = logging.getLogger("ddPrimer")
+        
+        logger.debug(f"Loading sequences from table file: {file_path}")
+        
+        # Determine file type
+        if file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+        elif file_path.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(file_path)
+        else:
+            raise ValueError(f"Unsupported file format: {file_path}. Must be CSV or Excel.")
+        
+        # Remove any empty columns
+        df = df.dropna(axis=1, how='all')
+        
+        # If no headers, use the first two columns directly
+        if df.columns.tolist() == [0, 1] or df.columns.tolist() == ['0', '1'] or df.columns.tolist() == [0, 1, 2]:
+            seq_name_col = df.columns[0]
+            seq_col = df.columns[1]
+        else:
+            # Try to find appropriate column names if headers exist
+            columns = df.columns.tolist()
+            seq_name_col = next((col for col in columns if col.lower() in 
+                            ['sequence name', 'sequence_name', 'name', 'id', 'seq_id', 'sequence id']), None)
+            seq_col = next((col for col in columns if col.lower() in 
+                        ['sequence', 'seq', 'dna', 'dna_sequence', 'nucleotide']), None)
+            
+            # If we can't find matching columns by name, use first two non-empty columns
+            if not seq_name_col or not seq_col:
+                non_empty_cols = [col for col in columns if not df[col].isna().all()]
+                if len(non_empty_cols) >= 2:
+                    seq_name_col = non_empty_cols[0]
+                    seq_col = non_empty_cols[1]
+                else:
+                    raise ValueError("Input file must have at least two columns with data")
+        
+        # Convert to dictionary
+        sequences = {}
+        for _, row in df.iterrows():
+            seq_id = str(row[seq_name_col]).strip()
+            sequence = str(row[seq_col]).strip().upper()
+            
+            # Skip empty rows
+            if pd.isna(seq_id) or pd.isna(sequence) or not seq_id or not sequence:
+                continue
+                
+            sequences[seq_id] = sequence
+        
+        logger.debug(f"Loaded {len(sequences)} sequences from table file")
+        return sequences
+
+    @staticmethod
+    def get_sequences_file():
+        """
+        Prompt the user to select a CSV or Excel file with sequences.
+        
+        Returns:
+            str: Path to the selected file
+        """
+        import logging
+        logger = logging.getLogger("ddPrimer")
+        
+        logger.info("\n>>> Please select CSV or Excel file with sequences <<<")
+        try:
+            return FileUtils.get_file(
+                "Select CSV or Excel file with sequences", 
+                [("CSV Files", "*.csv"), ("Excel Files", "*.xlsx"), ("Excel Files", "*.xls"), ("All Files", "*")]
+            )
+        except Exception as e:
+            logger.error(f"Error selecting direct sequence file: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            raise

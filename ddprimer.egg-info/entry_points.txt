@@ -1,0 +1,2 @@
+[console_scripts]
+ddprimer = ddprimer.pipeline:run_pipeline

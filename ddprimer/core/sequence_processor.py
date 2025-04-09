@@ -21,7 +21,7 @@ from ..utils.sequence_utils import SequenceUtils
 
 class SequenceProcessor:
     """Handles sequence processing and filtering operations."""
-    
+
     @staticmethod
     def cut_at_restriction_sites(sequences, restriction_site=None):
         """

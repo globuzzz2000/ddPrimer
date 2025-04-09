@@ -108,9 +108,9 @@ class PrimerProcessor:
             list: Filtered primer dictionaries
         """
         if min_gc is None:
-            min_gc = Config.PRIMER_MIN_GC
+            min_gc = Config.SEQUENCE_MIN_GC
         if max_gc is None:
-            max_gc = Config.PRIMER_MAX_GC
+            max_gc = Config.SEQUENCE_MAX_GC
         
         # Convert to DataFrame if not already
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
