@@ -747,16 +747,32 @@ def run_pipeline():
         
         # Step 5: Filter primers
         logger.info("\nFiltering primers...")
-        
+
         # Convert to DataFrame
         df = pd.DataFrame(primer_results)
         initial_count = len(df)
         logger.debug(f"Initial primer count: {initial_count}")
-        
+
+        # Add diagnostic logging for direct mode with debug
+        if direct_sequence_mode and Config.DEBUG_MODE:
+            for i, row in df.head(10).iterrows():  # Just log up to 10 primers for brevity
+                logger.debug(f"BEFORE FILTERING - Primer pair for {row.get('Gene', 'Unknown')}:")
+                logger.debug(f"  Forward: {row.get('Primer F', 'N/A')}")
+                logger.debug(f"  Reverse: {row.get('Primer R', 'N/A')}")
+                logger.debug(f"  Penalty: {row.get('Pair Penalty', 'N/A')}")
+
         # Filter by penalty
         try:
             logger.debug(f"Filtering by penalty with threshold: {Config.PENALTY_MAX}")
+            df_before = df.copy()
             df = PrimerProcessor.filter_by_penalty(df)
+            
+            # Log what was filtered for direct mode
+            if direct_sequence_mode and Config.DEBUG_MODE:
+                filtered_ids = set(df_before['Gene']) - set(df['Gene'])
+                if filtered_ids:
+                    logger.debug(f"Penalty filtering removed primers for: {', '.join(filtered_ids)}")
+            
             logger.debug("Penalty filtering completed successfully")
         except Exception as e:
             logger.error(f"Error in penalty filtering: {e}")

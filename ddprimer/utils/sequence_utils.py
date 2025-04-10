@@ -42,6 +42,32 @@ class SequenceUtils:
         return (gc_count / len(seq)) * 100 if seq else 0
     
     @staticmethod
+    def reverse_complement(seq):
+        """
+        Generate the reverse complement of a DNA sequence.
+        
+        Args:
+            seq (str): DNA sequence
+            
+        Returns:
+            str: Reverse complement sequence
+        """
+        if not seq or not isinstance(seq, str):
+            return ""
+        
+        seq = seq.upper()
+        
+        # Define the complement mapping
+        complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A',
+                     'N': 'N', 'R': 'Y', 'Y': 'R', 'S': 'S',
+                     'W': 'W', 'K': 'M', 'M': 'K', 'B': 'V',
+                     'D': 'H', 'H': 'D', 'V': 'B'}
+        
+        # Generate reverse complement
+        rev_comp = ''.join(complement.get(base, base) for base in reversed(seq))
+        return rev_comp
+    
+    @staticmethod
     def ensure_more_c_than_g(seq):
         """
         Check if a sequence has more Cs than Gs. If not, return the reverse complement.
@@ -63,10 +89,5 @@ class SequenceUtils:
             return seq, False  # No need to reverse
         
         # Need to reverse complement
-        complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A',
-                     'N': 'N', 'R': 'Y', 'Y': 'R', 'S': 'S',
-                     'W': 'W', 'K': 'M', 'M': 'K', 'B': 'V',
-                     'D': 'H', 'H': 'D', 'V': 'B'}
-        
-        rev_comp = ''.join(complement.get(base, base) for base in reversed(seq))
+        rev_comp = SequenceUtils.reverse_complement(seq)
         return rev_comp, True
