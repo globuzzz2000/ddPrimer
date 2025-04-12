@@ -6,15 +6,17 @@ Direct mode for ddPrimer pipeline.
 This module contains the implementation of the direct mode workflow:
 1. Load sequences directly from CSV or Excel files
 2. Run primer design on these sequences using the common pipeline
+3. Optionally check primers/probes for SNP overlaps with a reference genome
 """
 
 import os
 import logging
+import pandas as pd
 
 # Import package modules
 from ..config import Config
-from ..utils import FileUtils
-from . import common  # Import common module functions
+from ..utils import (FileUtils, SNPChecker)
+from . import common
 
 # Set up logging
 logger = logging.getLogger("ddPrimer")
@@ -53,6 +55,37 @@ def run(args):
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
         
+        # Check if SNP checking is enabled
+        snp_checker = None
+        if args.check_snps:
+            logger.info("\nSNP checking is enabled")
+            
+            # Get reference FASTA and VCF files
+            ref_fasta = args.fasta
+            ref_vcf = args.vcf
+            
+            # If not provided, prompt for them
+            if not ref_fasta:
+                ref_fasta = FileUtils.get_file("Select reference FASTA file", 
+                                              [("FASTA files", "*.fa *.fasta *.fna")])
+                if not ref_fasta:
+                    logger.warning("Reference FASTA file not provided. Disabling SNP checking.")
+                    args.check_snps = False
+            
+            if args.check_snps and not ref_vcf:
+                ref_vcf = FileUtils.get_file("Select VCF file with variants", 
+                                           [("VCF files", "*.vcf *.vcf.gz")])
+                if not ref_vcf:
+                    logger.warning("VCF file not provided. Disabling SNP checking.")
+                    args.check_snps = False
+            
+            if args.check_snps:
+                logger.info(f"Reference FASTA: {ref_fasta}")
+                logger.info(f"Reference VCF: {ref_vcf}")
+                
+                # Initialize SNP checker
+                snp_checker = SNPChecker(ref_fasta, ref_vcf)
+        
         # Load sequences directly from the provided file
         logger.info("\nLoading sequences from input file...")
         try:
@@ -87,7 +120,8 @@ def run(args):
             mode='direct',
             genes=None,
             coordinate_map=None,
-            gff_file=None
+            gff_file=None,
+            snp_checker=snp_checker
         )
         
         return success

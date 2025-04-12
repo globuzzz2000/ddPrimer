@@ -34,8 +34,8 @@ def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
 
-    parser.add_argument('--fasta', help='Input FASTA file')
-    parser.add_argument('--vcf', help='VCF file with variants')
+    parser.add_argument('--fasta', help='Input FASTA file (reference genome for SNP checking)')
+    parser.add_argument('--vcf', help='VCF file with variants (for SNP checking)')
     parser.add_argument('--gff', help='GFF annotation file')
     parser.add_argument('--direct', nargs='?', const=True, help='CSV or Excel file with sequence name and sequence columns (shortcut mode)')
     parser.add_argument('--output', help='Output directory')
@@ -43,11 +43,12 @@ def parse_arguments():
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
+    parser.add_argument('--check-snps', action='store_true', help='Enable SNP checking for primers/probes (requires --fasta and --vcf)')
     # BLAST database creation
     parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
     parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
     parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (optional)')
-
+    
     # Alignment mode options
     alignment_group = parser.add_argument_group("Alignment Options")
     alignment_group.add_argument("--alignment", action="store_true", 
@@ -64,12 +65,23 @@ def parse_arguments():
                             help="Minimum length of conserved regions (default: 20)")
     alignment_group.add_argument("--lastz-options", default="--format=maf",
                             help="Additional options for LastZ alignment")
+    alignment_group.add_argument("--no-snp-masking", action="store_true",
+                            help="Skip SNP masking step (no VCF files required)")
     
     args = parser.parse_args()
 
     # Check for conflicting options
-    if args.direct and (args.fasta or args.vcf or args.gff or args.alignment):
-        parser.error("--direct cannot be used with --fasta, --vcf, --gff, or --alignment options")
+    if args.direct and args.alignment:
+        parser.error("--direct cannot be used with --alignment")
+    
+    # Handle --check-snps requirements
+    if args.check_snps and args.cli:
+        if not args.fasta or not args.vcf:
+            parser.error("SNP checking (--check-snps) requires --fasta and --vcf")
+    
+    # Automatically enable --no-snp-masking when --check-snps is used in alignment mode
+    if args.check_snps and args.alignment:
+        args.no_snp_masking = True
     
     # Removed strict validation for alignment mode to allow interactive file selection
     # Only enforce validation in CLI mode
@@ -78,8 +90,10 @@ def parse_arguments():
             parser.error("Alignment mode requires either --maf-file or --second-fasta")
         if not args.maf_file and not args.fasta:
             parser.error("Reference genome FASTA (--fasta) is required for alignment")
-        if args.second_fasta and not args.second_vcf:
-            parser.error("Second species VCF file (--second-vcf) is required for variant filtering")
+        if not args.no_snp_masking:
+            # Only require VCF files if SNP masking is enabled
+            if args.second_fasta and not args.second_vcf:
+                parser.error("Second species VCF file (--second-vcf) is required for variant filtering")
     
     return args
 
