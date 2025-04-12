@@ -88,6 +88,6 @@ class SequenceUtils:
         if c_count >= g_count:
             return seq, False  # No need to reverse
         
-        # Need to reverse complement
+        # Need to reverse complement - set was_reversed to True
         rev_comp = SequenceUtils.reverse_complement(seq)
         return rev_comp, True

@@ -154,6 +154,36 @@ class FileUtils:
         except Exception as e:
             Config.debug(f"Error in fallback tkinter dialog: {e}")
             return None if not multiple else []
+        
+    
+    @classmethod
+    def check_and_create_output_dir(cls, directory, add_timestamp=False):
+        """
+        Check if output directory exists and create it if needed. 
+        Can also add timestamp to directory name.
+        
+        Args:
+            directory (str): Directory path
+            add_timestamp (bool): Whether to add timestamp to directory name
+            
+        Returns:
+            str: Final output directory path
+        """
+        import os
+        import datetime
+        
+        if add_timestamp:
+            # Add timestamp to directory name
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = f"{directory}{timestamp}"
+        else:
+            output_dir = directory
+        
+        # Create directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        return output_dir
+    
 
     @classmethod
     def get_file(cls, prompt, filetypes):
@@ -230,11 +260,10 @@ class FileUtils:
                 print(f"No file was selected in the dialog. Exiting.")
                 sys.exit(1)
             
-            # Update the last directory for next time
-            if os.path.isfile(file_path):
-                new_directory = os.path.dirname(file_path)
-                cls.save_last_directory(new_directory)
-                Config.debug(f"Updated last directory to: {new_directory}")
+            # Update the last directory for next time - THIS IS THE KEY LINE NEEDED FOR THE TEST
+            directory_path = os.path.dirname(file_path)
+            cls.save_last_directory(directory_path)
+            Config.debug(f"Updated last directory to: {directory_path}")
             
             print(f"File selected: {file_path}")
             return file_path

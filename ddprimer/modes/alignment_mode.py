@@ -205,7 +205,7 @@ def run(args):
                 masked_sequences=masked_sequences,
                 output_dir=output_dir,
                 reference_file=reference_file,
-                mode='alignment',  # Changed from 'maf' to 'alignment'
+                mode='alignment',
                 genes=genes,
                 coordinate_map=coordinate_map,
                 gff_file=args.gff,

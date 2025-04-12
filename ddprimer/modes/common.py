@@ -6,7 +6,7 @@ Common utilities for all primer design modes in the ddPrimer pipeline.
 This module contains functions shared between different pipeline modes:
 - Standard mode
 - Direct mode
-- MAF (cross-species) mode
+- Alignment mode
 """
 
 import os
@@ -36,9 +36,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         masked_sequences: Dictionary of masked sequences
         output_dir: Output directory path
         reference_file: Path to reference file (FASTA, CSV, MAF, etc.)
-        mode: Pipeline mode ('standard', 'direct', or 'maf')
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         genes: Gene annotations (optional, not used in direct mode)
-        coordinate_map: Coordinate mapping for cross-species mode (optional)
+        coordinate_map: Coordinate mapping for alignment mode (optional)
         gff_file: Path to GFF file (optional)
         temp_dir: Temporary directory (optional)
         
@@ -61,9 +61,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             filtered_fragments = process_direct_mode_fragments(restriction_fragments)
             logger.debug(f"Prepared {len(filtered_fragments)} fragments for direct mode")
         else:
-            # Filter by gene overlap for standard/maf modes
+            # Filter by gene overlap for standard/alignment modes
             if not genes:
-                logger.warning("Gene annotations not provided for standard/maf mode. Exiting.")
+                logger.warning("Gene annotations not provided for standard/alignment mode. Exiting.")
                 return False
                 
             logger.info("\nFiltering sequences by gene overlap...")
@@ -105,9 +105,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             logger.warning("No primers passed BLAST filtering. Exiting.")
             return False
         
-        # Step 7: Process cross-species coordinates if applicable
-        if mode == 'maf' and coordinate_map:
-            df = map_cross_species_coordinates(df, coordinate_map)
+        # Step 7: Process alignment coordinates if applicable
+        if mode == 'alignment' and coordinate_map:
+            df = map_alignment_coordinates(df, coordinate_map)
         
         # Step 8: Add rows for sequences without primers
         df = add_rows_for_sequences_without_primers(df, masked_sequences)
@@ -161,7 +161,7 @@ def run_primer3_design(fragments, mode='standard'):
     
     Args:
         fragments: List of sequence fragments
-        mode: Pipeline mode ('standard', 'direct', or 'maf')
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         
     Returns:
         list: Primer design results
@@ -197,9 +197,9 @@ def run_primer3_design(fragments, mode='standard'):
         return None
 
 
-def map_cross_species_coordinates(df, coordinate_map):
+def map_alignment_coordinates(df, coordinate_map):
     """
-    Map primer coordinates to the second genome for cross-species mode.
+    Map primer coordinates to the second genome for alignment mode.
     
     Args:
         df: DataFrame with primer results
@@ -291,7 +291,7 @@ def prepare_primer3_inputs(fragments, mode='standard'):
     
     Args:
         fragments: List of sequence fragments
-        mode: Pipeline mode ('standard', 'direct', or 'maf')
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         
     Returns:
         tuple: (primer3_inputs, fragment_info) - Lists of Primer3 input dicts and fragment info dict
@@ -307,7 +307,7 @@ def prepare_primer3_inputs(fragments, mode='standard'):
                 "gene": fragment.get("Gene", fragment["id"])
             }
         else:
-            # For standard/maf modes, store location information
+            # For standard/alignment modes, store location information
             fragment_info[fragment["id"]] = {
                 "chr": fragment.get("chr", ""),
                 "start": fragment.get("start", 1),
@@ -649,7 +649,7 @@ def save_results(df, output_dir, input_file, mode='standard'):
         df: DataFrame with primer results
         output_dir: Output directory
         input_file: Path to the input file (FASTA, CSV, etc.)
-        mode: Pipeline mode ('standard', 'direct', or 'maf')
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         
     Returns:
         str: Path to the output file
