@@ -1,7 +1,19 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Configuration module for the ddPrimer pipeline.
+"""
+
+import os
+import json
 from multiprocessing import cpu_count
+from typing import Dict, List, Union, Any, Optional
 
 class Config:
-    """Central configuration settings for the ddPrimer pipeline."""
+    """Central configuration settings for the ddPrimer pipeline with singleton pattern."""
+    
+    # Singleton instance
+    _instance = None
     
     #############################################################################
     #                           Pipeline Mode Options
@@ -37,7 +49,7 @@ class Config:
     PRIMER_PRODUCT_SIZE_RANGE = [[90, 200]]
     
     # Pipeline parameters
-    MIN_SEGMENT_LENGTH = PRIMER_PRODUCT_SIZE_RANGE[0][0]
+    MIN_SEGMENT_LENGTH = 90  # Match first entry in PRIMER_PRODUCT_SIZE_RANGE
     RETAIN_TYPES = "gene"  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
     FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
     COUNT_AMBIGUOUS_AS_MISMATCH = False
@@ -254,8 +266,28 @@ class Config:
         "PRIMER_WT_TM_LT": 1.0
     }
     
+    def __init__(self):
+        """Initialize Config instance with default values."""
+        # Implementation left empty as we're using class variables
+        pass
+    
     @classmethod
-    def get_primer3_global_args(cls):
+    def get_instance(cls) -> 'Config':
+        """
+        Get the singleton instance of Config.
+        
+        Returns:
+            Config: Singleton instance
+        """
+        if cls._instance is None:
+            cls._instance = cls()
+            # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
+            if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
+                cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
+        return cls._instance
+    
+    @classmethod
+    def get_primer3_global_args(cls) -> Dict[str, Any]:
         """
         Get global primer3 arguments as a dictionary.
         This combines the simplified settings with the complete settings.
@@ -288,7 +320,7 @@ class Config:
         return settings
     
     @classmethod
-    def format_settings_for_file(cls):
+    def format_settings_for_file(cls) -> str:
         """
         Format settings for writing to a primer3 settings file.
         
@@ -299,12 +331,75 @@ class Config:
         return "\n".join(f"{key}={value}" for key, value in settings.items()) + "\n"
     
     @classmethod
-    def load_from_file(cls, filepath):
+    def load_from_file(cls, filepath: str) -> bool:
         """
-        Load settings from a primer3 settings file.
+        Load settings from a configuration file.
+        Supports both Primer3 format and JSON format.
         
         Args:
-            filepath (str): Path to the settings file
+            filepath: Path to the settings file
+            
+        Returns:
+            bool: True if settings were loaded successfully
+        """
+        try:
+            # Initialize the singleton if not already done
+            cls.get_instance()
+            
+            # JSON configuration
+            if filepath.endswith('.json'):
+                return cls._load_from_json(filepath)
+            # Primer3 format (key=value)
+            else:
+                return cls._load_from_primer3_format(filepath)
+                
+        except Exception as e:
+            print(f"Error loading settings from {filepath}: {e}")
+            return False
+    
+    @classmethod
+    def _load_from_json(cls, filepath: str) -> bool:
+        """
+        Load settings from a JSON file.
+        
+        Args:
+            filepath: Path to the JSON file
+            
+        Returns:
+            bool: True if settings were loaded successfully
+        """
+        try:
+            with open(filepath, 'r') as f:
+                settings = json.load(f)
+            
+            # Update class attributes based on JSON
+            for key, value in settings.items():
+                if hasattr(cls, key):
+                    setattr(cls, key, value)
+                elif key in cls.PRIMER3_SETTINGS:
+                    cls.PRIMER3_SETTINGS[key] = value
+            
+            # Handle special case for PRIMER_PRODUCT_SIZE_RANGE
+            if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
+                value = settings["PRIMER_PRODUCT_SIZE_RANGE"]
+                if isinstance(value, list):
+                    cls.PRIMER_PRODUCT_SIZE_RANGE = value
+                    # Also update MIN_SEGMENT_LENGTH
+                    if value and value[0]:
+                        cls.MIN_SEGMENT_LENGTH = value[0][0]
+            
+            return True
+        except Exception as e:
+            print(f"Error loading JSON settings from {filepath}: {e}")
+            return False
+    
+    @classmethod
+    def _load_from_primer3_format(cls, filepath: str) -> bool:
+        """
+        Load settings from a Primer3 settings file (key=value format).
+        
+        Args:
+            filepath: Path to the Primer3 settings file
             
         Returns:
             bool: True if settings were loaded successfully
@@ -318,6 +413,8 @@ class Config:
             for line in settings_text.strip().split('\n'):
                 if '=' in line and not line.startswith('#'):
                     key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
                     
                     # Try to convert to appropriate type
                     if value.replace('.', '', 1).isdigit():
@@ -328,30 +425,27 @@ class Config:
                     elif value.lower() in ('true', 'false'):
                         value = value.lower() == 'true'
                         
-                    settings[key.strip()] = value
+                    settings[key] = value
             
             # Update settings
             cls.PRIMER3_SETTINGS.update(settings)
             
             # Update simplified settings if corresponding keys exist
-            if "PRIMER_MIN_SIZE" in settings:
-                cls.PRIMER_MIN_SIZE = settings["PRIMER_MIN_SIZE"]
-            if "PRIMER_OPT_SIZE" in settings:
-                cls.PRIMER_OPT_SIZE = settings["PRIMER_OPT_SIZE"]
-            if "PRIMER_MAX_SIZE" in settings:
-                cls.PRIMER_MAX_SIZE = settings["PRIMER_MAX_SIZE"]
-            if "PRIMER_MIN_TM" in settings:
-                cls.PRIMER_MIN_TM = settings["PRIMER_MIN_TM"]
-            if "PRIMER_OPT_TM" in settings:
-                cls.PRIMER_OPT_TM = settings["PRIMER_OPT_TM"]
-            if "PRIMER_MAX_TM" in settings:
-                cls.PRIMER_MAX_TM = settings["PRIMER_MAX_TM"]
-            if "PRIMER_MIN_GC" in settings:
-                cls.PRIMER_MIN_GC = settings["PRIMER_MIN_GC"]
-            if "PRIMER_MAX_GC" in settings:
-                cls.PRIMER_MAX_GC = settings["PRIMER_MAX_GC"]
-            if "PRIMER_NUM_RETURN" in settings:
-                cls.MAX_PRIMER_PAIRS_PER_SEGMENT = settings["PRIMER_NUM_RETURN"]
+            simplified_settings_map = {
+                "PRIMER_MIN_SIZE": "PRIMER_MIN_SIZE",
+                "PRIMER_OPT_SIZE": "PRIMER_OPT_SIZE",
+                "PRIMER_MAX_SIZE": "PRIMER_MAX_SIZE",
+                "PRIMER_MIN_TM": "PRIMER_MIN_TM",
+                "PRIMER_OPT_TM": "PRIMER_OPT_TM",
+                "PRIMER_MAX_TM": "PRIMER_MAX_TM",
+                "PRIMER_MIN_GC": "PRIMER_MIN_GC",
+                "PRIMER_MAX_GC": "PRIMER_MAX_GC",
+                "PRIMER_NUM_RETURN": "MAX_PRIMER_PAIRS_PER_SEGMENT",
+            }
+            
+            for primer3_key, config_attr in simplified_settings_map.items():
+                if primer3_key in settings:
+                    setattr(cls, config_attr, settings[primer3_key])
             
             # Handle product size range
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
@@ -364,33 +458,58 @@ class Config:
                             min_val, max_val = r.split('-')
                             ranges.append([int(min_val), int(max_val)])
                     cls.PRIMER_PRODUCT_SIZE_RANGE = ranges
+                    
+                    # Update MIN_SEGMENT_LENGTH
+                    if ranges and ranges[0]:
+                        cls.MIN_SEGMENT_LENGTH = ranges[0][0]
             
             # Handle BLAST database options
-            if "DB_FASTA" in settings:
-                cls.DB_FASTA = settings["DB_FASTA"]
-                cls.USE_CUSTOM_DB = True
+            blast_settings_map = {
+                "DB_FASTA": "DB_FASTA",
+                "DB_OUTPUT_DIR": "DB_OUTPUT_DIR",
+                "DB_NAME": "DB_NAME",
+                "DB_PATH": "DB_PATH"
+            }
             
-            if "DB_OUTPUT_DIR" in settings:
-                cls.DB_OUTPUT_DIR = settings["DB_OUTPUT_DIR"]
-                
-            if "DB_NAME" in settings:
-                cls.DB_NAME = settings["DB_NAME"]
-                
-            if "DB_PATH" in settings:
-                cls.DB_PATH = settings["DB_PATH"]
+            for setting_key, config_attr in blast_settings_map.items():
+                if setting_key in settings:
+                    setattr(cls, config_attr, settings[setting_key])
+                    if setting_key == "DB_FASTA":
+                        cls.USE_CUSTOM_DB = True
             
             return True
         except Exception as e:
-            print(f"Error loading settings from {filepath}: {e}")
+            print(f"Error loading Primer3 settings from {filepath}: {e}")
             return False
     
     @classmethod
-    def save_to_file(cls, filepath):
+    def save_to_file(cls, filepath: str, format_type: str = "primer3") -> bool:
         """
         Save current settings to a file.
         
         Args:
-            filepath (str): Path to save the settings
+            filepath: Path to save the settings
+            format_type: Format to use ("primer3" or "json")
+            
+        Returns:
+            bool: True if settings were saved successfully
+        """
+        try:
+            if format_type.lower() == "json":
+                return cls._save_to_json(filepath)
+            else:  # Default to primer3 format
+                return cls._save_to_primer3_format(filepath)
+        except Exception as e:
+            print(f"Error saving settings to {filepath}: {e}")
+            return False
+    
+    @classmethod
+    def _save_to_primer3_format(cls, filepath: str) -> bool:
+        """
+        Save settings in Primer3 format (key=value).
+        
+        Args:
+            filepath: Path to save the settings
             
         Returns:
             bool: True if settings were saved successfully
@@ -400,17 +519,65 @@ class Config:
                 f.write(cls.format_settings_for_file())
             return True
         except Exception as e:
-            print(f"Error saving settings to {filepath}: {e}")
+            print(f"Error saving Primer3 settings to {filepath}: {e}")
             return False
     
+    @classmethod
+    def _save_to_json(cls, filepath: str) -> bool:
+        """
+        Save settings in JSON format.
+        
+        Args:
+            filepath: Path to save the settings
+            
+        Returns:
+            bool: True if settings were saved successfully
+        """
+        try:
+            # Get all public class attributes (excluding methods, private attrs, etc.)
+            settings = {}
+            
+            # Add all class variables that don't start with underscore 
+            # and aren't methods or callables
+            for key in dir(cls):
+                if not key.startswith('_') and not callable(getattr(cls, key)):
+                    value = getattr(cls, key)
+                    # Only include serializable types
+                    if isinstance(value, (str, int, float, bool, list, dict, tuple)) or value is None:
+                        settings[key] = value
+            
+            with open(filepath, 'w') as f:
+                json.dump(settings, f, indent=4)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving JSON settings to {filepath}: {e}")
+            return False
+    
+    @classmethod
+    def get_all_settings(cls) -> Dict[str, Any]:
+        """
+        Get all settings as a dictionary.
+        
+        Returns:
+            dict: Dictionary of all settings
+        """
+        settings = {}
+        
+        # Add all class variables that don't start with underscore
+        for key in dir(cls):
+            if not key.startswith('_') and not callable(getattr(cls, key)):
+                settings[key] = getattr(cls, key)
+        
+        return settings
+    
     @staticmethod
-    def debug(message):
+    def debug(message: str) -> None:
         """
         Print debug messages if debug mode is enabled.
         
         Args:
-            message (str): The debug message to print
+            message: The debug message to print
         """
         if Config.DEBUG_MODE:
             print(f"[DEBUG] {message}")
-

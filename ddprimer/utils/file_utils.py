@@ -622,3 +622,177 @@ class FileUtils:
             import traceback
             logger.debug(traceback.format_exc())
             raise
+
+    @staticmethod
+    def save_results(df, output_dir, input_file, mode='standard', logger=None):
+        """
+        Save results to an Excel file.
+        
+        Args:
+            df: DataFrame with primer results
+            output_dir: Output directory
+            input_file: Path to the input file (FASTA, CSV, etc.)
+            mode: Pipeline mode ('standard', 'direct', or 'maf')
+            logger: Optional logger for debugging information
+            
+        Returns:
+            str: Path to the output file
+        """
+        if logger is None:
+            import logging
+            logger = logging.getLogger("ddPrimer")
+            
+        logger.debug("\nSaving results...")
+        
+        # Create filename based on mode and input file
+        input_file_name = os.path.splitext(os.path.basename(input_file))[0]
+        
+        if mode == 'maf':
+            # For cross-species mode, use both species names if available
+            if hasattr(input_file, 'second_fasta') and input_file.second_fasta:
+                second_name = os.path.splitext(os.path.basename(input_file.second_fasta))[0]
+                output_file = os.path.join(output_dir, f"Primers_{input_file_name}_vs_{second_name}.xlsx")
+            else:
+                output_file = os.path.join(output_dir, f"Primers_{input_file_name}_cross_species.xlsx")
+        else:
+            output_file = os.path.join(output_dir, f"Primers_{input_file_name}.xlsx")
+        
+        logger.debug(f"Output file will be: {output_file}")
+        
+        # Define columns based on mode
+        if mode == 'direct':
+            # Direct mode excludes location columns
+            columns = [
+                "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
+                "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
+                "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
+            ]
+        else:
+            # Standard and MAF modes include location columns
+            columns = [
+                "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
+                "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
+                "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG",
+                "Chromosome", "Location"
+            ]
+            
+            # Add cross-species specific columns for MAF mode
+            if mode == 'maf':
+                cross_species_cols = ["Qry Chromosome", "Qry Location"]
+                for col in cross_species_cols:
+                    if col in df.columns and not df[col].isna().all():
+                        columns.append(col)
+        
+        # Add probe columns if present
+        if "Probe" in df.columns:
+            probe_cols = [
+                "Probe", "Probe Tm", "Probe Penalty", "Probe dG", 
+                "Probe BLAST1", "Probe BLAST2"
+            ]
+            # Insert probe columns after primer columns
+            idx = columns.index("Pair Penalty") + 1
+            for col in reversed(probe_cols):
+                if col in df.columns:
+                    columns.insert(idx, col)
+            
+            logger.debug(f"Added probe columns to output: {', '.join([c for c in probe_cols if c in df.columns])}")
+        
+        # Ensure all columns in the list exist in the DataFrame
+        columns = [col for col in columns if col in df.columns]
+        
+        # Reorder the columns
+        df = df[columns]
+        
+        # Save with formatting
+        try:
+            output_path = FileUtils.save_formatted_excel(df, output_file, logger=logger)
+            logger.info(f"Results saved to: {output_path}")
+            return output_path
+        except Exception as e:
+            # Fallback if formatting fails
+            logger.error(f"Error saving Excel file: {e}")
+            logger.warning("Falling back to basic Excel export")
+            
+            try:
+                df.to_excel(output_file, index=False)
+                logger.info(f"Results saved to: {output_file} (without formatting)")
+                return output_file
+            except Exception as ex:
+                logger.error(f"Failed to save results: {ex}")
+                raise
+
+    @staticmethod
+    def setup_output_directories(args, reference_file=None, mode='standard'):
+        """
+        Set up output directory and temporary directory for the pipeline.
+        
+        Args:
+            args: Command line arguments
+            reference_file: Path to reference file
+            mode: Pipeline mode ('standard', 'direct', or 'maf')
+            
+        Returns:
+            tuple: (output_dir, temp_dir) - Paths to output and temporary directories
+        """
+        import logging
+        import tempfile
+        
+        logger = logging.getLogger("ddPrimer")
+        
+        # Determine output directory
+        if args.output:
+            output_dir = args.output
+        elif reference_file:
+            if mode == 'maf' and args.maf_file:
+                # For MAF files, use the parent directory of the "Alignments" folder
+                maf_dir = os.path.dirname(os.path.abspath(args.maf_file))
+                if os.path.basename(maf_dir) == "Alignments":
+                    # If it's in an Alignments folder, go up one level
+                    output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
+                else:
+                    # Otherwise use the parent directory of the MAF file
+                    output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
+            else:
+                # Use the directory of the reference file
+                input_dir = os.path.dirname(os.path.abspath(reference_file))
+                output_dir = os.path.join(input_dir, "Primers")
+        else:
+            # Fallback to current directory if no reference file
+            output_dir = os.path.join(os.getcwd(), "Primers")
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        logger.debug(f"Created output directory: {output_dir}")
+        
+        # Create temporary directory
+        temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
+        logger.debug(f"Created temporary directory: {temp_dir}")
+        
+        return output_dir, temp_dir
+
+    @staticmethod
+    def cleanup_temp_directory(temp_dir):
+        """
+        Clean up temporary directory safely.
+        
+        Args:
+            temp_dir: Path to temporary directory
+            
+        Returns:
+            bool: True if cleanup was successful, False otherwise
+        """
+        import logging
+        import shutil
+        
+        logger = logging.getLogger("ddPrimer")
+        
+        try:
+            if temp_dir and os.path.exists(temp_dir):
+                logger.debug(f"Cleaning up temporary directory: {temp_dir}")
+                shutil.rmtree(temp_dir)
+                return True
+        except Exception as e:
+            logger.warning(f"Error cleaning up temporary files: {e}")
+            return False
+        
+        return True

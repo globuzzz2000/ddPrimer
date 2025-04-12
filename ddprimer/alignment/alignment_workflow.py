@@ -1,4 +1,4 @@
-def CrossSpeciesWorkflow(args, output_dir, logger):
+def AlignmentWorkflow(args, output_dir, logger):
     """
     Run the cross-species primer design workflow with improved order of operations:
     1. Run alignment first (or use pre-computed MAF)
@@ -16,7 +16,8 @@ def CrossSpeciesWorkflow(args, output_dir, logger):
     """
     import os
     import traceback
-    from ..cross_species import LastZRunner, MAFParser
+    from .lastz_runner import LastZRunner
+    from .maf_parser import MAFParser  
     from ..utils import FileUtils
     from ..core import SNPMaskingProcessor
     from ..config import Config

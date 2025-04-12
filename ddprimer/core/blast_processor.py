@@ -190,32 +190,3 @@ class BlastProcessor:
         elapsed = time.time() - start_time
         Config.debug(f"Batch validation completed: {len(valid_sequences)}/{len(batch)} valid in {elapsed:.2f}s")
         return valid_sequences
-    
-    @classmethod
-    def process_blast_batch(cls, batch_data):
-        """
-        Process a batch of sequences for BLAST in parallel.
-        
-        Args:
-            batch_data (tuple): Tuple of (batch, col_name)
-            
-        Returns:
-            list: List of (best_evalue, second_best_evalue) tuples
-        """
-        
-        batch, col_name = batch_data
-        results = []
-        
-        if Config.SHOW_PROGRESS:
-            batch_iter = tqdm(batch, desc=f"BLASTing {col_name}")
-        else:
-            batch_iter = batch
-            
-        for seq in batch_iter:
-            if pd.notnull(seq):
-                blast1, blast2 = cls.blast_short_seq(seq)
-                results.append((blast1, blast2))
-            else:
-                results.append((None, None))
-        
-        return results
