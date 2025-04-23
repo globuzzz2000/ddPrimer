@@ -56,6 +56,7 @@ class SNPMaskingProcessor:
                     
                 variants[chrom].add(pos)
         
+        print(f"Extracted {sum(len(v) for v in variants.values())} variant positions from {len(variants)} chromosomes")
         return variants
     
     def extract_reference_sequences(self, fasta_file):
@@ -77,73 +78,155 @@ class SNPMaskingProcessor:
                 
         return sequences
     
-    def mask_variants(self, sequence, variant_positions, max_masked_ratio=0.05, 
-                      mask_padding=3, window_sliding_step=5, max_window_slide=100):
+    def mask_variants(self, sequence, variant_positions, mask_padding=3, min_region_length=100):
         """
-        Mask regions with variants by replacing them with 'N'.
-        Also mask surrounding bases to avoid primers that end right at a SNP.
+        Mask variants in the sequence and identify unmasked regions suitable for primer design.
         
         Args:
             sequence (str): Input DNA sequence
             variant_positions (set): Set of variant positions (1-based)
-            max_masked_ratio (float): Maximum allowed ratio of masked bases
             mask_padding (int): Number of bases to mask on each side of a variant
-            window_sliding_step (int): Step size for window sliding
-            max_window_slide (int): Maximum window slide distance
+            min_region_length (int): Minimum length required for an unmasked region
             
         Returns:
-            str: Masked sequence
+            str: Masked sequence with the best unmasked regions preserved
         """
         if not variant_positions:
+            print("No variants to mask, returning original sequence")
             return sequence
             
+        # Step 1: Create the masked sequence
         sequence_list = list(sequence)
+        total_length = len(sequence)
+        
+        # Track which positions are masked for variant visualization
+        masked_positions = set()
         
         # Mask variant positions with padding
-        for pos in variant_positions:
-            if pos < 1 or pos > len(sequence_list):
+        variant_pos_list = sorted(list(variant_positions))
+        variant_density = len(variant_pos_list) / total_length if total_length > 0 else 0
+        print(f"Processing {len(variant_pos_list)} variants (density: {variant_density:.4%})")
+        
+        if Config.SHOW_PROGRESS and len(variant_pos_list) > 1000:  # Only show progress for large sets
+            variant_iter = tqdm(variant_pos_list, desc="Masking variants")
+        else:
+            variant_iter = variant_pos_list
+            
+        for pos in variant_iter:
+            # Convert to 0-based for sequence indexing (variants are 1-based)
+            pos_0based = pos - 1
+            
+            if pos_0based < 0 or pos_0based >= len(sequence_list):
                 continue
                 
             # Apply padding - mask positions before and after the variant
-            start = max(0, pos - 1 - mask_padding)
-            end = min(len(sequence_list), pos + mask_padding)
+            start = max(0, pos_0based - mask_padding)
+            end = min(len(sequence_list), pos_0based + mask_padding + 1)
             
             for i in range(start, end):
                 sequence_list[i] = 'N'
+                masked_positions.add(i)
         
         masked_sequence = "".join(sequence_list)
+        masked_count = len(masked_positions)
+        masked_ratio = masked_count / total_length if total_length > 0 else 1.0
         
-        # Check if too much of the sequence is masked
-        masked_count = masked_sequence.count("N")
-        total_length = len(sequence)
-        masked_ratio = masked_count / total_length
+        print(f"Initial masking: {masked_count}/{total_length} bases ({masked_ratio:.2%})")
         
-        if masked_ratio > max_masked_ratio:
-            print(f"Too many masked bases ({masked_ratio:.2%}), attempting to slide search window...")
-            
-            # Identify regions with fewer masked bases by sliding windows
-            best_ratio = masked_ratio
-            best_sequence = masked_sequence
-            
-            for shift in range(window_sliding_step, max_window_slide, window_sliding_step):
-                # Try shifting the sequence to avoid excessive masking
-                shifted_sequence = masked_sequence[shift:] + masked_sequence[:shift]
-                shifted_ratio = shifted_sequence.count("N") / total_length
-                
-                if shifted_ratio < best_ratio:
-                    best_ratio = shifted_ratio
-                    best_sequence = shifted_sequence
-                    
-                    if best_ratio < max_masked_ratio:
-                        print(f"Sliding window successful with shift of {shift} bases. New mask ratio: {best_ratio:.2%}")
-                        break
-            
-            if best_ratio >= max_masked_ratio:
-                print(f"Sliding window reduced masking from {masked_ratio:.2%} to {best_ratio:.2%}, still above threshold.")
-            
-            return best_sequence
+        # Step 2: Identify contiguous unmasked regions
+        unmasked_regions = self.find_unmasked_regions(masked_sequence, min_length=min_region_length)
         
+        if not unmasked_regions:
+            print(f"No unmasked regions of length >= {min_region_length} found.")
+            # Try with smaller regions if none found with default size
+            smaller_regions = self.find_unmasked_regions(masked_sequence, min_length=50)
+            if smaller_regions:
+                print(f"Found {len(smaller_regions)} smaller unmasked regions (min length: 50)")
+                unmasked_regions = smaller_regions
+            else:
+                print("No usable unmasked regions found even with reduced length criteria.")
+                # Return sequence anyway for downstream handling
+                return masked_sequence
+        
+        # Sort regions by length (descending)
+        unmasked_regions.sort(key=lambda x: x[1] - x[0], reverse=True)
+        
+        print(f"Found {len(unmasked_regions)} unmasked regions, largest is {unmasked_regions[0][1] - unmasked_regions[0][0]} bp")
+        
+        # Step 3: Create an optimized sequence with only the best unmasked regions
+        # If we have at least one good region, create a new sequence with only that region unmasked
+        if unmasked_regions:
+            # Choose the best region (the longest one)
+            best_region = unmasked_regions[0]
+            
+            # Create a new sequence with everything masked except the best region
+            optimized_sequence_list = ['N'] * total_length
+            start, end = best_region
+            
+            # Copy the unmasked region
+            for i in range(start, end):
+                optimized_sequence_list[i] = sequence[i]
+            
+            # If we have multiple good regions, include the top few
+            max_regions_to_include = 3  # Include up to 3 good regions
+            for region in unmasked_regions[1:max_regions_to_include]:
+                if (region[1] - region[0]) >= min_region_length * 0.75:  # Only include reasonably sized regions
+                    region_start, region_end = region
+                    for i in range(region_start, region_end):
+                        optimized_sequence_list[i] = sequence[i]
+            
+            optimized_sequence = "".join(optimized_sequence_list)
+            
+            # Calculate what percentage of the sequence is now usable
+            usable_bases = sum(1 for c in optimized_sequence if c != 'N')
+            usable_ratio = usable_bases / total_length if total_length > 0 else 0
+            
+            print(f"Optimized sequence has {usable_bases}/{total_length} usable bases ({usable_ratio:.2%})")
+            
+            return optimized_sequence
+        
+        # If no good regions, return the original masked sequence
         return masked_sequence
+    
+    def find_unmasked_regions(self, sequence, min_length=100):
+        """
+        Find contiguous regions in the sequence that don't contain 'N's.
+        
+        Args:
+            sequence (str): Input sequence with masked positions (N's)
+            min_length (int): Minimum length for a region to be considered
+            
+        Returns:
+            list: List of tuples (start, end) for each unmasked region
+        """
+        regions = []
+        region_start = None
+        
+        for i, base in enumerate(sequence):
+            if base != 'N':
+                # Start a new region if we're not in one
+                if region_start is None:
+                    region_start = i
+            else:
+                # End the current region if we were in one
+                if region_start is not None:
+                    region_end = i
+                    region_length = region_end - region_start
+                    
+                    if region_length >= min_length:
+                        regions.append((region_start, region_end))
+                    
+                    region_start = None
+        
+        # Handle the case where the sequence ends with a valid region
+        if region_start is not None:
+            region_end = len(sequence)
+            region_length = region_end - region_start
+            
+            if region_length >= min_length:
+                regions.append((region_start, region_end))
+        
+        return regions
     
     def prepare_sequences_for_primer_design(self, sequences, variant_positions, min_length=100):
         """
@@ -172,17 +255,17 @@ class SNPMaskingProcessor:
             # Get variants for this sequence
             seq_variants = variant_positions.get(seq_id, set())
             
-            # Mask variants
-            masked_sequence = self.mask_variants(sequence, seq_variants)
+            # Mask variants and find optimal regions
+            masked_sequence = self.mask_variants(sequence, seq_variants, min_region_length=min_length)
             
-            # Find viable regions
-            viable_regions = self._find_viable_regions(masked_sequence, min_length)
+            # Find viable (unmasked) regions
+            viable_regions = self.find_unmasked_regions(masked_sequence, min_length)
             
             # Extract the actual sequences for the viable regions
             regions_with_sequences = []
             for start, end in viable_regions:
                 region_seq = masked_sequence[start:end]
-                # Only include regions without Ns (should not happen due to find_viable_regions)
+                # Verify no N's in the region (should be guaranteed by find_unmasked_regions)
                 if 'N' not in region_seq:
                     regions_with_sequences.append((start, end, region_seq))
             
@@ -193,83 +276,3 @@ class SNPMaskingProcessor:
                 print(f"No viable regions found for {seq_id}")
         
         return viable_regions_by_sequence
-    
-    def mask_variants(self, sequence, variant_positions, max_masked_ratio=0.05, 
-                      mask_padding=3, window_sliding_step=5, max_window_slide=100):
-        """
-        Mask regions with variants by replacing them with 'N'.
-        Also mask surrounding bases to avoid primers that end right at a SNP.
-        
-        Args:
-            sequence (str): Input DNA sequence
-            variant_positions (set): Set of variant positions (1-based)
-            max_masked_ratio (float): Maximum allowed ratio of masked bases
-            mask_padding (int): Number of bases to mask on each side of a variant
-            window_sliding_step (int): Step size for window sliding
-            max_window_slide (int): Maximum window slide distance
-            
-        Returns:
-            str: Masked sequence
-        """
-        if not variant_positions:
-            return sequence
-            
-        sequence_list = list(sequence)
-        
-        # Mask variant positions with padding
-        variant_pos_list = list(variant_positions)
-        if Config.SHOW_PROGRESS and len(variant_pos_list) > 1000:  # Only show progress for large sets
-            variant_iter = tqdm(variant_pos_list, desc="Masking variants")
-        else:
-            variant_iter = variant_pos_list
-            
-        for pos in variant_iter:
-            if pos < 1 or pos > len(sequence_list):
-                continue
-                
-            # Apply padding - mask positions before and after the variant
-            start = max(0, pos - 1 - mask_padding)
-            end = min(len(sequence_list), pos + mask_padding)
-            
-            for i in range(start, end):
-                sequence_list[i] = 'N'
-        
-        masked_sequence = "".join(sequence_list)
-        
-        # Check if too much of the sequence is masked
-        masked_count = masked_sequence.count("N")
-        total_length = len(sequence)
-        masked_ratio = masked_count / total_length
-        
-        if masked_ratio > max_masked_ratio:
-            print(f"Too many masked bases ({masked_ratio:.2%}), attempting to slide search window...")
-            
-            # Identify regions with fewer masked bases by sliding windows
-            best_ratio = masked_ratio
-            best_sequence = masked_sequence
-            
-            shift_range = range(window_sliding_step, max_window_slide, window_sliding_step)
-            if Config.SHOW_PROGRESS:
-                shift_iter = tqdm(shift_range, desc="Sliding window search")
-            else:
-                shift_iter = shift_range
-                
-            for shift in shift_iter:
-                # Try shifting the sequence to avoid excessive masking
-                shifted_sequence = masked_sequence[shift:] + masked_sequence[:shift]
-                shifted_ratio = shifted_sequence.count("N") / total_length
-                
-                if shifted_ratio < best_ratio:
-                    best_ratio = shifted_ratio
-                    best_sequence = shifted_sequence
-                    
-                    if best_ratio < max_masked_ratio:
-                        print(f"Sliding window successful with shift of {shift} bases. New mask ratio: {best_ratio:.2%}")
-                        break
-            
-            if best_ratio >= max_masked_ratio:
-                print(f"Sliding window reduced masking from {masked_ratio:.2%} to {best_ratio:.2%}, still above threshold.")
-            
-            return best_sequence
-        
-        return masked_sequence

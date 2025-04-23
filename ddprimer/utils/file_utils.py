@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-File handling utilities for ddPrimer pipeline.
+Fixed FileUtils class for ddPrimer pipeline.
+This addresses the file selection crash on macOS after selecting the first file.
 """
 
 import os
@@ -117,73 +118,53 @@ class FileUtils:
             except Exception as e:
                 Config.debug(f"Error saving last directory config: {e}")
 
-    @staticmethod
-    def _show_macos_file_dialog(prompt, filetypes, multiple=False):
-        """
-        Show a file dialog using tkinter (fallback for macOS).
-        
-        Args:
-            prompt (str): Title for the dialog
-            filetypes (list): List of file type tuples for the dialog
-            multiple (bool): Allow multiple file selection
-            
-        Returns:
-            str or list: Selected file path(s) or None if cancelled
-        """
-        try:
-            root = tk.Tk()
-            root.withdraw()
-
-            # Redirect stderr to suppress warnings
-            original_stderr = sys.stderr
-            sys.stderr = open(os.devnull, "w")
-
-            if multiple:
-                file_paths = filedialog.askopenfilenames(title=prompt, filetypes=filetypes, parent=root)
-            else:
-                file_paths = filedialog.askopenfilename(title=prompt, filetypes=filetypes, parent=root)
-
-            sys.stderr.close()
-            sys.stderr = original_stderr
-            root.destroy()
-
-            if not file_paths:
-                return None if not multiple else []
-
-            return file_paths
-        except Exception as e:
-            Config.debug(f"Error in fallback tkinter dialog: {e}")
-            return None if not multiple else []
-        
-    
     @classmethod
-    def check_and_create_output_dir(cls, directory, add_timestamp=False):
+    def normalize_filetypes(cls, filetypes):
         """
-        Check if output directory exists and create it if needed. 
-        Can also add timestamp to directory name.
+        Normalize file types for different platforms.
         
         Args:
-            directory (str): Directory path
-            add_timestamp (bool): Whether to add timestamp to directory name
+            filetypes (list): List of (description, extension) tuples
             
         Returns:
-            str: Final output directory path
+            list: Normalized file types list
         """
-        import os
-        import datetime
+        # Define "All Files" for different platforms
+        if cls.is_macos or platform.system() == "Linux":
+            all_files = ("All Files", "*")
+        else:  # Windows
+            all_files = ("All Files", "*.*")
+            
+        # Start with all files as a default
+        normalized = [all_files]
         
-        if add_timestamp:
-            # Add timestamp to directory name
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = f"{directory}{timestamp}"
-        else:
-            output_dir = directory
-        
-        # Create directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        
-        return output_dir
-    
+        # Add specific file types
+        if filetypes:
+            for desc, ext in filetypes:
+                if ext == "*" or ext == "*.*":
+                    continue  # Skip generic "all files" entries
+                
+                if cls.is_macos:
+                    # macOS: extension without wildcards (e.g., "txt" not "*.txt")
+                    clean_ext = ext.lstrip("*.")
+                    
+                    # Handle compound extensions for macOS
+                    if "." in clean_ext:
+                        # For compound extensions like vcf.gz, use just the last part
+                        base_ext = clean_ext.split(".")[-1]
+                        if base_ext:
+                            normalized.insert(0, (desc, base_ext))
+                    elif clean_ext:
+                        normalized.insert(0, (desc, clean_ext))
+                else:
+                    # Windows/Linux: ensure wildcard format (e.g., "*.txt")
+                    if not ext.startswith("*.") and ext != "*":
+                        clean_ext = f"*.{ext.lstrip('.')}"
+                    else:
+                        clean_ext = ext
+                    normalized.insert(0, (desc, clean_ext))
+                    
+        return normalized
 
     @classmethod
     def get_file(cls, prompt, filetypes):
@@ -222,17 +203,9 @@ class FileUtils:
             root = tk.Tk()
             root.withdraw()  # Hide the main window
             
-            # Let the window manager position the dialog
-            # This is more reliable than trying to position it ourselves
-            
-            # On macOS, we must use a simpler filetype pattern
-            valid_filetypes = [("All Files", "*")]
-            
-            # Add more specific filetypes if not on macOS or if they're simple enough
-            if not cls.is_macos:
-                for desc, ext in filetypes:
-                    if ext and isinstance(ext, str) and ext.strip() and ext != "*":
-                        valid_filetypes.insert(0, (desc, ext))
+            # Process file types for the current platform
+            valid_filetypes = cls.normalize_filetypes(filetypes)
+            Config.debug(f"Using file types: {valid_filetypes}")
             
             # Make sure dialog doesn't output errors to terminal
             original_stderr = sys.stderr
@@ -260,12 +233,12 @@ class FileUtils:
                 print(f"No file was selected in the dialog. Exiting.")
                 sys.exit(1)
             
-            # Update the last directory for next time - THIS IS THE KEY LINE NEEDED FOR THE TEST
+            # Update the last directory for next time
             directory_path = os.path.dirname(file_path)
             cls.save_last_directory(directory_path)
             Config.debug(f"Updated last directory to: {directory_path}")
             
-            print(f"File selected: {file_path}")
+            print(f"Selected file: {file_path}")
             return file_path
             
         except Exception as e:
@@ -311,17 +284,9 @@ class FileUtils:
             root = tk.Tk()
             root.withdraw()  # Hide the main window
             
-            # Let the window manager position the dialog
-            # This is more reliable than trying to position it ourselves
-            
-            # On macOS, we must use a simpler filetype pattern
-            valid_filetypes = [("All Files", "*")]
-            
-            # Add more specific filetypes if not on macOS or if they're simple enough
-            if not cls.is_macos:
-                for desc, ext in filetypes:
-                    if ext and isinstance(ext, str) and ext.strip() and ext != "*":
-                        valid_filetypes.insert(0, (desc, ext))
+            # Process file types for the current platform
+            valid_filetypes = cls.normalize_filetypes(filetypes)
+            Config.debug(f"Using file types: {valid_filetypes}")
             
             # Make sure dialog doesn't output errors to terminal
             original_stderr = sys.stderr
