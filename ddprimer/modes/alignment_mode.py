@@ -8,7 +8,6 @@ This module contains the implementation of the alignment mode workflow:
 2. Run LastZ alignment or use pre-computed MAF
 3. Process alignment and identify conserved regions
 4. Hand over to common pipeline for primer design
-5. Optionally check primers for SNP overlaps
 """
 
 import os
@@ -22,16 +21,6 @@ from ..utils import FileUtils
 from ..core import AnnotationProcessor
 from ..alignment import AlignmentWorkflow
 from . import common  # Import common module functions
-
-# Import SNPChecker
-try:
-    from ..utils import SNPChecker
-except ImportError:
-    try:
-        from ..utils.snp_checker import SNPChecker
-    except ImportError:
-        # If both imports fail, will handle this in the run function
-        SNPChecker = None
 
 # Set up logging
 logger = logging.getLogger("ddPrimer")
@@ -50,18 +39,11 @@ def run(args):
     logger.info("=== Alignment Mode Primer Design ===")
     
     try:
-        # Check if SNP masking is enabled (--snp flag)
-        snp_masking_enabled = args.snp if hasattr(args, 'snp') else False
-        
-        if snp_masking_enabled:
+        # Check if SNP masking is enabled
+        if args.snp:
             logger.info("\n>>> SNP masking is enabled <<<")
         else:
-            logger.debug("\n>>> SNP masking is disabled <<<")
-            
-        # For alignment mode, we also enable SNP checking if SNP masking is enabled
-        check_snps = snp_masking_enabled
-        if check_snps:
-            logger.info("\n>>> SNP checking for primers is enabled <<<")
+            logger.info("\n>>> SNP masking is disabled <<<")
         
         # Check and get required input files
         # Modified check for maf_file to handle the case when the flag is used without a value
@@ -83,7 +65,7 @@ def run(args):
             logger.info("\n>>> Using pre-computed MAF file <<<")
             reference_file = args.maf_file
             
-            if snp_masking_enabled:
+            if args.snp:
                 # Only require VCF files if SNP masking is enabled
                 if not args.vcf:
                     logger.info("\n>>> Please select REFERENCE species VCF file <<<")
@@ -137,7 +119,7 @@ def run(args):
             else:
                 reference_file = args.fasta
             
-            if snp_masking_enabled:
+            if args.snp:
                 # Only require VCF files if SNP masking is enabled
                 if not args.vcf:
                     logger.info("\n>>> Please select REFERENCE species VCF file <<<")
@@ -163,7 +145,7 @@ def run(args):
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
             
-            if snp_masking_enabled:
+            if args.snp:
                 # Only require VCF files if SNP masking is enabled
                 if not args.second_vcf:
                     logger.info("\n>>> Please select SECOND species VCF file <<<")
@@ -217,81 +199,11 @@ def run(args):
         temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
         logger.debug(f"Created temporary directory: {temp_dir}")
         
-        # Initialize SNP checker if needed
-        snp_checker = None
-        if check_snps:
-            # When checking SNPs in alignment mode, we need the reference FASTA and VCF
-            if not args.fasta:
-                logger.info("\n>>> Please select REFERENCE FASTA file for SNP checking <<<")
-                try:
-                    args.fasta = FileUtils.get_file(
-                        "Select reference FASTA file for SNP checking", 
-                        [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna"), ("All Files", "*")]
-                    )
-                except Exception as e:
-                    logger.error(f"Error selecting reference FASTA for SNP checking: {e}")
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    check_snps = False
-                
-            if check_snps and not args.vcf:
-                logger.info("\n>>> Please select VCF file for SNP checking <<<")
-                try:
-                    args.vcf = FileUtils.get_file(
-                        "Select VCF file for SNP checking", 
-                        [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*")]
-                    )
-                except Exception as e:
-                    logger.error(f"Error selecting VCF file for SNP checking: {e}")
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    check_snps = False
-            
-            # Initialize SNP checker if we have the necessary files
-            if check_snps and args.fasta and args.vcf:
-                logger.info(f"Initializing SNP checker with:")
-                logger.info(f"  Reference FASTA: {args.fasta}")
-                logger.info(f"  VCF file: {args.vcf}")
-                
-                try:
-                    # Check if SNPChecker was properly imported
-                    if SNPChecker is not None:
-                        snp_checker = SNPChecker(args.fasta, args.vcf)
-                    else:
-                        # Try a dynamic import as a last resort
-                        logger.warning("SNPChecker class not available. Attempting dynamic import...")
-                        import importlib.util
-                        import sys
-                        
-                        # Try to find the snp_checker.py file
-                        script_dir = os.path.dirname(os.path.abspath(__file__))
-                        parent_dir = os.path.dirname(script_dir)
-                        snp_checker_path = os.path.join(parent_dir, 'utils', 'snp_checker.py')
-                        
-                        if os.path.exists(snp_checker_path):
-                            # Load the module from the file path
-                            spec = importlib.util.spec_from_file_location("snp_checker", snp_checker_path)
-                            snp_checker_module = importlib.util.module_from_spec(spec)
-                            sys.modules["snp_checker"] = snp_checker_module
-                            spec.loader.exec_module(snp_checker_module)
-                            
-                            # Get the SNPChecker class and instantiate it
-                            SNPChecker = snp_checker_module.SNPChecker
-                            snp_checker = SNPChecker(args.fasta, args.vcf)
-                        else:
-                            logger.error(f"Cannot find SNPChecker module at {snp_checker_path}")
-                            logger.warning("SNP checking will be disabled.")
-                except Exception as e:
-                    logger.error(f"Error initializing SNP checker: {e}")
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    logger.warning("SNP checking will be disabled.")
-                    snp_checker = None
-        
         try:
             # Call the AlignmentWorkflow function to handle the alignment and masking
             logger.info("\n>>> Running Alignment Primer Design Workflow <<<")
             try:
-                # Set no_snp_masking based on the inverse of snp_masking_enabled
-                args.no_snp_masking = not snp_masking_enabled
-                
+                # Pass snp flag to AlignmentWorkflow
                 masked_sequences, coordinate_map = AlignmentWorkflow(args, output_dir, logger)
                 logger.debug(f"Alignment workflow completed with {len(masked_sequences)} masked sequences")
             except Exception as e:
@@ -342,7 +254,6 @@ def run(args):
                 coordinate_map=coordinate_map,
                 gff_file=args.gff,
                 temp_dir=temp_dir,
-                snp_checker=snp_checker,
                 second_fasta=second_fasta_path
             )
             

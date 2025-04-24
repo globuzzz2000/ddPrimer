@@ -3,7 +3,7 @@ def AlignmentWorkflow(args, output_dir, logger):
     Run the alignment primer design workflow with improved order of operations:
     1. Run alignment first (or use pre-computed MAF)
     2. Identify conserved regions
-    3. Apply SNP/indel masking from both genomes (optional)
+    3. Apply SNP/indel masking from both genomes (if --snp is enabled)
     4. Design primers on fully masked sequences
     
     Args:
@@ -109,7 +109,7 @@ def AlignmentWorkflow(args, output_dir, logger):
     second_variants = {}
     
     # Get reference genome variants if VCF provided and SNP masking is enabled
-    if not args.no_snp_masking and args.vcf:
+    if args.snp and args.vcf:
         logger.info("\n>>> Extracting variants from reference genome VCF <<<")
         try:
             ref_variants = snp_processor.get_variant_positions(args.vcf)
@@ -121,7 +121,7 @@ def AlignmentWorkflow(args, output_dir, logger):
             raise
 
     # Get second genome variants if VCF provided and SNP masking is enabled
-    if not args.no_snp_masking and args.second_vcf:
+    if args.snp and args.second_vcf:
         logger.info("\n>>> Extracting variants from second VCF <<<")
         try:
             second_variants = snp_processor.get_variant_positions(args.second_vcf)
@@ -193,8 +193,8 @@ def AlignmentWorkflow(args, output_dir, logger):
     logger.debug(f"Loaded {len(alignment_masked_sequences)} alignment-masked sequences")
 
     # Now mask variants from both genomes if SNP masking is enabled
-    if args.no_snp_masking:
-        logger.debug("\n>>> Skipping SNP masking as requested <<<")
+    if not args.snp:
+        logger.debug("\n>>> SNP masking is disabled <<<")
         # Use alignment-masked sequences directly without SNP masking
         final_masked_sequences = alignment_masked_sequences
     else:
@@ -266,7 +266,7 @@ def AlignmentWorkflow(args, output_dir, logger):
         for seq_id, seq in final_masked_sequences.items():
             f.write(f">{seq_id}\n{seq}\n")
 
-    if args.no_snp_masking:
+    if not args.snp:
         logger.debug(f"Created alignment-masked reference genome (no SNP masking): {final_masked_path}")
     else:
         logger.debug(f"Created fully masked reference genome (with SNP masking): {final_masked_path}")

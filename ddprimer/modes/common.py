@@ -29,7 +29,7 @@ logger = logging.getLogger("ddPrimer")
 
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
                               genes=None, coordinate_map=None, gff_file=None, temp_dir=None,
-                              snp_checker=None, second_fasta=None):
+                              second_fasta=None):
     """
     Unified primer design workflow for all modes.
     
@@ -42,7 +42,6 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         coordinate_map: Coordinate mapping for alignment mode (optional)
         gff_file: Path to GFF file (optional)
         temp_dir: Temporary directory (optional)
-        snp_checker: SNPChecker instance for SNP overlap checking (optional)
         second_fasta: Path to second FASTA file for alignment mode (optional)
         
     Returns:
@@ -108,33 +107,16 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             logger.warning("No primers passed BLAST filtering. Exiting.")
             return False
         
-        # Step 7: Check for SNP overlaps if applicable
-        if snp_checker is not None:
-            logger.info("\nChecking primers for SNP overlaps...")
-            
-            # Check primers/probes against reference genome and SNPs
-            df = snp_checker.check_primers_for_snps(df)
-            
-            # Filter primers/probes that overlap with SNPs
-            initial_count = len(df)
-            df = snp_checker.filter_by_snp_overlap(df)
-            
-            if df is None or len(df) == 0:
-                logger.warning("No primers passed SNP overlap filtering. Exiting.")
-                return False
-            
-            logger.info(f"After SNP filtering: {len(df)}/{initial_count} primers")
-        
-        # Step 8: Process alignment coordinates if applicable
+        # Step 7: Process alignment coordinates if applicable
         if mode == 'alignment' and coordinate_map:
             df = map_alignment_coordinates(df, coordinate_map)
         
-        # Step 9: Add rows for sequences without primers (only in direct mode)
+        # Step 8: Add rows for sequences without primers (only in direct mode)
         if mode == 'direct':
             df = add_rows_for_sequences_without_primers(df, masked_sequences)
             logger.debug("Added rows for sequences without primers (direct mode only)")
         
-        # Step 10: Save results to Excel file
+        # Step 9: Save results to Excel file
         from ..utils import FileUtils
         output_path = FileUtils.save_results(
             df, 

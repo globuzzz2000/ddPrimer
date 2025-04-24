@@ -76,7 +76,7 @@ class Config:
     DB_OUTPUT_DIR = None       # Custom output directory for the BLAST database
     DB_NAME = None             # Custom name for the BLAST database
     USE_CUSTOM_DB = False      # Whether to use a custom database or the default
-    DB_PATH = "/Library/Application Support/Blast_DBs/Tair DB/TAIR10_db"
+    DB_PATH = "/Library/Application Support/Blast_DBs/Tair DB/TAIR10"
     
     # BLAST+ parameters
     BLAST_WORD_SIZE = 7

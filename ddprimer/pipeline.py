@@ -34,8 +34,8 @@ def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
 
-    parser.add_argument('--fasta', help='Input FASTA file (reference genome for SNP checking)')
-    parser.add_argument('--vcf', help='VCF file with variants (for SNP checking)')
+    parser.add_argument('--fasta', help='Input FASTA file (reference genome)')
+    parser.add_argument('--vcf', help='VCF file with variants')
     parser.add_argument('--gff', help='GFF annotation file')
     parser.add_argument('--direct', nargs='?', const=True, help='CSV or Excel file with sequence name and sequence columns (shortcut mode)')
     parser.add_argument('--output', help='Output directory')
@@ -43,8 +43,7 @@ def parse_arguments():
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    parser.add_argument('--snp', action='store_true', 
-                      help='In alignment mode: enable SNP masking; In direct mode: enable SNP checking for primers')
+    parser.add_argument('--snp', action='store_true', help='Enable SNP masking in sequences (requires --fasta and --vcf)')
     # BLAST database creation
     parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
     parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
@@ -73,20 +72,21 @@ def parse_arguments():
     if args.direct and args.alignment:
         parser.error("--direct cannot be used with --alignment")
     
-    # Handle --snp requirements in CLI mode
+    # Handle --snp requirements
     if args.snp and args.cli:
         if not args.fasta or not args.vcf:
-            parser.error("SNP functionality (--snp) requires --fasta and --vcf")
+            parser.error("SNP masking (--snp) requires --fasta and --vcf")
     
-    # Validation for alignment mode (allow interactive file selection when not in CLI mode)
+    # Alignment mode validation (only in CLI mode)
     if args.cli and args.alignment:
         if not (args.maf_file or args.second_fasta):
             parser.error("Alignment mode requires either --maf-file or --second-fasta")
         if not args.maf_file and not args.fasta:
             parser.error("Reference genome FASTA (--fasta) is required for alignment")
-        if args.snp:  # Only require VCF files if SNP masking is enabled (via --snp)
+        if args.snp:
+            # Only require VCF files if SNP masking is enabled
             if args.second_fasta and not args.second_vcf:
-                parser.error("Second species VCF file (--second-vcf) is required for variant filtering with --snp")
+                parser.error("Second species VCF file (--second-vcf) is required for SNP masking")
     
     return args
 
@@ -150,6 +150,7 @@ def run_pipeline():
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
         
+        logger = logging.getLogger("ddPrimer")
         logger.debug("Starting pipeline execution")
         logger.debug(f"Arguments: {args}")
         logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
@@ -187,6 +188,28 @@ def run_pipeline():
             except Exception as e:
                 logger.error(f"Error creating BLAST database: {e}")
                 logger.debug(traceback.format_exc())
+                return False
+        
+        # Only verify BLAST database if we're not in direct mode or alignment mode with --snp flag
+        # Direct mode doesn't require LastZ, alignment mode only needs it if --snp is used
+        if not args.direct and not (args.alignment and not args.snp):
+            # Verify BLAST database is accessible
+            logger.info("Verifying BLAST database...")
+            from .utils import verify_blast_database
+            
+            if not verify_blast_database(logger):
+                logger.error("\n======================================")
+                logger.error("ERROR: BLAST database verification failed!")
+                logger.error("\nPossible solutions:")
+                logger.error("1. Rebuild the database with the makeblastdb command:")
+                logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
+                logger.error("\n2. Create a BLAST database directly with ddprimer:")
+                logger.error("   python -m ddprimer --dbfasta your_genome.fasta [--dbname custom_name] [--dboutdir output_dir]")
+                logger.error("\n3. Set a different database path in your configuration file:")
+                logger.error("   python -m ddprimer --config your_config.json")
+                logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
+                logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
+                logger.error("======================================")
                 return False
         
         logger.info("=== Primer Design Pipeline ===")

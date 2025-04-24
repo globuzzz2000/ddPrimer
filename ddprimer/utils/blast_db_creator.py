@@ -17,6 +17,21 @@ import shutil
 class BlastDBCreator:
     """Creates and manages BLAST databases from FASTA files."""
     
+    def create_database(self, fasta_file, db_name=None, output_dir=None, logger=None):
+        """
+        Compatibility method to match the call in pipeline.py.
+        
+        Args:
+            fasta_file (str): Path to the FASTA file
+            db_name (str, optional): Custom name for the database
+            output_dir (str, optional): Directory to store the database files
+            logger (logging.Logger, optional): Logger instance to use
+            
+        Returns:
+            str: Path to the created BLAST database
+        """
+        return self.create_db(fasta_file, output_dir, db_name, logger)
+    
     @staticmethod
     def create_db(fasta_file, output_dir=None, db_name=None, logger=None):
         """
@@ -37,6 +52,9 @@ class BlastDBCreator:
         
         logger.info(f"Creating BLAST database from {fasta_file}...")
         
+        # Handle path with spaces
+        fasta_file = os.path.abspath(os.path.expanduser(fasta_file))
+        
         # Verify the FASTA file exists
         if not os.path.exists(fasta_file):
             raise FileNotFoundError(f"FASTA file not found: {fasta_file}")
@@ -44,6 +62,9 @@ class BlastDBCreator:
         # Create output directory if needed
         if output_dir is None:
             output_dir = os.path.join(os.path.dirname(fasta_file), "blast_db")
+        
+        # Make sure output_dir is absolute path
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
         os.makedirs(output_dir, exist_ok=True)
         
         # Create a temporary working directory with a safe path
@@ -60,7 +81,7 @@ class BlastDBCreator:
         logger.debug(f"Database will be created at: {db_path}")
         
         try:
-            # Run makeblastdb command with proper escaping of paths with spaces
+            # Run makeblastdb command with proper escaping of paths
             cmd = [
                 "makeblastdb",
                 "-in", temp_fasta,
@@ -68,7 +89,9 @@ class BlastDBCreator:
                 "-out", temp_db_path
             ]
             
-            logger.debug(f"Running command: {cmd}")
+            # Log the command but with quotes for human readability
+            cmd_str = " ".join(shlex.quote(str(c)) for c in cmd)
+            logger.debug(f"Running command: {cmd_str}")
             
             result = subprocess.run(
                 cmd,
@@ -88,10 +111,14 @@ class BlastDBCreator:
                 raise Exception("BLAST database verification failed")
                 
             # Copy the resulting files to the target output location
-            for ext in ['.nhr', '.nin', '.nsq']:
-                src = temp_db_path + ext
-                dst = db_path + ext
-                shutil.copy2(src, dst)
+            db_files = [f for f in os.listdir(temp_dir) if f.startswith(safe_db_name) and f != safe_db_name]
+            for db_file in db_files:
+                src = os.path.join(temp_dir, db_file)
+                dst = os.path.join(output_dir, db_file)
+                if os.path.exists(src):
+                    shutil.copy2(src, dst)
+                else:
+                    logger.warning(f"Expected database file not found: {src}")
 
             # Clean up temp directory
             shutil.rmtree(temp_dir)
@@ -101,6 +128,11 @@ class BlastDBCreator:
         except Exception as e:
             logger.error(f"Failed to create BLAST database: {str(e)}")
             logger.debug(traceback.format_exc())
+            
+            # Clean up temp directory if it still exists
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+                
             raise
     
     @staticmethod
@@ -131,15 +163,19 @@ class BlastDBCreator:
             logger.warning(f"BLAST database at {db_path} is missing files: {', '.join(missing_files)}")
             return False
             
-        # Run blastdbcmd to verify the database
+        # Run blastdbcmd to verify the database - using the same approach as blast_processor
+        # by wrapping the path in quotes
         try:
+            quoted_db_path = f'"{db_path}"'
             cmd = [
                 "blastdbcmd",
                 "-db", db_path,
                 "-info"
             ]
             
-            logger.debug(f"Running verification command: {' '.join(shlex.quote(str(arg)) for arg in cmd)}")
+            # Log the command with quotes for human readability
+            cmd_str = " ".join(shlex.quote(str(c)) for c in cmd)
+            logger.debug(f"Running verification command: {cmd_str}")
             
             result = subprocess.run(
                 cmd,

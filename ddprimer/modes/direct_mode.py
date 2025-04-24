@@ -6,7 +6,7 @@ Direct mode for ddPrimer pipeline.
 This module contains the implementation of the direct mode workflow:
 1. Load sequences directly from CSV or Excel files
 2. Run primer design on these sequences using the common pipeline
-3. Optionally check primers/probes for SNP overlaps
+3. Optionally mask SNPs in sequences if --snp is enabled
 """
 
 import os
@@ -15,7 +15,8 @@ import pandas as pd
 
 # Import package modules
 from ..config import Config
-from ..utils import (FileUtils, SNPChecker)
+from ..utils import FileUtils
+from ..core import SNPMaskingProcessor
 from . import common
 
 # Set up logging
@@ -55,10 +56,9 @@ def run(args):
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
         
-        # Check if SNP functionality is enabled (in direct mode, --snp enables SNP checking)
-        snp_checker = None
+        # Check if SNP masking is enabled
         if args.snp:
-            logger.info("\n>>> SNP checking for primers is enabled <<<")
+            logger.info("\n>>> SNP masking is enabled <<<")
             
             # Get reference FASTA and VCF files
             ref_fasta = args.fasta
@@ -66,39 +66,89 @@ def run(args):
             
             # If not provided, prompt for them
             if not ref_fasta:
-                ref_fasta = FileUtils.get_file("Select reference FASTA file", 
-                                              [("FASTA files", "*.fa *.fasta *.fna")])
-                if not ref_fasta:
-                    logger.warning("Reference FASTA file not provided. Disabling SNP checking.")
+                logger.info("\n>>> Please select reference FASTA file <<<")
+                try:
+                    ref_fasta = FileUtils.get_file(
+                        "Select reference FASTA file", 
+                        [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna"), ("All Files", "*")]
+                    )
+                except Exception as e:
+                    logger.error(f"Error selecting reference FASTA file: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
                     args.snp = False
             
             if args.snp and not ref_vcf:
-                ref_vcf = FileUtils.get_file("Select VCF file with variants", 
-                                           [("VCF files", "*.vcf *.vcf.gz")])
-                if not ref_vcf:
-                    logger.warning("VCF file not provided. Disabling SNP checking.")
+                logger.info("\n>>> Please select VCF file with variants <<<")
+                try:
+                    ref_vcf = FileUtils.get_file(
+                        "Select VCF file with variants", 
+                        [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*")]
+                    )
+                except Exception as e:
+                    logger.error(f"Error selecting VCF file: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
                     args.snp = False
-            
-            if args.snp:
-                logger.info(f"Reference FASTA: {ref_fasta}")
-                logger.info(f"Reference VCF: {ref_vcf}")
-                
-                # Initialize SNP checker
-                snp_checker = SNPChecker(ref_fasta, ref_vcf)
+        else:
+            logger.info("\n>>> SNP masking is disabled <<<")
         
         # Load sequences directly from the provided file
         logger.info("\nLoading sequences from input file...")
         try:
-            masked_sequences = FileUtils.load_sequences_from_table(sequence_file)
-            logger.debug(f"Loaded {len(masked_sequences)} sequences from {sequence_file}")
+            sequences = FileUtils.load_sequences_from_table(sequence_file)
+            logger.debug(f"Loaded {len(sequences)} sequences from {sequence_file}")
         except Exception as e:
             logger.error(f"Error loading sequences from file: {e}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
         
-        if not masked_sequences:
+        if not sequences:
             logger.warning("No sequences found in the input file. Exiting.")
             return False
+        
+        # Apply SNP masking if enabled
+        masked_sequences = {}
+        if args.snp and ref_fasta and ref_vcf:
+            logger.info(f"\nMasking SNPs using reference FASTA and VCF...")
+            logger.info(f"Reference FASTA: {ref_fasta}")
+            logger.info(f"Reference VCF: {ref_vcf}")
+            
+            # Initialize SNP masking processor
+            snp_processor = SNPMaskingProcessor()
+            
+            try:
+                # Extract variants from VCF
+                variants = snp_processor.get_variant_positions(ref_vcf)
+                logger.debug(f"Extracted variants from VCF file")
+                
+                # Apply masking to each sequence
+                for seq_id, sequence in sequences.items():
+                    # For direct mode, we don't know the chromosome context,
+                    # so we'll use a simplified approach just for masking
+                    base_variants = set()
+                    for chrom_variants in variants.values():
+                        # For each position in any chromosome, check if it's within sequence length
+                        for pos in chrom_variants:
+                            if pos <= len(sequence):
+                                base_variants.add(pos)
+                    
+                    # Mask the sequence
+                    if base_variants:
+                        logger.debug(f"Masking variants in sequence {seq_id}")
+                        masked_sequence = snp_processor.mask_variants(sequence, base_variants)
+                        masked_sequences[seq_id] = masked_sequence
+                    else:
+                        logger.debug(f"No variants to mask in sequence {seq_id}")
+                        masked_sequences[seq_id] = sequence
+                
+                logger.info(f"SNP masking completed for {len(masked_sequences)} sequences")
+            except Exception as e:
+                logger.error(f"Error during SNP masking: {e}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.warning("Using original sequences without SNP masking")
+                masked_sequences = sequences
+        else:
+            # If SNP masking is disabled, use original sequences
+            masked_sequences = sequences
         
         # Debug logging for sequences
         if Config.DEBUG_MODE:
@@ -120,8 +170,7 @@ def run(args):
             mode='direct',
             genes=None,
             coordinate_map=None,
-            gff_file=None,
-            snp_checker=snp_checker
+            gff_file=None
         )
         
         return success
