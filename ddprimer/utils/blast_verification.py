@@ -102,7 +102,7 @@ def verify_blast_database(logger=None):
             # Analyze the result
             if result.returncode == 0:
                 # Even with no hits, a successful command should not have an error exit code
-                logger.info("BLAST database test command executed successfully")
+                logger.debug("BLAST database test command executed successfully")
                 
                 # Check if there were hits or just no matches in the database
                 if result.stdout.strip():
@@ -185,7 +185,7 @@ def _retry_verify_with_blastdbcmd(db_path, logger):
         )
         
         if result.returncode == 0:
-            logger.info("BLAST database verified with blastdbcmd")
+            logger.debug("BLAST database verified with blastdbcmd")
             return True
         else:
             logger.error(f"blastdbcmd verification failed: {result.stderr}")

@@ -44,10 +44,11 @@ def parse_arguments():
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
     parser.add_argument('--snp', action='store_true', help='Enable SNP masking in sequences (requires --fasta and --vcf)')
+    parser.add_argument('--noannotation', action='store_true', help='Disable gene annotation filtering in all modes')
     # BLAST database creation
-    parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
-    parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
-    parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (optional)')
+    parser.add_argument('--createdb', nargs='?', const=True, help='Create a BLAST database (optionally provide FASTA file path, or will prompt for one)')
+    parser.add_argument('--dbname', help='Custom name for the BLAST database (default: derived from filename)')
+    parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (default: "blast_db" in same directory as FASTA)')
     
     # Alignment mode options
     alignment_group = parser.add_argument_group("Alignment Options")
@@ -65,6 +66,8 @@ def parse_arguments():
                             help="Minimum length of conserved regions (default: 20)")
     alignment_group.add_argument("--lastz-options", default="--format=maf",
                             help="Additional options for LastZ alignment")
+    alignment_group.add_argument("--lastzonly", action="store_true", 
+                            help="Run only LastZ alignments (no primer design)")
     
     args = parser.parse_args()
 
@@ -173,12 +176,24 @@ def run_pipeline():
             Config.DISABLE_INTERNAL_OLIGO = True
         
         # Process BLAST database arguments
-        if args.dbfasta:
-            logger.info(f"Creating BLAST database from {args.dbfasta}")
+        if args.createdb:
+            logger.info("BLAST database creation requested")
             try:
                 blast_db_creator = BlastDBCreator()
+                fasta_file = args.createdb if isinstance(args.createdb, str) else None
+                
+                # If no FASTA file was provided, prompt for one
+                if not fasta_file:
+                    logger.info("No FASTA file provided, prompting for file selection")
+                    from .utils.file_utils import FileUtils
+                    fasta_file = FileUtils.get_file(
+                        "Select FASTA file for BLAST database creation",
+                        [("FASTA files", "*.fasta"), ("FASTA files", "*.fa"), ("All files", "*")]
+                    )
+                    
+                logger.info(f"Creating BLAST database from {fasta_file}")
                 db_path = blast_db_creator.create_database(
-                    args.dbfasta,
+                    fasta_file,
                     args.dbname,
                     args.dboutdir
                 )
@@ -190,27 +205,24 @@ def run_pipeline():
                 logger.debug(traceback.format_exc())
                 return False
         
-        # Only verify BLAST database if we're not in direct mode or alignment mode with --snp flag
-        # Direct mode doesn't require LastZ, alignment mode only needs it if --snp is used
-        if not args.direct and not (args.alignment and not args.snp):
-            # Verify BLAST database is accessible
-            logger.info("Verifying BLAST database...")
-            from .utils import verify_blast_database
-            
-            if not verify_blast_database(logger):
-                logger.error("\n======================================")
-                logger.error("ERROR: BLAST database verification failed!")
-                logger.error("\nPossible solutions:")
-                logger.error("1. Rebuild the database with the makeblastdb command:")
-                logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
-                logger.error("\n2. Create a BLAST database directly with ddprimer:")
-                logger.error("   python -m ddprimer --dbfasta your_genome.fasta [--dbname custom_name] [--dboutdir output_dir]")
-                logger.error("\n3. Set a different database path in your configuration file:")
-                logger.error("   python -m ddprimer --config your_config.json")
-                logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
-                logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
-                logger.error("======================================")
-                return False
+        # Verify BLAST database
+        logger.info("Verifying BLAST database...")
+        from .utils import verify_blast_database
+
+        if not verify_blast_database(logger):
+            logger.error("\n======================================")
+            logger.error("ERROR: BLAST database verification failed!")
+            logger.error("\nPossible solutions:")
+            logger.error("1. Rebuild the database with the makeblastdb command:")
+            logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
+            logger.error("\n2. Create a BLAST database directly with ddprimer:")
+            logger.error("   python -m ddprimer --createdb [path/to/your_genome.fasta] [--dbname custom_name] [--dboutdir output_dir]")
+            logger.error("\n3. Set a different database path in your configuration file:")
+            logger.error("   python -m ddprimer --config your_config.json")
+            logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
+            logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
+            logger.error("======================================")
+            return False
         
         logger.info("=== Primer Design Pipeline ===")
         

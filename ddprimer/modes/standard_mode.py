@@ -68,7 +68,7 @@ def run(args):
                 return False
         
         # GFF file selection
-        if not args.gff:
+        if not args.noannotation and not args.gff:
             logger.info("\n>>> Please select GFF annotation file <<<")
             try:
                 args.gff = FileUtils.get_file(
@@ -80,6 +80,10 @@ def run(args):
                 logger.error(f"Error selecting GFF file: {e}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 return False
+        elif args.noannotation:
+            logger.debug("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
+            # Set args.gff to None so it's consistent
+            args.gff = None
         
         # Set up output directory
         if args.output:
@@ -143,16 +147,20 @@ def run(args):
                 logger.debug(f"No variants to mask in {seq_id}")
                 masked_sequences[seq_id] = sequence
         
-        # Load gene annotations
-        logger.info("\nLoading gene annotations from GFF file...")
-        try:
-            genes = AnnotationProcessor.load_genes_from_gff(args.gff)
-            logger.debug(f"Gene annotations loaded successfully from {args.gff}")
-            logger.info(f"Loaded {len(genes)} gene annotations")
-        except Exception as e:
-            logger.error(f"Error loading gene annotations: {e}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return False
+        # Load gene annotations if needed
+        if not args.noannotation:
+            logger.info("\nLoading gene annotations from GFF file...")
+            try:
+                genes = AnnotationProcessor.load_genes_from_gff(args.gff)
+                logger.debug(f"Gene annotations loaded successfully from {args.gff}")
+                logger.info(f"Loaded {len(genes)} gene annotations")
+            except Exception as e:
+                logger.error(f"Error loading gene annotations: {e}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                return False
+        else:
+            logger.debug("\nSkipping gene annotation loading (--noannotation specified)")
+            genes = None  # Set to None when annotation filtering is disabled
             
         # Use the common workflow function to handle the rest of the pipeline
         success = common.run_primer_design_workflow(
@@ -162,7 +170,8 @@ def run(args):
             mode='standard',
             genes=genes,
             coordinate_map=None,
-            gff_file=args.gff
+            gff_file=args.gff,
+            skip_annotation_filtering=args.noannotation
         )
         
         return success

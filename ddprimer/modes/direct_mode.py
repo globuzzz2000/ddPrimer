@@ -170,7 +170,8 @@ def run(args):
             mode='direct',
             genes=None,
             coordinate_map=None,
-            gff_file=None
+            gff_file=None,
+            skip_annotation_filtering=args.noannotation
         )
         
         return success

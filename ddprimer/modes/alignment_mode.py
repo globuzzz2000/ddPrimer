@@ -91,7 +91,7 @@ def run(args):
                         logger.debug(f"Error details: {str(e)}", exc_info=True)
                         return False
             
-            if not args.gff:
+            if not args.noannotation and not args.gff:
                 logger.info("\n>>> Please select GFF annotation file <<<")
                 try:
                     args.gff = FileUtils.get_file(
@@ -102,6 +102,9 @@ def run(args):
                     logger.error(f"Error selecting GFF file: {e}")
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
+            elif args.noannotation:
+                logger.debug("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
+
         else:
             # Need all files for alignment workflow
             if not args.fasta:
@@ -215,16 +218,25 @@ def run(args):
                 logger.warning("No masked sequences were generated. Exiting.")
                 return False
             
-            # Load gene annotations
-            logger.info("\nLoading gene annotations from GFF file...")
-            try:
-                genes = AnnotationProcessor.load_genes_from_gff(args.gff)
-                logger.debug(f"Gene annotations loaded successfully from {args.gff}")
-                logger.info(f"Loaded {len(genes)} gene annotations")
-            except Exception as e:
-                logger.error(f"Error loading gene annotations: {e}")
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
-                return False
+            # Check if we should exit after LastZ alignment (lastzonly flag)
+            if args.lastzonly:
+                logger.info("\n>>> LastZ alignment completed. Exiting because --lastzonly flag was used <<<")
+                return True
+            
+            # Load gene annotations if needed
+            if not args.noannotation:
+                logger.info("\nLoading gene annotations from GFF file...")
+                try:
+                    genes = AnnotationProcessor.load_genes_from_gff(args.gff)
+                    logger.debug(f"Gene annotations loaded successfully from {args.gff}")
+                    logger.info(f"Loaded {len(genes)} gene annotations")
+                except Exception as e:
+                    logger.error(f"Error loading gene annotations: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    return False
+            else:
+                logger.debug("\nSkipping gene annotation loading (--noannotation specified)")
+                genes = None  # Set to None when annotation filtering is disabled
             
             # Before running primer design workflow, make sure we have the correct reference paths
             if args.maf_file:
@@ -254,7 +266,8 @@ def run(args):
                 coordinate_map=coordinate_map,
                 gff_file=args.gff,
                 temp_dir=temp_dir,
-                second_fasta=second_fasta_path
+                second_fasta=second_fasta_path,
+                skip_annotation_filtering=args.noannotation
             )
             
             return success

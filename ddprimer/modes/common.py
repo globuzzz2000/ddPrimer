@@ -29,7 +29,7 @@ logger = logging.getLogger("ddPrimer")
 
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
                               genes=None, coordinate_map=None, gff_file=None, temp_dir=None,
-                              second_fasta=None):
+                              second_fasta=None, skip_annotation_filtering=False):
     """
     Unified primer design workflow for all modes.
     
@@ -43,6 +43,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         gff_file: Path to GFF file (optional)
         temp_dir: Temporary directory (optional)
         second_fasta: Path to second FASTA file for alignment mode (optional)
+        skip_annotation_filtering: Skip gene annotation filtering (optional)
         
     Returns:
         bool: Success or failure
@@ -58,16 +59,18 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             return False
         
         # Step 2: Filter fragments based on mode
-        if mode == 'direct':
-            # Process fragments for direct mode, simplifying structure
+        if mode == 'direct' or skip_annotation_filtering:
+            # Process fragments for direct mode or when skipping annotation filtering
             filtered_fragments = process_direct_mode_fragments(restriction_fragments)
-            logger.debug(f"Prepared {len(filtered_fragments)} fragments for direct mode")
+            if skip_annotation_filtering and mode != 'direct':
+                logger.debug("Skipping gene annotation filtering as requested")
+            logger.debug(f"Prepared {len(filtered_fragments)} fragments for processing")
         else:
             # Filter by gene overlap for standard/alignment modes
             if not genes:
                 logger.warning("Gene annotations not provided for standard/alignment mode. Exiting.")
                 return False
-                
+                    
             logger.info("\nFiltering sequences by gene overlap...")
             try:
                 logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
@@ -78,10 +81,6 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
                 logger.debug(e, exc_info=True)
                 return False
             logger.info(f"Retained {len(filtered_fragments)} fragments after gene overlap filtering")
-        
-        if not filtered_fragments:
-            logger.warning("No valid fragments for primer design after filtering. Exiting.")
-            return False
         
         # Step 3: Design primers with Primer3
         primer_results = run_primer3_design(filtered_fragments, mode)
