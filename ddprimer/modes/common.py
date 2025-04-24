@@ -29,7 +29,7 @@ logger = logging.getLogger("ddPrimer")
 
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
                               genes=None, coordinate_map=None, gff_file=None, temp_dir=None,
-                              snp_checker=None):
+                              snp_checker=None, second_fasta=None):
     """
     Unified primer design workflow for all modes.
     
@@ -43,6 +43,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         gff_file: Path to GFF file (optional)
         temp_dir: Temporary directory (optional)
         snp_checker: SNPChecker instance for SNP overlap checking (optional)
+        second_fasta: Path to second FASTA file for alignment mode (optional)
         
     Returns:
         bool: Success or failure
@@ -128,11 +129,21 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         if mode == 'alignment' and coordinate_map:
             df = map_alignment_coordinates(df, coordinate_map)
         
-        # Step 9: Add rows for sequences without primers
-        df = add_rows_for_sequences_without_primers(df, masked_sequences)
+        # Step 9: Add rows for sequences without primers (only in direct mode)
+        if mode == 'direct':
+            df = add_rows_for_sequences_without_primers(df, masked_sequences)
+            logger.debug("Added rows for sequences without primers (direct mode only)")
         
         # Step 10: Save results to Excel file
-        output_path = save_results(df, output_dir, reference_file, mode=mode)
+        from ..utils import FileUtils
+        output_path = FileUtils.save_results(
+            df, 
+            output_dir, 
+            reference_file, 
+            mode=mode,
+            second_fasta=second_fasta,
+            logger=logger
+        )
         
         if output_path:
             logger.info(f"Results saved to: {output_path}")

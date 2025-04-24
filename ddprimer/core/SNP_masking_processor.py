@@ -1,10 +1,14 @@
 import os
+import logging
 import subprocess
 from Bio import SeqIO
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 from tqdm import tqdm
 from ..config import Config
+
+# Set up logging
+logger = logging.getLogger("ddPrimer")
 
 class SNPMaskingProcessor:
     """Handles masking of SNPs in sequences to prepare them for primer design."""
@@ -24,7 +28,7 @@ class SNPMaskingProcessor:
         Returns:
             dict: Dictionary mapping chromosomes to sets of variant positions
         """
-        print(f"Fetching variant positions from {vcf_file}...")
+        logger.info(f"Fetching variant positions from {vcf_file}...")
         
         # Base command
         command = f'bcftools query -f "%CHROM\\t%POS\\n" "{vcf_file}"'
@@ -34,10 +38,11 @@ class SNPMaskingProcessor:
             command += f' -r "{chromosome}"'
         
         # Run command
+        logger.debug(f"Running command: {command}")
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
         
         if result.returncode != 0:
-            print("Error running bcftools:", result.stderr)
+            logger.error(f"Error running bcftools: {result.stderr}")
             return {}
         
         # Parse results
@@ -56,7 +61,7 @@ class SNPMaskingProcessor:
                     
                 variants[chrom].add(pos)
         
-        print(f"Extracted {sum(len(v) for v in variants.values())} variant positions from {len(variants)} chromosomes")
+        logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants from {len(variants)} chromosomes")
         return variants
     
     def extract_reference_sequences(self, fasta_file):
@@ -69,43 +74,38 @@ class SNPMaskingProcessor:
         Returns:
             dict: Dictionary mapping sequence IDs to sequences
         """
-        print(f"Extracting sequences from {fasta_file}...")
+        logger.info(f"Extracting sequences from {fasta_file}...")
         sequences = {}
         
         with open(fasta_file, "r") as handle:
             for record in SeqIO.parse(handle, "fasta"):
                 sequences[record.id] = str(record.seq)
                 
+        logger.debug(f"Extracted {len(sequences)} sequences from FASTA file")
         return sequences
     
-    def mask_variants(self, sequence, variant_positions, mask_padding=3, min_region_length=100):
+    def mask_variants(self, sequence, variant_positions, mask_padding=3):
         """
-        Mask variants in the sequence and identify unmasked regions suitable for primer design.
+        Simple variant masking - replace SNP positions and surrounding bases with 'N'.
         
         Args:
             sequence (str): Input DNA sequence
             variant_positions (set): Set of variant positions (1-based)
             mask_padding (int): Number of bases to mask on each side of a variant
-            min_region_length (int): Minimum length required for an unmasked region
             
         Returns:
-            str: Masked sequence with the best unmasked regions preserved
+            str: Masked sequence with SNPs replaced by 'N'
         """
         if not variant_positions:
-            print("No variants to mask, returning original sequence")
+            logger.debug("No variant positions to mask")
             return sequence
             
-        # Step 1: Create the masked sequence
         sequence_list = list(sequence)
-        total_length = len(sequence)
-        
-        # Track which positions are masked for variant visualization
-        masked_positions = set()
+        masked_positions = 0
         
         # Mask variant positions with padding
-        variant_pos_list = sorted(list(variant_positions))
-        variant_density = len(variant_pos_list) / total_length if total_length > 0 else 0
-        print(f"Processing {len(variant_pos_list)} variants (density: {variant_density:.4%})")
+        variant_pos_list = list(variant_positions)
+        logger.debug(f"Masking {len(variant_pos_list)} variant positions with padding of {mask_padding} bases")
         
         if Config.SHOW_PROGRESS and len(variant_pos_list) > 1000:  # Only show progress for large sets
             variant_iter = tqdm(variant_pos_list, desc="Masking variants")
@@ -113,140 +113,49 @@ class SNPMaskingProcessor:
             variant_iter = variant_pos_list
             
         for pos in variant_iter:
-            # Convert to 0-based for sequence indexing (variants are 1-based)
-            pos_0based = pos - 1
+            # Convert 1-based VCF position to 0-based sequence index
+            idx = pos - 1
             
-            if pos_0based < 0 or pos_0based >= len(sequence_list):
+            if idx < 0 or idx >= len(sequence_list):
                 continue
                 
             # Apply padding - mask positions before and after the variant
-            start = max(0, pos_0based - mask_padding)
-            end = min(len(sequence_list), pos_0based + mask_padding + 1)
+            start = max(0, idx - mask_padding)
+            end = min(len(sequence_list), idx + mask_padding + 1)
             
             for i in range(start, end):
-                sequence_list[i] = 'N'
-                masked_positions.add(i)
+                if sequence_list[i] != 'N':  # Only count newly masked positions
+                    sequence_list[i] = 'N'
+                    masked_positions += 1
         
         masked_sequence = "".join(sequence_list)
-        masked_count = len(masked_positions)
-        masked_ratio = masked_count / total_length if total_length > 0 else 1.0
         
-        print(f"Initial masking: {masked_count}/{total_length} bases ({masked_ratio:.2%})")
+        # Calculate masking statistics
+        masked_ratio = masked_positions / len(sequence) if len(sequence) > 0 else 0
+        logger.debug(f"Masked {masked_positions} positions ({masked_ratio:.2%} of sequence)")
         
-        # Step 2: Identify contiguous unmasked regions
-        unmasked_regions = self.find_unmasked_regions(masked_sequence, min_length=min_region_length)
-        
-        if not unmasked_regions:
-            print(f"No unmasked regions of length >= {min_region_length} found.")
-            # Try with smaller regions if none found with default size
-            smaller_regions = self.find_unmasked_regions(masked_sequence, min_length=50)
-            if smaller_regions:
-                print(f"Found {len(smaller_regions)} smaller unmasked regions (min length: 50)")
-                unmasked_regions = smaller_regions
-            else:
-                print("No usable unmasked regions found even with reduced length criteria.")
-                # Return sequence anyway for downstream handling
-                return masked_sequence
-        
-        # Sort regions by length (descending)
-        unmasked_regions.sort(key=lambda x: x[1] - x[0], reverse=True)
-        
-        print(f"Found {len(unmasked_regions)} unmasked regions, largest is {unmasked_regions[0][1] - unmasked_regions[0][0]} bp")
-        
-        # Step 3: Create an optimized sequence with only the best unmasked regions
-        # If we have at least one good region, create a new sequence with only that region unmasked
-        if unmasked_regions:
-            # Choose the best region (the longest one)
-            best_region = unmasked_regions[0]
-            
-            # Create a new sequence with everything masked except the best region
-            optimized_sequence_list = ['N'] * total_length
-            start, end = best_region
-            
-            # Copy the unmasked region
-            for i in range(start, end):
-                optimized_sequence_list[i] = sequence[i]
-            
-            # If we have multiple good regions, include the top few
-            max_regions_to_include = 3  # Include up to 3 good regions
-            for region in unmasked_regions[1:max_regions_to_include]:
-                if (region[1] - region[0]) >= min_region_length * 0.75:  # Only include reasonably sized regions
-                    region_start, region_end = region
-                    for i in range(region_start, region_end):
-                        optimized_sequence_list[i] = sequence[i]
-            
-            optimized_sequence = "".join(optimized_sequence_list)
-            
-            # Calculate what percentage of the sequence is now usable
-            usable_bases = sum(1 for c in optimized_sequence if c != 'N')
-            usable_ratio = usable_bases / total_length if total_length > 0 else 0
-            
-            print(f"Optimized sequence has {usable_bases}/{total_length} usable bases ({usable_ratio:.2%})")
-            
-            return optimized_sequence
-        
-        # If no good regions, return the original masked sequence
         return masked_sequence
     
-    def find_unmasked_regions(self, sequence, min_length=100):
+    def mask_sequences_for_primer_design(self, sequences, variant_positions, mask_padding=3):
         """
-        Find contiguous regions in the sequence that don't contain 'N's.
-        
-        Args:
-            sequence (str): Input sequence with masked positions (N's)
-            min_length (int): Minimum length for a region to be considered
-            
-        Returns:
-            list: List of tuples (start, end) for each unmasked region
-        """
-        regions = []
-        region_start = None
-        
-        for i, base in enumerate(sequence):
-            if base != 'N':
-                # Start a new region if we're not in one
-                if region_start is None:
-                    region_start = i
-            else:
-                # End the current region if we were in one
-                if region_start is not None:
-                    region_end = i
-                    region_length = region_end - region_start
-                    
-                    if region_length >= min_length:
-                        regions.append((region_start, region_end))
-                    
-                    region_start = None
-        
-        # Handle the case where the sequence ends with a valid region
-        if region_start is not None:
-            region_end = len(sequence)
-            region_length = region_end - region_start
-            
-            if region_length >= min_length:
-                regions.append((region_start, region_end))
-        
-        return regions
-    
-    def prepare_sequences_for_primer_design(self, sequences, variant_positions, min_length=100):
-        """
-        Prepare sequences for primer design by masking variants and identifying viable regions.
+        Mask variants in sequences to prepare them for primer design.
         
         Args:
             sequences (dict): Dictionary of sequence ID to sequence
             variant_positions (dict): Dictionary of sequence ID to variant positions
-            min_length (int): Minimum length for a viable region
+            mask_padding (int): Number of bases to mask on each side of a variant
             
         Returns:
-            dict: Dictionary mapping sequence IDs to lists of viable regions
-                  Each region is a tuple of (start, end, region_sequence)
+            dict: Dictionary of masked sequences
         """
-        viable_regions_by_sequence = {}
+        masked_sequences = {}
         
         # Process each sequence
         seq_ids = list(sequences.keys())
+        logger.debug(f"Masking {len(seq_ids)} sequences")
+        
         if Config.SHOW_PROGRESS:
-            seq_iter = tqdm(seq_ids, desc="Finding viable regions")
+            seq_iter = tqdm(seq_ids, desc="Masking sequences")
         else:
             seq_iter = seq_ids
             
@@ -255,24 +164,74 @@ class SNPMaskingProcessor:
             # Get variants for this sequence
             seq_variants = variant_positions.get(seq_id, set())
             
-            # Mask variants and find optimal regions
-            masked_sequence = self.mask_variants(sequence, seq_variants, min_region_length=min_length)
-            
-            # Find viable (unmasked) regions
-            viable_regions = self.find_unmasked_regions(masked_sequence, min_length)
-            
-            # Extract the actual sequences for the viable regions
-            regions_with_sequences = []
-            for start, end in viable_regions:
-                region_seq = masked_sequence[start:end]
-                # Verify no N's in the region (should be guaranteed by find_unmasked_regions)
-                if 'N' not in region_seq:
-                    regions_with_sequences.append((start, end, region_seq))
-            
-            if regions_with_sequences:
-                viable_regions_by_sequence[seq_id] = regions_with_sequences
-                print(f"Found {len(regions_with_sequences)} viable regions for {seq_id}")
+            if seq_variants:
+                logger.debug(f"Masking {len(seq_variants)} variants in sequence {seq_id} ({len(sequence)} bp)")
+                
+                # Mask variants
+                masked_sequence = self.mask_variants(sequence, seq_variants, mask_padding)
+                masked_sequences[seq_id] = masked_sequence
+                
+                # Calculate masking statistics
+                masked_count = masked_sequence.count('N')
+                masked_ratio = masked_count / len(sequence) if len(sequence) > 0 else 0
+                logger.debug(f"Sequence {seq_id}: {masked_count}/{len(sequence)} bases masked ({masked_ratio:.2%})")
             else:
-                print(f"No viable regions found for {seq_id}")
+                logger.debug(f"No variants to mask in sequence {seq_id}")
+                masked_sequences[seq_id] = sequence
         
-        return viable_regions_by_sequence
+        return masked_sequences
+    
+    def combine_masked_sequences(self, masked_sequences1, masked_sequences2):
+        """
+        Combine two sets of masked sequences, masking a position if it's masked in either set.
+        
+        Args:
+            masked_sequences1 (dict): First set of masked sequences
+            masked_sequences2 (dict): Second set of masked sequences
+            
+        Returns:
+            dict: Combined masked sequences
+        """
+        combined_sequences = {}
+        
+        # Get all sequence IDs from both sets
+        all_seq_ids = set(masked_sequences1.keys()) | set(masked_sequences2.keys())
+        logger.debug(f"Combining masking from two sets ({len(masked_sequences1)} and {len(masked_sequences2)} sequences)")
+        
+        for seq_id in all_seq_ids:
+            # If sequence only exists in one set, use that version
+            if seq_id not in masked_sequences1:
+                logger.debug(f"Sequence {seq_id} only exists in second set")
+                combined_sequences[seq_id] = masked_sequences2[seq_id]
+                continue
+            elif seq_id not in masked_sequences2:
+                logger.debug(f"Sequence {seq_id} only exists in first set")
+                combined_sequences[seq_id] = masked_sequences1[seq_id]
+                continue
+            
+            # If sequence exists in both sets, combine the masking
+            seq1 = masked_sequences1[seq_id]
+            seq2 = masked_sequences2[seq_id]
+            
+            # Ensure sequences are the same length
+            if len(seq1) != len(seq2):
+                logger.warning(f"Sequence length mismatch for {seq_id}. Using first sequence.")
+                combined_sequences[seq_id] = seq1
+                continue
+            
+            # Combine masking - if either has an N, use N
+            combined_seq = ""
+            for i in range(len(seq1)):
+                if seq1[i] == 'N' or seq2[i] == 'N':
+                    combined_seq += 'N'
+                else:
+                    combined_seq += seq1[i]
+            
+            # Calculate masking statistics
+            n_count = combined_seq.count('N')
+            n_ratio = n_count / len(combined_seq) if len(combined_seq) > 0 else 0
+            logger.debug(f"Combined sequence {seq_id}: {n_count}/{len(combined_seq)} bases masked ({n_ratio:.2%})")
+            
+            combined_sequences[seq_id] = combined_seq
+        
+        return combined_sequences

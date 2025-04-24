@@ -190,23 +190,22 @@ def run(args):
         if args.output:
             output_dir = args.output
         elif reference_file:
+            # Get the directory of the original input file (test_data directory)
             if args.maf_file:
-                # For MAF files, use the parent directory of the "Alignments" folder
-                maf_dir = os.path.dirname(os.path.abspath(args.maf_file))
-                if os.path.basename(maf_dir) == "Alignments":
-                    # If it's in an Alignments folder, go up one level
-                    output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
-                else:
-                    # Otherwise use the parent directory of the MAF file
-                    output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
+                # For MAF files, use the directory the MAF file is in
+                input_dir = os.path.dirname(os.path.abspath(args.maf_file))
             else:
-                # Use the directory of the reference file for non-MAF files
+                # For FASTA files, use the directory of the reference FASTA
                 input_dir = os.path.dirname(os.path.abspath(reference_file))
-                output_dir = os.path.join(input_dir, "Primers")
+            
+            # Create Primers directory in the same location as input files
+            output_dir = os.path.join(input_dir, "Primers")
+            logger.debug(f"Setting output directory to: {output_dir}")
         else:
             # Fallback to current directory if no reference file
             output_dir = os.path.join(os.getcwd(), "Primers")
-        
+            logger.debug(f"Using current directory for output: {output_dir}")
+
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
@@ -288,7 +287,7 @@ def run(args):
             logger.info("\n>>> Running Alignment Primer Design Workflow <<<")
             try:
                 masked_sequences, coordinate_map = AlignmentWorkflow(args, output_dir, logger)
-                logger.info(f"Alignment workflow completed with {len(masked_sequences)} masked sequences")
+                logger.debug(f"Alignment workflow completed with {len(masked_sequences)} masked sequences")
             except Exception as e:
                 logger.error(f"Error in alignment workflow: {e}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
@@ -309,6 +308,24 @@ def run(args):
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 return False
             
+            # Before running primer design workflow, make sure we have the correct reference paths
+            if args.maf_file:
+                # For MAF-based alignments, use the MAF file for naming
+                reference_file = args.maf_file
+                second_fasta_path = None
+                logger.debug(f"Using MAF file for reference: {reference_file}")
+            elif args.fasta and args.second_fasta:
+                # For direct FASTA alignments, use both FASTA files for naming
+                reference_file = args.fasta
+                second_fasta_path = args.second_fasta
+                logger.debug(f"Using reference FASTA: {reference_file}")
+                logger.debug(f"Using second FASTA: {second_fasta_path}")
+            else:
+                # Fallback - use what we have
+                reference_file = reference_file
+                second_fasta_path = None
+                logger.debug(f"Using fallback reference file: {reference_file}")
+            
             # Use the common workflow function to handle the rest of the pipeline
             success = common.run_primer_design_workflow(
                 masked_sequences=masked_sequences,
@@ -319,7 +336,8 @@ def run(args):
                 coordinate_map=coordinate_map,
                 gff_file=args.gff,
                 temp_dir=temp_dir,
-                snp_checker=snp_checker
+                snp_checker=snp_checker,
+                second_fasta=second_fasta_path
             )
             
             return success

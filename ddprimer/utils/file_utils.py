@@ -618,15 +618,16 @@ class FileUtils:
             raise
 
     @staticmethod
-    def save_results(df, output_dir, input_file, mode='standard', logger=None):
+    def save_results(df, output_dir, input_file, mode='standard', second_fasta=None, logger=None):
         """
-        Save results to an Excel file.
+        Save results to an Excel file with correct naming based on input files and mode.
         
         Args:
             df: DataFrame with primer results
             output_dir: Output directory
-            input_file: Path to the input file (FASTA, CSV, etc.)
-            mode: Pipeline mode ('standard', 'direct', or 'maf')
+            input_file: Path to the input file (FASTA, CSV, MAF, etc.)
+            mode: Pipeline mode ('standard', 'direct', or 'alignment')
+            second_fasta: Path to second FASTA file for alignment mode
             logger: Optional logger for debugging information
             
         Returns:
@@ -638,19 +639,42 @@ class FileUtils:
             
         logger.debug("\nSaving results...")
         
-        # Create filename based on mode and input file
-        input_file_name = os.path.splitext(os.path.basename(input_file))[0]
+        # Make sure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
         
-        if mode == 'maf':
-            # For cross-species mode, use both species names if available
-            if hasattr(input_file, 'second_fasta') and input_file.second_fasta:
-                second_name = os.path.splitext(os.path.basename(input_file.second_fasta))[0]
-                output_file = os.path.join(output_dir, f"Primers_{input_file_name}_vs_{second_name}.xlsx")
+        # Set output filename based on mode and input files
+        if mode == 'alignment':
+            # Alignment mode has specific naming conventions
+            if input_file and input_file.endswith('.maf'):
+                # Using pre-computed MAF file
+                basename = os.path.basename(input_file)
+                root, _ = os.path.splitext(basename)
+                output_filename = f"Primers_{root}.xlsx"
+            elif input_file and second_fasta:
+                # Using FASTA alignment with two genomes - use both filenames
+                ref_basename = os.path.basename(input_file)
+                ref_root, _ = os.path.splitext(ref_basename)
+                
+                qry_basename = os.path.basename(second_fasta)
+                qry_root, _ = os.path.splitext(qry_basename)
+                
+                output_filename = f"Primers_{ref_root}_vs_{qry_root}.xlsx"
             else:
-                output_file = os.path.join(output_dir, f"Primers_{input_file_name}_cross_species.xlsx")
+                # Fallback for alignment mode when files aren't specified properly
+                output_filename = f"Primers_Alignment.xlsx"
+        elif mode == 'direct':
+            # For direct mode, use the basename of the input file
+            basename = os.path.basename(input_file)
+            root, _ = os.path.splitext(basename)
+            output_filename = f"Primers_{root}.xlsx"
         else:
-            output_file = os.path.join(output_dir, f"Primers_{input_file_name}.xlsx")
+            # Standard mode - use basename of input file
+            basename = os.path.basename(input_file)
+            root, _ = os.path.splitext(basename)
+            output_filename = f"Primers_{root}.xlsx"
         
+        # Combine output directory and filename
+        output_file = os.path.join(output_dir, output_filename)
         logger.debug(f"Output file will be: {output_file}")
         
         # Define columns based on mode
@@ -662,7 +686,7 @@ class FileUtils:
                 "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
             ]
         else:
-            # Standard and MAF modes include location columns
+            # Standard and alignment modes include location columns
             columns = [
                 "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
                 "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
@@ -670,8 +694,8 @@ class FileUtils:
                 "Chromosome", "Location"
             ]
             
-            # Add cross-species specific columns for MAF mode
-            if mode == 'maf':
+            # Add cross-species specific columns for alignment mode
+            if mode == 'alignment':
                 cross_species_cols = ["Qry Chromosome", "Qry Location"]
                 for col in cross_species_cols:
                     if col in df.columns and not df[col].isna().all():
@@ -713,7 +737,7 @@ class FileUtils:
                 return output_file
             except Exception as ex:
                 logger.error(f"Failed to save results: {ex}")
-                raise
+                return None
 
     @staticmethod
     def setup_output_directories(args, reference_file=None, mode='standard'):

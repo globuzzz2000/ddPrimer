@@ -92,6 +92,9 @@ class Config:
     NUPACK_TEMPERATURE = 37  # Celsius
     NUPACK_SODIUM = 0.05     # Molar
     NUPACK_MAGNESIUM = 0.0   # Molar
+
+    # SNP masking settings
+    SNP_MASK_PADDING = 3  # Number of bases to mask on each side of a SNP
     
     #############################################################################
     #                           Primer3 Settings
