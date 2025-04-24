@@ -43,7 +43,8 @@ def parse_arguments():
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    parser.add_argument('--check-snps', action='store_true', help='Enable SNP checking for primers/probes (requires --fasta and --vcf)')
+    parser.add_argument('--snp', action='store_true', 
+                      help='In alignment mode: enable SNP masking; In direct mode: enable SNP checking for primers')
     # BLAST database creation
     parser.add_argument('--dbfasta', help='Create a BLAST database from this FASTA file (overrides config)')
     parser.add_argument('--dbname', help='Custom name for the BLAST database (optional)')
@@ -65,8 +66,6 @@ def parse_arguments():
                             help="Minimum length of conserved regions (default: 20)")
     alignment_group.add_argument("--lastz-options", default="--format=maf",
                             help="Additional options for LastZ alignment")
-    alignment_group.add_argument("--no-snp-masking", action="store_true",
-                            help="Skip SNP masking step (no VCF files required)")
     
     args = parser.parse_args()
 
@@ -74,26 +73,20 @@ def parse_arguments():
     if args.direct and args.alignment:
         parser.error("--direct cannot be used with --alignment")
     
-    # Handle --check-snps requirements
-    if args.check_snps and args.cli:
+    # Handle --snp requirements in CLI mode
+    if args.snp and args.cli:
         if not args.fasta or not args.vcf:
-            parser.error("SNP checking (--check-snps) requires --fasta and --vcf")
+            parser.error("SNP functionality (--snp) requires --fasta and --vcf")
     
-    # Automatically enable --no-snp-masking when --check-snps is used in alignment mode
-    if args.check_snps and args.alignment:
-        args.no_snp_masking = True
-    
-    # Removed strict validation for alignment mode to allow interactive file selection
-    # Only enforce validation in CLI mode
+    # Validation for alignment mode (allow interactive file selection when not in CLI mode)
     if args.cli and args.alignment:
         if not (args.maf_file or args.second_fasta):
             parser.error("Alignment mode requires either --maf-file or --second-fasta")
         if not args.maf_file and not args.fasta:
             parser.error("Reference genome FASTA (--fasta) is required for alignment")
-        if not args.no_snp_masking:
-            # Only require VCF files if SNP masking is enabled
+        if args.snp:  # Only require VCF files if SNP masking is enabled (via --snp)
             if args.second_fasta and not args.second_vcf:
-                parser.error("Second species VCF file (--second-vcf) is required for variant filtering")
+                parser.error("Second species VCF file (--second-vcf) is required for variant filtering with --snp")
     
     return args
 

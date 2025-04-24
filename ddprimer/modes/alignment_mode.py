@@ -50,15 +50,18 @@ def run(args):
     logger.info("=== Alignment Mode Primer Design ===")
     
     try:
-        # Check if SNP checking is enabled
-        if args.check_snps:
-            logger.info("\n>>> SNP checking for primers is enabled <<<")
-            logger.info(">>> This automatically disables SNP masking <<<")
-            args.no_snp_masking = True
+        # Check if SNP masking is enabled (--snp flag)
+        snp_masking_enabled = args.snp if hasattr(args, 'snp') else False
         
-        # Check if SNP masking is disabled
-        if args.no_snp_masking:
-            logger.info("\n>>> SNP masking is disabled <<<")
+        if snp_masking_enabled:
+            logger.info("\n>>> SNP masking is enabled <<<")
+        else:
+            logger.debug("\n>>> SNP masking is disabled <<<")
+            
+        # For alignment mode, we also enable SNP checking if SNP masking is enabled
+        check_snps = snp_masking_enabled
+        if check_snps:
+            logger.info("\n>>> SNP checking for primers is enabled <<<")
         
         # Check and get required input files
         # Modified check for maf_file to handle the case when the flag is used without a value
@@ -80,7 +83,7 @@ def run(args):
             logger.info("\n>>> Using pre-computed MAF file <<<")
             reference_file = args.maf_file
             
-            if not args.no_snp_masking:
+            if snp_masking_enabled:
                 # Only require VCF files if SNP masking is enabled
                 if not args.vcf:
                     logger.info("\n>>> Please select REFERENCE species VCF file <<<")
@@ -134,7 +137,7 @@ def run(args):
             else:
                 reference_file = args.fasta
             
-            if not args.no_snp_masking:
+            if snp_masking_enabled:
                 # Only require VCF files if SNP masking is enabled
                 if not args.vcf:
                     logger.info("\n>>> Please select REFERENCE species VCF file <<<")
@@ -160,7 +163,7 @@ def run(args):
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
             
-            if not args.no_snp_masking:
+            if snp_masking_enabled:
                 # Only require VCF files if SNP masking is enabled
                 if not args.second_vcf:
                     logger.info("\n>>> Please select SECOND species VCF file <<<")
@@ -216,8 +219,8 @@ def run(args):
         
         # Initialize SNP checker if needed
         snp_checker = None
-        if args.check_snps:
-            # When using --check-snps in alignment mode, we need the reference FASTA and VCF
+        if check_snps:
+            # When checking SNPs in alignment mode, we need the reference FASTA and VCF
             if not args.fasta:
                 logger.info("\n>>> Please select REFERENCE FASTA file for SNP checking <<<")
                 try:
@@ -228,9 +231,9 @@ def run(args):
                 except Exception as e:
                     logger.error(f"Error selecting reference FASTA for SNP checking: {e}")
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    args.check_snps = False
+                    check_snps = False
                 
-            if args.check_snps and not args.vcf:
+            if check_snps and not args.vcf:
                 logger.info("\n>>> Please select VCF file for SNP checking <<<")
                 try:
                     args.vcf = FileUtils.get_file(
@@ -240,10 +243,10 @@ def run(args):
                 except Exception as e:
                     logger.error(f"Error selecting VCF file for SNP checking: {e}")
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    args.check_snps = False
+                    check_snps = False
             
             # Initialize SNP checker if we have the necessary files
-            if args.check_snps and args.fasta and args.vcf:
+            if check_snps and args.fasta and args.vcf:
                 logger.info(f"Initializing SNP checker with:")
                 logger.info(f"  Reference FASTA: {args.fasta}")
                 logger.info(f"  VCF file: {args.vcf}")
@@ -286,6 +289,9 @@ def run(args):
             # Call the AlignmentWorkflow function to handle the alignment and masking
             logger.info("\n>>> Running Alignment Primer Design Workflow <<<")
             try:
+                # Set no_snp_masking based on the inverse of snp_masking_enabled
+                args.no_snp_masking = not snp_masking_enabled
+                
                 masked_sequences, coordinate_map = AlignmentWorkflow(args, output_dir, logger)
                 logger.debug(f"Alignment workflow completed with {len(masked_sequences)} masked sequences")
             except Exception as e:

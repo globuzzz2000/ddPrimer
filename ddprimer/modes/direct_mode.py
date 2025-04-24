@@ -6,7 +6,7 @@ Direct mode for ddPrimer pipeline.
 This module contains the implementation of the direct mode workflow:
 1. Load sequences directly from CSV or Excel files
 2. Run primer design on these sequences using the common pipeline
-3. Optionally check primers/probes for SNP overlaps with a reference genome
+3. Optionally check primers/probes for SNP overlaps
 """
 
 import os
@@ -55,10 +55,10 @@ def run(args):
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
         
-        # Check if SNP checking is enabled
+        # Check if SNP functionality is enabled (in direct mode, --snp enables SNP checking)
         snp_checker = None
-        if args.check_snps:
-            logger.info("\nSNP checking is enabled")
+        if args.snp:
+            logger.info("\n>>> SNP checking for primers is enabled <<<")
             
             # Get reference FASTA and VCF files
             ref_fasta = args.fasta
@@ -70,16 +70,16 @@ def run(args):
                                               [("FASTA files", "*.fa *.fasta *.fna")])
                 if not ref_fasta:
                     logger.warning("Reference FASTA file not provided. Disabling SNP checking.")
-                    args.check_snps = False
+                    args.snp = False
             
-            if args.check_snps and not ref_vcf:
+            if args.snp and not ref_vcf:
                 ref_vcf = FileUtils.get_file("Select VCF file with variants", 
                                            [("VCF files", "*.vcf *.vcf.gz")])
                 if not ref_vcf:
                     logger.warning("VCF file not provided. Disabling SNP checking.")
-                    args.check_snps = False
+                    args.snp = False
             
-            if args.check_snps:
+            if args.snp:
                 logger.info(f"Reference FASTA: {ref_fasta}")
                 logger.info(f"Reference VCF: {ref_vcf}")
                 

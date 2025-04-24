@@ -194,7 +194,7 @@ def AlignmentWorkflow(args, output_dir, logger):
 
     # Now mask variants from both genomes if SNP masking is enabled
     if args.no_snp_masking:
-        logger.info("\n>>> Skipping SNP masking as requested <<<")
+        logger.debug("\n>>> Skipping SNP masking as requested <<<")
         # Use alignment-masked sequences directly without SNP masking
         final_masked_sequences = alignment_masked_sequences
     else:
