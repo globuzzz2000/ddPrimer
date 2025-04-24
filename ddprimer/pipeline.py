@@ -53,7 +53,7 @@ def parse_arguments():
     alignment_group = parser.add_argument_group("Alignment Options")
     alignment_group.add_argument("--alignment", action="store_true", 
                             help="Enable alignment mode primer design workflow")
-    alignment_group.add_argument("--maf-file", 
+    alignment_group.add_argument("--maf-file", nargs='?', const=True, 
                             help="Pre-computed MAF alignment file (skips LastZ alignment)")
     alignment_group.add_argument("--second-fasta", 
                             help="Second species genome FASTA file")

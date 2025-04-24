@@ -61,7 +61,21 @@ def run(args):
             logger.info("\n>>> SNP masking is disabled <<<")
         
         # Check and get required input files
-        if args.maf_file:
+        # Modified check for maf_file to handle the case when the flag is used without a value
+        if hasattr(args, 'maf_file') and args.maf_file is not None:
+            # If --maf-file was used but no value provided, prompt for file selection
+            if args.maf_file is True or args.maf_file == '':
+                logger.info("\n>>> Please select MAF alignment file <<<")
+                try:
+                    args.maf_file = FileUtils.get_file(
+                        "Select MAF alignment file", 
+                        [("MAF Files", "*.maf"), ("All Files", "*")]
+                    )
+                except Exception as e:
+                    logger.error(f"Error selecting MAF file: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    return False
+            
             # Using pre-computed MAF, only need VCF and GFF files
             logger.info("\n>>> Using pre-computed MAF file <<<")
             reference_file = args.maf_file

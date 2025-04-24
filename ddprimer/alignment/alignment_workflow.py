@@ -27,7 +27,9 @@ def AlignmentWorkflow(args, output_dir, logger):
     snp_processor = SNPMaskingProcessor()
     
     # Step 1: Handle MAF file (pre-computed or generate new one)
-    if args.maf_file:
+    if hasattr(args, 'maf_file') and args.maf_file is not None:
+        # If the maf_file argument is True (flag used without value), it will be handled
+        # by the alignment_mode.py module which prompts for file selection
         logger.info("\n>>> Using pre-computed MAF file <<<")
         maf_file = args.maf_file
         logger.debug(f"Using MAF file: {maf_file}")
