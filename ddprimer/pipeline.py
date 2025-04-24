@@ -45,6 +45,8 @@ def parse_arguments():
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
     parser.add_argument('--snp', action='store_true', help='Enable SNP masking in sequences (requires --fasta and --vcf)')
     parser.add_argument('--noannotation', action='store_true', help='Disable gene annotation filtering in all modes')
+    parser.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    
     # BLAST database creation
     parser.add_argument('--createdb', nargs='?', const=True, help='Create a BLAST database (optionally provide FASTA file path, or will prompt for one)')
     parser.add_argument('--dbname', help='Custom name for the BLAST database (default: derived from filename)')
@@ -66,8 +68,6 @@ def parse_arguments():
                             help="Minimum length of conserved regions (default: 20)")
     alignment_group.add_argument("--lastz-options", default="--format=maf",
                             help="Additional options for LastZ alignment")
-    alignment_group.add_argument("--lastzonly", action="store_true", 
-                            help="Run only LastZ alignments (no primer design)")
     
     args = parser.parse_args()
 
@@ -80,8 +80,26 @@ def parse_arguments():
         if not args.fasta or not args.vcf:
             parser.error("SNP masking (--snp) requires --fasta and --vcf")
     
+    # Extra validation for lastzonly mode
+    if args.lastzonly:
+        # Force alignment mode when lastzonly is specified
+        args.alignment = True
+        
+        # Only need reference FASTA and second FASTA for lastzonly mode
+        if args.cli and not args.fasta:
+            parser.error("--lastzonly requires --fasta (reference genome)")
+        if args.cli and not args.second_fasta:
+            parser.error("--lastzonly requires --second-fasta (second genome)")
+        # These flags are incompatible with lastzonly
+        if args.snp:
+            parser.error("--lastzonly cannot be used with --snp")
+        if args.direct:
+            parser.error("--lastzonly cannot be used with --direct")
+        if args.noannotation:
+            parser.error("--lastzonly cannot be used with --noannotation")
+    
     # Alignment mode validation (only in CLI mode)
-    if args.cli and args.alignment:
+    if args.cli and args.alignment and not args.lastzonly:
         if not (args.maf_file or args.second_fasta):
             parser.error("Alignment mode requires either --maf-file or --second-fasta")
         if not args.maf_file and not args.fasta:
@@ -109,8 +127,9 @@ class WorkflowFactory:
             callable: Workflow function to execute
         """
         
-        if args.alignment:
-            # Alignment mode
+        # For both lastzonly and alignment, use alignment mode
+        if args.alignment or args.lastzonly:
+            # Alignment mode (also handles lastzonly)
             return run_alignment_mode
         elif args.direct:
             # Direct mode
@@ -118,6 +137,7 @@ class WorkflowFactory:
         else:
             # Standard mode
             return run_standard_mode
+
 
 class TempDirectory:
     """Context manager for temporary directory creation and cleanup."""
@@ -205,24 +225,26 @@ def run_pipeline():
                 logger.debug(traceback.format_exc())
                 return False
         
-        # Verify BLAST database
-        logger.info("Verifying BLAST database...")
-        from .utils import verify_blast_database
+        # Skip BLAST verification for lastzonly mode
+        if not args.lastzonly:
+            # Verify BLAST database
+            logger.info("Verifying BLAST database...")
+            from .utils import verify_blast_database
 
-        if not verify_blast_database(logger):
-            logger.error("\n======================================")
-            logger.error("ERROR: BLAST database verification failed!")
-            logger.error("\nPossible solutions:")
-            logger.error("1. Rebuild the database with the makeblastdb command:")
-            logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
-            logger.error("\n2. Create a BLAST database directly with ddprimer:")
-            logger.error("   python -m ddprimer --createdb [path/to/your_genome.fasta] [--dbname custom_name] [--dboutdir output_dir]")
-            logger.error("\n3. Set a different database path in your configuration file:")
-            logger.error("   python -m ddprimer --config your_config.json")
-            logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
-            logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
-            logger.error("======================================")
-            return False
+            if not verify_blast_database(logger):
+                logger.error("\n======================================")
+                logger.error("ERROR: BLAST database verification failed!")
+                logger.error("\nPossible solutions:")
+                logger.error("1. Rebuild the database with the makeblastdb command:")
+                logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
+                logger.error("\n2. Create a BLAST database directly with ddprimer:")
+                logger.error("   python -m ddprimer --createdb [path/to/your_genome.fasta] [--dbname custom_name] [--dboutdir output_dir]")
+                logger.error("\n3. Set a different database path in your configuration file:")
+                logger.error("   python -m ddprimer --config your_config.json")
+                logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
+                logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
+                logger.error("======================================")
+                return False
         
         logger.info("=== Primer Design Pipeline ===")
         

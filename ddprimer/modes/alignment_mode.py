@@ -39,6 +39,77 @@ def run(args):
     logger.info("=== Alignment Mode Primer Design ===")
     
     try:
+        # For LastZ-only mode, we just need reference and second FASTA files
+        if args.lastzonly:
+            logger.info("=== LastZ-Only Mode ===")
+            
+            # Only get required input files
+            if not args.fasta:
+                logger.info("\n>>> Please select REFERENCE species FASTA file <<<")
+                try:
+                    args.fasta = FileUtils.get_file(
+                        "Select REFERENCE species FASTA file", 
+                        [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna"), ("All Files", "*")]
+                    )
+                except Exception as e:
+                    logger.error(f"Error selecting reference FASTA file: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    return False
+            
+            if not args.second_fasta:
+                logger.info("\n>>> Please select SECOND species FASTA file <<<")
+                try:
+                    args.second_fasta = FileUtils.get_file(
+                        "Select SECOND species FASTA file", 
+                        [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna"), ("All Files", "*")]
+                    )
+                except Exception as e:
+                    logger.error(f"Error selecting second species FASTA file: {e}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    return False
+            
+            # Set up output directory
+            if args.output:
+                output_dir = args.output
+            else:
+                # Use the directory of the reference FASTA
+                input_dir = os.path.dirname(os.path.abspath(args.fasta))
+                output_dir = os.path.join(input_dir, "Alignments")
+            
+            # Create output directory
+            os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Created output directory: {output_dir}")
+            
+            # Run only the LastZ portion of the alignment workflow
+            logger.info("\n>>> Running LastZ alignment only <<<")
+            
+            # Import lastz_runner directly
+            from ..alignment.lastz_runner import LastZRunner
+            
+            try:
+                # Create LastZ runner instance
+                runner = LastZRunner()
+                
+                # Run LastZ alignment
+                output_file = runner.run_parallel_alignment(
+                    args.fasta,
+                    args.second_fasta,
+                    output_dir,
+                    args.lastz_options,
+                    processes=Config.NUM_PROCESSES,
+                    keep_temp=args.debug  # Keep temp files in debug mode
+                )
+                
+                logger.info(f"LastZ alignment completed successfully!")
+                logger.info(f"Alignment file saved to: {output_file}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error running LastZ alignment: {e}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                return False
+                
+        # Standard alignment mode - continue with existing code
         # Check if SNP masking is enabled
         if args.snp:
             logger.info("\n>>> SNP masking is enabled <<<")
@@ -91,6 +162,7 @@ def run(args):
                         logger.debug(f"Error details: {str(e)}", exc_info=True)
                         return False
             
+            # Only prompt for GFF if annotation filtering is not disabled
             if not args.noannotation and not args.gff:
                 logger.info("\n>>> Please select GFF annotation file <<<")
                 try:
@@ -103,8 +175,7 @@ def run(args):
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
             elif args.noannotation:
-                logger.debug("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
-
+                logger.info("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
         else:
             # Need all files for alignment workflow
             if not args.fasta:
@@ -162,7 +233,8 @@ def run(args):
                         logger.debug(f"Error details: {str(e)}", exc_info=True)
                         return False
             
-            if not args.gff:
+            # Only prompt for GFF if annotation filtering is not disabled
+            if not args.noannotation and not args.gff:
                 logger.info("\n>>> Please select GFF annotation file <<<")
                 try:
                     args.gff = FileUtils.get_file(
@@ -173,6 +245,8 @@ def run(args):
                     logger.error(f"Error selecting GFF file: {e}")
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
+            elif args.noannotation:
+                logger.info("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
         
         # Set up output directory
         if args.output:
@@ -218,11 +292,6 @@ def run(args):
                 logger.warning("No masked sequences were generated. Exiting.")
                 return False
             
-            # Check if we should exit after LastZ alignment (lastzonly flag)
-            if args.lastzonly:
-                logger.info("\n>>> LastZ alignment completed. Exiting because --lastzonly flag was used <<<")
-                return True
-            
             # Load gene annotations if needed
             if not args.noannotation:
                 logger.info("\nLoading gene annotations from GFF file...")
@@ -235,7 +304,7 @@ def run(args):
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
             else:
-                logger.debug("\nSkipping gene annotation loading (--noannotation specified)")
+                logger.info("\nSkipping gene annotation loading (--noannotation specified)")
                 genes = None  # Set to None when annotation filtering is disabled
             
             # Before running primer design workflow, make sure we have the correct reference paths
