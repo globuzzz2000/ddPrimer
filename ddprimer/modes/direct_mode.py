@@ -122,22 +122,32 @@ def run(args):
                 
                 # Apply masking to each sequence
                 for seq_id, sequence in sequences.items():
-                    # For direct mode, we don't know the chromosome context,
-                    # so we'll use a simplified approach just for masking
-                    base_variants = set()
-                    for chrom_variants in variants.values():
-                        # For each position in any chromosome, check if it's within sequence length
-                        for pos in chrom_variants:
-                            if pos <= len(sequence):
-                                base_variants.add(pos)
+                    # Try to determine which chromosome this sequence belongs to
+                    source_chrom = None
                     
-                    # Mask the sequence
-                    if base_variants:
-                        logger.debug(f"Masking variants in sequence {seq_id}")
-                        masked_sequence = snp_processor.mask_variants(sequence, base_variants)
+                    # Method 1: Check if sequence ID contains chromosome name
+                    for chrom in variants.keys():
+                        if chrom.lower() in seq_id.lower():
+                            source_chrom = chrom
+                            logger.debug(f"Matched sequence {seq_id} to chromosome {chrom} by name")
+                            break
+                    
+                    # Method 2: If we couldn't determine the chromosome, don't mask
+                    if not source_chrom:
+                        logger.warning(f"Could not determine chromosome for {seq_id}, skipping SNP masking")
+                        masked_sequences[seq_id] = sequence
+                        continue
+                    
+                    # Apply variants only from the matching chromosome
+                    seq_variants = variants.get(source_chrom, set())
+                    
+                    # Mask the sequence with variants from the matching chromosome
+                    if seq_variants:
+                        logger.debug(f"Masking sequence {seq_id} with {len(seq_variants)} variants from {source_chrom}")
+                        masked_sequence = snp_processor.mask_variants(sequence, seq_variants)
                         masked_sequences[seq_id] = masked_sequence
                     else:
-                        logger.debug(f"No variants to mask in sequence {seq_id}")
+                        logger.debug(f"No variants found for {source_chrom}, using original sequence")
                         masked_sequences[seq_id] = sequence
                 
                 logger.info(f"SNP masking completed for {len(masked_sequences)} sequences")

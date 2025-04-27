@@ -209,8 +209,7 @@ def AlignmentWorkflow(args, output_dir, logger):
             logger.info(f"Masking {sum(len(positions) for positions in ref_variants.values())} variants from reference genome")
             ref_masked_sequences = snp_processor.mask_sequences_for_primer_design(
                 alignment_masked_sequences, 
-                ref_variants,
-                mask_padding=Config.SNP_MASK_PADDING
+                ref_variants
             )
         else:
             ref_masked_sequences = alignment_masked_sequences
@@ -246,8 +245,7 @@ def AlignmentWorkflow(args, output_dir, logger):
             if mapped_variants:
                 second_masked_sequences = snp_processor.mask_sequences_for_primer_design(
                     alignment_masked_sequences,
-                    mapped_variants,
-                    mask_padding=Config.SNP_MASK_PADDING
+                    mapped_variants
                 )
             else:
                 second_masked_sequences = alignment_masked_sequences

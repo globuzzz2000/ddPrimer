@@ -149,13 +149,12 @@ class MAFParser:
         Returns:
             float: Percentage identity (0-100)
         """
-        if len(seq1) != len(seq2):
-            raise ValueError("Aligned sequences must be the same length")
+        min_len = min(len(seq1), len(seq2))
         
         matches = 0
         valid_positions = 0
         
-        for i in range(len(seq1)):
+        for i in range(min_len):
             # Skip positions with gaps in either sequence
             if seq1[i] == '-' or seq2[i] == '-':
                 continue

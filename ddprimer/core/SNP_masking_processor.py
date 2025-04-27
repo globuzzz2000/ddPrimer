@@ -84,14 +84,14 @@ class SNPMaskingProcessor:
         logger.debug(f"Extracted {len(sequences)} sequences from FASTA file")
         return sequences
     
-    def mask_variants(self, sequence, variant_positions, mask_padding=3):
+    def mask_variants(self, sequence, variant_positions):
         """
-        Simple variant masking - replace SNP positions and surrounding bases with 'N'.
+        Simple variant masking - replace only the exact SNP positions with 'N'.
+        No padding - only the exact variant position is masked.
         
         Args:
             sequence (str): Input DNA sequence
             variant_positions (set): Set of variant positions (1-based)
-            mask_padding (int): Number of bases to mask on each side of a variant
             
         Returns:
             str: Masked sequence with SNPs replaced by 'N'
@@ -103,9 +103,9 @@ class SNPMaskingProcessor:
         sequence_list = list(sequence)
         masked_positions = 0
         
-        # Mask variant positions with padding
+        # Mask only the exact variant positions
         variant_pos_list = list(variant_positions)
-        logger.debug(f"Masking {len(variant_pos_list)} variant positions with padding of {mask_padding} bases")
+        logger.debug(f"Masking {len(variant_pos_list)} variant positions")
         
         if Config.SHOW_PROGRESS and len(variant_pos_list) > 1000:  # Only show progress for large sets
             variant_iter = tqdm(variant_pos_list, desc="Masking variants")
@@ -119,14 +119,10 @@ class SNPMaskingProcessor:
             if idx < 0 or idx >= len(sequence_list):
                 continue
                 
-            # Apply padding - mask positions before and after the variant
-            start = max(0, idx - mask_padding)
-            end = min(len(sequence_list), idx + mask_padding + 1)
-            
-            for i in range(start, end):
-                if sequence_list[i] != 'N':  # Only count newly masked positions
-                    sequence_list[i] = 'N'
-                    masked_positions += 1
+            # Mask only the exact position
+            if sequence_list[idx] != 'N':  # Only count newly masked positions
+                sequence_list[idx] = 'N'
+                masked_positions += 1
         
         masked_sequence = "".join(sequence_list)
         
@@ -136,14 +132,14 @@ class SNPMaskingProcessor:
         
         return masked_sequence
     
-    def mask_sequences_for_primer_design(self, sequences, variant_positions, mask_padding=3):
+    def mask_sequences_for_primer_design(self, sequences, variant_positions):
         """
         Mask variants in sequences to prepare them for primer design.
+        Only the exact SNP positions are masked.
         
         Args:
             sequences (dict): Dictionary of sequence ID to sequence
             variant_positions (dict): Dictionary of sequence ID to variant positions
-            mask_padding (int): Number of bases to mask on each side of a variant
             
         Returns:
             dict: Dictionary of masked sequences
@@ -168,7 +164,7 @@ class SNPMaskingProcessor:
                 logger.debug(f"Masking {len(seq_variants)} variants in sequence {seq_id} ({len(sequence)} bp)")
                 
                 # Mask variants
-                masked_sequence = self.mask_variants(sequence, seq_variants, mask_padding)
+                masked_sequence = self.mask_variants(sequence, seq_variants)
                 masked_sequences[seq_id] = masked_sequence
                 
                 # Calculate masking statistics
