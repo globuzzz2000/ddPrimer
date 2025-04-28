@@ -228,7 +228,7 @@ def run_pipeline():
         # Skip BLAST verification for lastzonly mode
         if not args.lastzonly:
             # Verify BLAST database
-            logger.info("Verifying BLAST database...")
+            logger.debug("Verifying BLAST database...")
             from .utils import verify_blast_database
 
             if not verify_blast_database(logger):

@@ -18,6 +18,7 @@ import tempfile
 import subprocess
 import re
 from tqdm import tqdm
+import logging
 
 from ..config import Config
 from .sequence_utils import SequenceUtils

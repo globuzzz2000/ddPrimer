@@ -27,9 +27,11 @@ from ..core import (
 # Set up logging
 logger = logging.getLogger("ddPrimer")
 
+
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
                               genes=None, coordinate_map=None, gff_file=None, temp_dir=None,
-                              second_fasta=None, skip_annotation_filtering=False):
+                              second_fasta=None, skip_annotation_filtering=False, matching_status=None,
+                              all_sequences=None, add_rows_function=None):
     """
     Unified primer design workflow for all modes.
     
@@ -44,6 +46,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         temp_dir: Temporary directory (optional)
         second_fasta: Path to second FASTA file for alignment mode (optional)
         skip_annotation_filtering: Skip gene annotation filtering (optional)
+        matching_status: Dictionary with reference matching status for sequences (optional)
+        all_sequences: Dictionary with all original sequences (optional, for direct mode)
+        add_rows_function: Function to add rows for sequences without primers (optional, for direct mode)
         
     Returns:
         bool: Success or failure
@@ -111,9 +116,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             df = map_alignment_coordinates(df, coordinate_map)
         
         # Step 8: Add rows for sequences without primers (only in direct mode)
-        if mode == 'direct':
-            df = add_rows_for_sequences_without_primers(df, masked_sequences)
-            logger.debug("Added rows for sequences without primers (direct mode only)")
+        if mode == 'direct' and add_rows_function and all_sequences:
+            logger.debug("Adding rows for sequences without primers and reference match failures")
+            df = add_rows_function(df, all_sequences, matching_status)
         
         # Step 9: Save results to Excel file
         from ..utils import FileUtils
@@ -590,65 +595,6 @@ def run_blast(df):
         logger.warning("No primers passed BLAST filtering. Exiting.")
         return None
         
-    return df
-
-
-def add_rows_for_sequences_without_primers(df, masked_sequences):
-    """
-    Check for sequences that didn't get primers and add them to the results.
-    
-    Args:
-        df: DataFrame with primer results
-        masked_sequences: Dictionary of input sequences
-        
-    Returns:
-        pandas.DataFrame: Updated DataFrame
-    """
-    logger.debug("Checking for sequences without primers...")
-    
-    # Get all sequence IDs that have primers
-    sequences_with_primers = set()
-    if "Gene" in df.columns:
-        # Get all sequence names from the Gene column that have valid primers
-        valid_primers_mask = df["Primer F"] != "No suitable primers found"
-        valid_genes = df.loc[valid_primers_mask, "Gene"].astype(str).unique()
-        sequences_with_primers.update(valid_genes)
-    
-    # Get all input sequence IDs
-    all_input_sequences = set(masked_sequences.keys())
-    
-    # Find sequences without primers
-    sequences_without_primers = all_input_sequences - sequences_with_primers
-    
-    logger.debug(f"All input sequences: {len(all_input_sequences)}")
-    logger.debug(f"Sequences with primers: {len(sequences_with_primers)}")
-    logger.debug(f"Sequences without primers: {len(sequences_without_primers)}")
-    
-    if sequences_without_primers:
-        logger.debug(f"Adding rows for {len(sequences_without_primers)} sequences without primers")
-        
-        # Create rows for sequences without primers
-        no_primer_rows = []
-        for seq_id in sequences_without_primers:
-            # Create a row with only the necessary columns to avoid dtype issues
-            row = {
-                "Gene": seq_id,
-                "Primer F": "No suitable primers found"
-            }
-            
-            # Add the row to our list
-            no_primer_rows.append(row)
-        
-        # Add these rows to the DataFrame
-        if no_primer_rows:
-            # Create a new DataFrame with just the minimal set of columns
-            no_primer_df = pd.DataFrame(no_primer_rows)
-            
-            # Concatenate with the original DataFrame
-            # This avoids the FutureWarning by not including empty columns
-            df = pd.concat([df, no_primer_df], ignore_index=True, sort=False)
-            logger.debug(f"Added {len(no_primer_rows)} rows for sequences without primers")
-    
     return df
 
 

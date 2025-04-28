@@ -72,7 +72,7 @@ def setup_logging(debug: bool = False) -> str:
         logger.debug(f"Python version: {sys.version}")
         logger.debug(f"Platform: {sys.platform}")
     else:
-        logger.info(f"Log file: {log_file}")
+        logger.debug(f"Log file: {log_file}")
     
     # Set Config.DEBUG_MODE to ensure consistency
     Config.DEBUG_MODE = debug_enabled

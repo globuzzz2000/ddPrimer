@@ -724,7 +724,6 @@ class FileUtils:
         # Save with formatting
         try:
             output_path = FileUtils.save_formatted_excel(df, output_file, logger=logger)
-            logger.info(f"Results saved to: {output_path}")
             return output_path
         except Exception as e:
             # Fallback if formatting fails

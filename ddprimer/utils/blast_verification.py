@@ -160,6 +160,9 @@ def _retry_verify_with_blastdbcmd(db_path, logger):
     Returns:
         bool: True if verification succeeds, False otherwise
     """
+    if logger is None:
+        logger = logging.getLogger("ddPrimer")
+        
     try:
         # Quote the database path exactly like blast_processor.py does
         quoted_db_path = f'"{db_path}"'
