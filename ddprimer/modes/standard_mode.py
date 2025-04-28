@@ -85,6 +85,9 @@ def run(args):
             # Set args.gff to None so it's consistent
             args.gff = None
         
+        # Signal that all file selections are complete
+        FileUtils.mark_selection_complete()
+        
         # Set up output directory
         if args.output:
             output_dir = args.output

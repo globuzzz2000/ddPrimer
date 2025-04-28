@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Fixed FileUtils class for ddPrimer pipeline.
-This addresses the file selection crash on macOS after selecting the first file.
+Safer FileUtils class for ddPrimer pipeline.
+This implements a conservative approach that just hides the app without destroying it.
 """
 
 import os
@@ -87,6 +87,43 @@ class FileUtils:
 
     # Initialize last directory with user's home directory
     _last_directory = None
+    
+    # Shared wxPython app instance to manage file dialogs
+    _wx_app = None
+    
+    @classmethod
+    def initialize_wx_app(cls):
+        """
+        Initialize the wxPython app if it doesn't exist yet.
+        """
+        if HAS_WX and cls._wx_app is None:
+            with _silence_cocoa_stderr():
+                cls._wx_app = wx.App(False)
+                Config.debug("wxPython app initialized")
+    
+    @classmethod
+    def hide_app(cls):
+        """
+        Hide the wxPython app without destroying it.
+        This is safer on macOS and avoids segmentation faults.
+        """
+        if cls.is_macos and cls.has_pyobjc and cls._wx_app is not None:
+            try:
+                import AppKit
+                # Hide from Dock
+                NSApplication = AppKit.NSApplication.sharedApplication()
+                NSApplication.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+                Config.debug("App hidden from macOS dock")
+            except Exception as e:
+                Config.debug(f"Error hiding app: {e}")
+
+    @classmethod
+    def mark_selection_complete(cls):
+        """
+        Mark that all file selections are complete and hide the app from the dock.
+        """
+        Config.debug("File selection process marked as complete")
+        cls.hide_app()
 
     @classmethod
     def get_last_directory(cls):
@@ -190,7 +227,6 @@ class FileUtils:
                     
         return normalized
     
-
     @classmethod
     def get_file(cls, prompt, filetypes):
         """
@@ -217,13 +253,15 @@ class FileUtils:
         # wxPython implementation
         if not cls.use_cli and HAS_WX:
             try:
+                # Initialize the wx.App if it doesn't exist yet
+                cls.initialize_wx_app()
+                
                 valid_filetypes = cls.normalize_filetypes(filetypes)
                 # Exclude the generic 'All Files' filter so users see only specific types
                 specific_types = [ft for ft in valid_filetypes if not ft[0].startswith("All Files")]
                 wildcard = "|".join([f"{desc} ({ext})|{ext}" for desc, ext in specific_types]) or "All Files (*.*)|*.*"
 
                 with _silence_cocoa_stderr():
-                    app = wx.App(False)
                     dlg = wx.FileDialog(
                         None,
                         prompt,
@@ -239,7 +277,6 @@ class FileUtils:
                     else:
                         file_path = ""
                     dlg.Destroy()
-                    app.Destroy()
 
                 if not file_path:
                     print(f"No file was selected in the dialog. Exiting.")
@@ -252,7 +289,9 @@ class FileUtils:
 
             except Exception as e:
                 Config.debug(f"wxPython get_file failed: {e}")
-        # If wxPython isn’t available or also failed, use CLI
+                # Don't try to clean up the app, as that might be causing segfaults
+        
+        # If wxPython isn't available or also failed, use CLI
         cls.use_cli = True
         return cls.get_file(prompt, filetypes)
 
@@ -283,13 +322,15 @@ class FileUtils:
         # wxPython implementation
         if not cls.use_cli and HAS_WX:
             try:
+                # Initialize the wx.App if it doesn't exist yet
+                cls.initialize_wx_app()
+                
                 valid_filetypes = cls.normalize_filetypes(filetypes)
                 # Exclude the generic 'All Files' filter so users see only specific types
                 specific_types = [ft for ft in valid_filetypes if not ft[0].startswith("All Files")]
                 wildcard = "|".join([f"{desc} ({ext})|{ext}" for desc, ext in specific_types]) or "All Files (*.*)|*.*"
 
                 with _silence_cocoa_stderr():
-                    app = wx.App(False)
                     dlg = wx.FileDialog(
                         None,
                         prompt,
@@ -304,7 +345,6 @@ class FileUtils:
                     if dlg.ShowModal() == wx.ID_OK:
                         file_paths = dlg.GetPaths()
                     dlg.Destroy()
-                    app.Destroy()
 
                 if not file_paths:
                     print(f"No files were selected in the dialog. Exiting.")
@@ -320,8 +360,9 @@ class FileUtils:
 
             except Exception as e:
                 Config.debug(f"wxPython get_files failed: {e}")
+                # Don't try to clean up the app, as that might be causing segfaults
 
-        # If wxPython isn’t available or also failed, use CLI
+        # If wxPython isn't available or also failed, use CLI
         cls.use_cli = True
         return cls.get_file(prompt, filetypes)
     
@@ -610,6 +651,7 @@ class FileUtils:
             import traceback
             logger.debug(traceback.format_exc())
             raise
+
 
     @staticmethod
     def save_results(df, output_dir, input_file, mode='standard', second_fasta=None, logger=None):

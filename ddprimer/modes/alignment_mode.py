@@ -19,7 +19,7 @@ import tempfile
 from ..config import Config
 from ..utils import FileUtils
 from ..core import AnnotationProcessor
-from ..helpers import AlignmentWorkflow
+from ..helpers import AlignmentWorkflow, LastZRunner
 from . import common  # Import common module functions
 
 # Set up logging
@@ -68,6 +68,9 @@ def run(args):
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return False
             
+            # Signal that all file selections are complete
+            FileUtils.mark_selection_complete()
+            
             # Set up output directory
             if args.output:
                 output_dir = args.output
@@ -82,9 +85,6 @@ def run(args):
             
             # Run only the LastZ portion of the alignment workflow
             logger.info("\n>>> Running LastZ alignment only <<<")
-            
-            # Import lastz_runner directly
-            from ..alignment.lastz_runner import LastZRunner
             
             try:
                 # Create LastZ runner instance
@@ -176,6 +176,10 @@ def run(args):
                     return False
             elif args.noannotation:
                 logger.info("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
+            
+            # Signal that all file selections are complete
+            FileUtils.mark_selection_complete()
+            
         else:
             # Need all files for alignment workflow
             if not args.fasta:
@@ -247,6 +251,9 @@ def run(args):
                     return False
             elif args.noannotation:
                 logger.info("\n>>> Skipping GFF annotation file selection (--noannotation specified) <<<")
+            
+            # Signal that all file selections are complete
+            FileUtils.mark_selection_complete()
         
         # Set up output directory
         if args.output:

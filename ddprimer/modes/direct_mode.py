@@ -97,8 +97,13 @@ def run(args):
                     logger.error(f"Error selecting VCF file: {e}")
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     args.snp = False
+            
+            # Signal that all file selections are complete
+            FileUtils.mark_selection_complete()
         else:
             logger.info("\n>>> SNP masking is disabled <<<")
+            # Signal that all file selections are complete
+            FileUtils.mark_selection_complete()
         
         # Load sequences directly from the provided file
         logger.info("\nLoading sequences from input file...")

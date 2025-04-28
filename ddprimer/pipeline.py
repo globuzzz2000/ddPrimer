@@ -225,6 +225,10 @@ def run_pipeline():
             except Exception as e:
                 logger.error(f"Error creating BLAST database: {e}")
                 logger.debug(traceback.format_exc())
+                # Cleanup the wxPython app if it was used
+                from .utils.file_utils import FileUtils
+                if hasattr(FileUtils, '_wx_app') and FileUtils._wx_app is not None:
+                    FileUtils.cleanup_wx_app()
                 return False
         
         # Skip BLAST verification for lastzonly mode
@@ -246,6 +250,10 @@ def run_pipeline():
                 logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
                 logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
                 logger.error("======================================")
+                # Cleanup the wxPython app if it was used
+                from .utils.file_utils import FileUtils
+                if hasattr(FileUtils, '_wx_app') and FileUtils._wx_app is not None:
+                    FileUtils.cleanup_wx_app()
                 return False
         
         logger.debug("=== Primer Design Pipeline ===")
@@ -258,6 +266,7 @@ def run_pipeline():
         
         if success:
             logger.info("\n=== Pipeline execution completed successfully! ===")
+            logger.info("\n")
             return True
         else:
             logger.error("Pipeline execution failed")
