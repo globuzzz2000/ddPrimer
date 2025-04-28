@@ -172,6 +172,8 @@ def run_pipeline():
         
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
+        # Hide the NUPACK shutdown banner:
+        logging.getLogger("nupack.rebind.render").setLevel(logging.WARNING)
         
         logger = logging.getLogger("ddPrimer")
         logger.debug("Starting pipeline execution")
@@ -246,7 +248,7 @@ def run_pipeline():
                 logger.error("======================================")
                 return False
         
-        logger.info("=== Primer Design Pipeline ===")
+        logger.debug("=== Primer Design Pipeline ===")
         
         # Use factory pattern to get the appropriate workflow
         workflow = WorkflowFactory.create_workflow(args)
@@ -255,7 +257,7 @@ def run_pipeline():
         success = workflow(args)
         
         if success:
-            logger.info("Pipeline execution completed successfully")
+            logger.info("\n=== Pipeline execution completed successfully! ===")
             return True
         else:
             logger.error("Pipeline execution failed")

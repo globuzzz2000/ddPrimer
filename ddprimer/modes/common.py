@@ -76,7 +76,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
                 logger.warning("Gene annotations not provided for standard/alignment mode. Exiting.")
                 return False
                     
-            logger.info("\nFiltering sequences by gene overlap...")
+            logger.info("Filtering sequences by gene overlap...")
             try:
                 logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
                 filtered_fragments = SequenceProcessor.filter_by_gene_overlap(restriction_fragments, genes)
@@ -132,7 +132,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         )
         
         if output_path:
-            logger.info(f"Results saved to: {output_path}")
+            logger.info(f"\nResults saved to: {output_path}")
             return True
         else:
             logger.error("Failed to save results.")
@@ -360,7 +360,7 @@ def filter_primers(primer_results):
     Returns:
         pandas.DataFrame: Filtered primer DataFrame
     """
-    logger.info("\nFiltering primers...")
+    logger.info("Filtering primers...")
 
     # Convert to DataFrame
     df = pd.DataFrame(primer_results)

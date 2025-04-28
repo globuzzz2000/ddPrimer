@@ -8,12 +8,12 @@ This addresses the file selection crash on macOS after selecting the first file.
 import os
 import sys
 import platform
-import tkinter as tk
 import pandas as pd
 from tkinter import filedialog
 from ..config import Config
 
-# Optional imports for Excel formatting
+
+# Optional import for Excel formatting
 try:
     import openpyxl
     from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
@@ -22,6 +22,30 @@ try:
 except ImportError:
     HAS_OPENPYXL = False
 
+# Optional import for wxPython file dialogs
+try:
+    import wx
+    HAS_WX = True
+except ImportError:
+    HAS_WX = False
+
+import contextlib
+@contextlib.contextmanager
+def _silence_cocoa_stderr():
+    """Temporarily redirect C-level stderr to /dev/null (macOS IMK chatter)."""
+    if platform.system() != "Darwin":
+        yield
+        return
+    import os, sys
+    old_fd = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(old_fd, 2)
+        os.close(old_fd)
 
 class FileUtils:
     """Handles file operations including UI dialogs and file parsing."""
@@ -165,6 +189,7 @@ class FileUtils:
                     normalized.insert(0, (desc, clean_ext))
                     
         return normalized
+    
 
     @classmethod
     def get_file(cls, prompt, filetypes):
@@ -181,70 +206,55 @@ class FileUtils:
         # Get the last directory from our persistent storage
         last_directory = cls.get_last_directory()
         Config.debug(f"Starting with last directory: {last_directory}")
-        
+
         if cls.use_cli:
-            file_path = input(f"{prompt} (enter file path manually): ").strip()
+            file_path = input(f"{prompt}: ").strip()
             if not file_path:
                 print(f"{prompt} - No file selected. Exiting.")
                 sys.exit(1)
             return file_path
-        
-        # Fall back to tkinter implementation
-        try:
-            # Ensure we're starting fresh - kill any existing tk instances
+
+        # wxPython implementation
+        if not cls.use_cli and HAS_WX:
             try:
-                if hasattr(tk, '_default_root') and tk._default_root:
-                    tk._default_root.destroy()
-                    tk._default_root = None
-            except:
-                pass  # Ignore if no existing root
-            
-            # Create completely new tk root
-            root = tk.Tk()
-            root.withdraw()  # Hide the main window
-            
-            # Process file types for the current platform
-            valid_filetypes = cls.normalize_filetypes(filetypes)
-            Config.debug(f"Using file types: {valid_filetypes}")
-            
-            # Make sure dialog doesn't output errors to terminal
-            original_stderr = sys.stderr
-            sys.stderr = open(os.devnull, "w")
-            
-            # Log the initial directory we're using
-            Config.debug(f"Opening dialog with initial directory: {last_directory}")
-            
-            try:
-                # Show the dialog
-                file_path = filedialog.askopenfilename(
-                    title=prompt,
-                    filetypes=valid_filetypes,
-                    initialdir=last_directory
-                )
-            finally:
-                # Restore stderr
-                sys.stderr.close()
-                sys.stderr = original_stderr
-            
-            # Force proper cleanup
-            root.destroy()
-            
-            if not file_path:
-                print(f"No file was selected in the dialog. Exiting.")
-                sys.exit(1)
-            
-            # Update the last directory for next time
-            directory_path = os.path.dirname(file_path)
-            cls.save_last_directory(directory_path)
-            Config.debug(f"Updated last directory to: {directory_path}")
-            
-            print(f"Selected file: {file_path}")
-            return file_path
-            
-        except Exception as e:
-            print(f"GUI initialization failed ({e}), falling back to CLI mode.")
-            cls.use_cli = True
-            return cls.get_file(prompt, filetypes)
+                valid_filetypes = cls.normalize_filetypes(filetypes)
+                # Exclude the generic 'All Files' filter so users see only specific types
+                specific_types = [ft for ft in valid_filetypes if not ft[0].startswith("All Files")]
+                wildcard = "|".join([f"{desc} ({ext})|{ext}" for desc, ext in specific_types]) or "All Files (*.*)|*.*"
+
+                with _silence_cocoa_stderr():
+                    app = wx.App(False)
+                    dlg = wx.FileDialog(
+                        None,
+                        prompt,
+                        wildcard=wildcard,
+                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST
+                    )
+                    dlg.SetDirectory(last_directory)
+                    # Ensure the first specific filter is pre‑selected
+                    dlg.SetFilterIndex(0)
+
+                    if dlg.ShowModal() == wx.ID_OK:
+                        file_path = dlg.GetPath()
+                    else:
+                        file_path = ""
+                    dlg.Destroy()
+                    app.Destroy()
+
+                if not file_path:
+                    print(f"No file was selected in the dialog. Exiting.")
+                    sys.exit(1)
+
+                cls.save_last_directory(os.path.dirname(file_path))
+                Config.debug(f"Updated last directory to: {os.path.dirname(file_path)}")
+                print(f"Selected file: {file_path}")
+                return file_path
+
+            except Exception as e:
+                Config.debug(f"wxPython get_file failed: {e}")
+        # If wxPython isn’t available or also failed, use CLI
+        cls.use_cli = True
+        return cls.get_file(prompt, filetypes)
 
     @classmethod
     def get_files(cls, prompt, filetypes):
@@ -261,75 +271,59 @@ class FileUtils:
         # Get the last directory from our persistent storage
         last_directory = cls.get_last_directory()
         Config.debug(f"Starting with last directory: {last_directory}")
-            
+
         if cls.use_cli:
-            paths = input(f"{prompt} (enter file paths separated by spaces): ").strip()
+            paths = input(f"{prompt} (paths separated by spaces): ").strip()
             file_paths = paths.split() if paths else []
             if not file_paths:
                 print(f"{prompt} - No files selected. Exiting.")
                 sys.exit(1)
             return file_paths
-        
-        # Fall back to tkinter implementation
-        try:
-            # Ensure we're starting fresh - kill any existing tk instances
+
+        # wxPython implementation
+        if not cls.use_cli and HAS_WX:
             try:
-                if hasattr(tk, '_default_root') and tk._default_root:
-                    tk._default_root.destroy()
-                    tk._default_root = None
-            except:
-                pass  # Ignore if no existing root
-            
-            # Create completely new tk root
-            root = tk.Tk()
-            root.withdraw()  # Hide the main window
-            
-            # Process file types for the current platform
-            valid_filetypes = cls.normalize_filetypes(filetypes)
-            Config.debug(f"Using file types: {valid_filetypes}")
-            
-            # Make sure dialog doesn't output errors to terminal
-            original_stderr = sys.stderr
-            sys.stderr = open(os.devnull, "w")
-            
-            # Log the initial directory we're using
-            Config.debug(f"Opening dialog with initial directory: {last_directory}")
-            
-            try:
-                # Show the dialog
-                file_paths = filedialog.askopenfilenames(
-                    title=prompt,
-                    filetypes=valid_filetypes,
-                    initialdir=last_directory
-                )
-            finally:
-                # Restore stderr
-                sys.stderr.close()
-                sys.stderr = original_stderr
-            
-            # Force proper cleanup
-            root.destroy()
-            
-            if not file_paths:
-                print(f"No files were selected in the dialog. Exiting.")
-                sys.exit(1)
-            
-            # Update the last directory for next time
-            if file_paths and os.path.isfile(file_paths[0]):
-                new_directory = os.path.dirname(file_paths[0])
-                cls.save_last_directory(new_directory)
-                Config.debug(f"Updated last directory to: {new_directory}")
-            
-            print(f"Selected {len(file_paths)} file(s)")
-            for path in file_paths:
-                print(f" - {path}")
-                
-            return file_paths
-            
-        except Exception as e:
-            print(f"GUI initialization failed ({e}), falling back to CLI mode.")
-            cls.use_cli = True
-            return cls.get_files(prompt, filetypes)
+                valid_filetypes = cls.normalize_filetypes(filetypes)
+                # Exclude the generic 'All Files' filter so users see only specific types
+                specific_types = [ft for ft in valid_filetypes if not ft[0].startswith("All Files")]
+                wildcard = "|".join([f"{desc} ({ext})|{ext}" for desc, ext in specific_types]) or "All Files (*.*)|*.*"
+
+                with _silence_cocoa_stderr():
+                    app = wx.App(False)
+                    dlg = wx.FileDialog(
+                        None,
+                        prompt,
+                        wildcard=wildcard,
+                        style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE
+                    )
+                    dlg.SetDirectory(last_directory)
+                    # Ensure the first specific filter is pre‑selected
+                    dlg.SetFilterIndex(0)
+
+                    file_paths = []
+                    if dlg.ShowModal() == wx.ID_OK:
+                        file_paths = dlg.GetPaths()
+                    dlg.Destroy()
+                    app.Destroy()
+
+                if not file_paths:
+                    print(f"No files were selected in the dialog. Exiting.")
+                    sys.exit(1)
+
+                cls.save_last_directory(os.path.dirname(file_paths[0]))
+                Config.debug(f"Updated last directory to: {os.path.dirname(file_paths[0])}")
+
+                print(f"Selected {len(file_paths)} file(s)")
+                for p in file_paths:
+                    print(f" - {p}")
+                return file_paths
+
+            except Exception as e:
+                Config.debug(f"wxPython get_files failed: {e}")
+
+        # If wxPython isn’t available or also failed, use CLI
+        cls.use_cli = True
+        return cls.get_file(prompt, filetypes)
     
     @staticmethod
     def load_fasta(filepath):
@@ -371,7 +365,7 @@ class FileUtils:
         return sequences
     
     @staticmethod
-    def save_formatted_excel(df, output_file, logger=None):
+    def format_excel(df, output_file, logger=None):
         """
         Save DataFrame to Excel with specific formatting.
         If openpyxl is not available, falls back to standard pandas Excel export.
@@ -723,7 +717,7 @@ class FileUtils:
         
         # Save with formatting
         try:
-            output_path = FileUtils.save_formatted_excel(df, output_file, logger=logger)
+            output_path = FileUtils.format_excel(df, output_file, logger=logger)
             return output_path
         except Exception as e:
             # Fallback if formatting fails
@@ -732,7 +726,7 @@ class FileUtils:
             
             try:
                 df.to_excel(output_file, index=False)
-                logger.info(f"Results saved to: {output_file} (without formatting)")
+                logger.info(f"\nResults saved to: {output_file} (without formatting)")
                 return output_file
             except Exception as ex:
                 logger.error(f"Failed to save results: {ex}")

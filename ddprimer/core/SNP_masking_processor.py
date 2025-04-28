@@ -28,7 +28,7 @@ class SNPMaskingProcessor:
         Returns:
             dict: Dictionary mapping chromosomes to sets of variant positions
         """
-        logger.info(f"Fetching variant positions from {vcf_file}...")
+        logger.debug(f"Fetching variant positions from {vcf_file}...")
         
         # Base command
         command = f'bcftools query -f "%CHROM\\t%POS\\n" "{vcf_file}"'
@@ -61,7 +61,7 @@ class SNPMaskingProcessor:
                     
                 variants[chrom].add(pos)
         
-        logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants from {len(variants)} chromosomes")
+        logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants across {len(variants)} chromosomes")
         return variants
     
     def extract_reference_sequences(self, fasta_file):

@@ -109,9 +109,8 @@ def run(args):
             return False
         
         total_variants = sum(len(positions) for positions in variants.values())
-        logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
         
-        logger.info("\nLoading sequences from FASTA file...")
+        logger.info("Loading sequences from FASTA file...")
         try:
             sequences = FileUtils.load_fasta(args.fasta)
             logger.debug(f"Sequences loaded successfully from {args.fasta}")
