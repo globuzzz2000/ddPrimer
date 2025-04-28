@@ -19,7 +19,7 @@ import tempfile
 from ..config import Config
 from ..utils import FileUtils
 from ..core import AnnotationProcessor
-from ..alignment import AlignmentWorkflow
+from ..helpers import AlignmentWorkflow
 from . import common  # Import common module functions
 
 # Set up logging

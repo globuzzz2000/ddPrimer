@@ -9,5 +9,6 @@ This module provides functionality for:
 from .alignment_workflow import AlignmentWorkflow
 from .lastz_runner import LastZRunner
 from .maf_parser import MAFParser
+from .direct_masking import LocationFinder, EmptyWarning
 
-__all__ = ['AlignmentWorkflow', 'LastZRunner', 'MAFParser']
+__all__ = ['AlignmentWorkflow', 'LastZRunner', 'MAFParser', 'LocationFinder', 'EmptyWarning']
