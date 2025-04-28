@@ -20,9 +20,9 @@ import re
 # Import package modules
 from ..config import Config
 from ..utils import FileUtils
-from ..core import SNPMaskingProcessor, BlastProcessor
+from ..core import SNPMaskingProcessor
 from . import common
-from ..helpers import LocationFinder, EmptyWarning
+from ..helpers import DirectMasking
 
 # Set up logging
 logger = logging.getLogger("ddPrimer")
@@ -126,20 +126,17 @@ def run(args):
             logger.debug(f"Reference FASTA: {ref_fasta}")
             logger.debug(f"Reference VCF: {ref_vcf}")
             
-            # Initialize SNP masking processor
+            # Initialize processors
             snp_processor = SNPMaskingProcessor()
+            direct_masking = DirectMasking()
             
             try:
-                # Extract variants from VCF
-                variants = snp_processor.get_variant_positions(ref_vcf)
-                logger.debug(f"Extracted variants from VCF file")
-                
-                # Process each sequence
+                # Process each sequence individually
                 for seq_id, sequence in sequences.items():
                     logger.debug(f"Processing sequence {seq_id} ({len(sequence)} bp)")
                     
                     # Find sequence location in reference genome using BLAST
-                    source_chrom, start_pos, end_pos, identity = LocationFinder(
+                    source_chrom, start_pos, end_pos, identity = DirectMasking.find_location(
                         sequence, ref_fasta
                     )
                     
@@ -149,16 +146,16 @@ def run(args):
                         logger.debug(f"Matched sequence {seq_id} to {source_chrom}:{start_pos}-{end_pos} "
                                     f"with {identity}% identity")
                         
-                        # Apply variants only from the matching chromosome
-                        seq_variants = variants.get(source_chrom, set())
+                        # Extract only the variants for this specific region
+                        # VCF file will be automatically prepared (compressed and indexed) if needed
+                        region_variants = direct_masking.get_region_variants(ref_vcf, source_chrom, start_pos, end_pos)
                         
                         # Adjust variant positions to sequence coordinates
                         adjusted_variants = set()
-                        for var_pos in seq_variants:
-                            if start_pos <= var_pos <= end_pos:
-                                # Convert genome coordinate to sequence coordinate
-                                seq_pos = var_pos - start_pos
-                                adjusted_variants.add(seq_pos)
+                        for var_pos in region_variants:
+                            # Convert genome coordinate to sequence coordinate
+                            seq_pos = var_pos - start_pos
+                            adjusted_variants.add(seq_pos)
                         
                         # Mask the sequence with adjusted variants
                         if adjusted_variants:
@@ -212,7 +209,7 @@ def run(args):
             skip_annotation_filtering=args.noannotation,
             matching_status=matching_status,  # Pass matching status
             all_sequences=all_sequences,  # Pass all sequences including those that failed matching
-            add_rows_function=EmptyWarning  # Pass the function itself
+            add_rows_function=DirectMasking.add_missing_sequences  # Pass the static method
         )
         
         return success

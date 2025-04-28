@@ -266,7 +266,7 @@ def run_pipeline():
         
         if success:
             logger.info("\n=== Pipeline execution completed successfully! ===")
-            logger.info("\n")
+            logger.info("")
             return True
         else:
             logger.error("Pipeline execution failed")

@@ -16,7 +16,7 @@ class SNPMaskingProcessor:
     def __init__(self):
         """Initialize SNP masking processor."""
         pass
-    
+
     def get_variant_positions(self, vcf_file, chromosome=None):
         """
         Extract variant positions from the VCF file using bcftools.
@@ -63,6 +63,7 @@ class SNPMaskingProcessor:
         
         logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants across {len(variants)} chromosomes")
         return variants
+    
     
     def extract_reference_sequences(self, fasta_file):
         """
