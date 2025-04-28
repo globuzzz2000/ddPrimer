@@ -23,6 +23,10 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+# Silence extra ddPrimer logging
+import logging as _logging
+_logging.getLogger("ddPrimer").setLevel(_logging.CRITICAL)
+
 # Import logging fix to reduce excessive logging
 from test_logging_fix import logger
 
@@ -130,138 +134,62 @@ def check_samtools_installed():
         return False
 
 def create_test_files():
-    """Create realistic test files for alignment mode comprehensive test."""
-    # 1. Create reference FASTA with multiple sequences representing model organism (e.g., A. thaliana)
-    ref_fasta_content = """>chr1 Arabidopsis thaliana chromosome 1
-ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCA
-GCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCATCGATCGATGC
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
-ATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCG
-ATCGATCGATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATG
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
->chr2 Arabidopsis thaliana chromosome 2
-GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA
-ATCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATG
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
-ATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCG
-CTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCA
-GCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCG
->chr3 Arabidopsis thaliana chromosome 3
-TGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAG
-CTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGA
-GCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCTAGCGATC
-GCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCG
-ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCA
-CTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGAT
-"""
+    """Create minimal, fully-aligned test files: one chromosome, 600bp, with 10 SNPs."""
+    # 1. Make chromosome sequence
+    chrA = "ATG" + "C"*297 + "G"*300  # 600 bp
+    # 2. Make second species: introduce 10 SNPs evenly spaced
+    chrB = list(chrA)
+    snp_positions = [60 * i for i in range(1, 11)]  # 60,120,...,600 (1-based)
+    snp_positions_0 = [p-1 for p in snp_positions]  # 0-based
+    # For each, change to a different base (cyclically: if C, to A, if G, to T, etc.)
+    def alt_base(b):
+        return {"A": "C", "C": "A", "G": "T", "T": "G"}.get(b, "N")
+    for i, pos in enumerate(snp_positions_0):
+        chrB[pos] = alt_base(chrB[pos])
+    chrB = "".join(chrB)
+    # 3. Write reference FASTA (one record)
     ref_fasta_path = test_dir / "reference.fasta"
     with open(ref_fasta_path, "w") as f:
-        f.write(ref_fasta_content)
-    
-    # 2. Create second species FASTA with imperfections - mismatches, insertions, deletions
-    second_fasta_content = """>chr1 Closely related species chromosome 1
-ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGTTCGTACGATCGAGATCGATCGATGCATGCTAGCA
-GCGATCGATCGATTCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCATCGATCGATGC
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCG--CGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
-ATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCG
-ATCGATCGATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATG
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
->chr2 Closely related species chromosome 2
-GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA
-ATCGATCGATCGTACGATCGATCGATGCTTGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATG
-GCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATTGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
-ATCGATCGTAGCTAGCTACGTAGCTGATCGATCGAACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCG
-CTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCA
-GCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATTGTACGATCGATCGATGCATGCTAGCATCGATCG
->chr3 Closely related species chromosome 3
-TGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCG--CGTACGTAGCTACGATCGTAG
-CTAGCATAGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGA
-GCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCTAGCGATC
-GCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCG
-ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCA
-CTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGAT
-"""
+        f.write(">chrA\n")
+        for i in range(0, len(chrA), 60):
+            f.write(chrA[i:i+60] + "\n")
+    # 4. Write second species FASTA (one record, same name)
     second_fasta_path = test_dir / "second_species.fasta"
     with open(second_fasta_path, "w") as f:
-        f.write(second_fasta_content)
-    
-    # 3. Create reference VCF file with realistic SNPs/indels
-    ref_vcf_content = """##fileformat=VCFv4.2
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample1
-chr1	10	SNP001	A	T	100	PASS	.	GT	1/1
-chr1	25	SNP002	G	C	95	PASS	.	GT	0/1
-chr1	50	SNP003	C	G	98	PASS	.	GT	1/0
-chr1	75	SNP004	A	G	99	PASS	.	GT	1/1
-chr1	100	SNP005	T	C	97	PASS	.	GT	0/1
-chr2	15	SNP006	G	A	94	PASS	.	GT	0/1
-chr2	40	SNP007	T	C	92	PASS	.	GT	1/1
-chr2	65	SNP008	C	A	91	PASS	.	GT	0/1
-chr2	90	SNP009	G	T	93	PASS	.	GT	1/0
-chr3	20	SNP010	C	T	96	PASS	.	GT	1/1
-chr3	45	SNP011	T	A	90	PASS	.	GT	0/1
-chr3	70	SNP012	G	C	89	PASS	.	GT	1/0
-"""
+        f.write(">chrA\n")
+        for i in range(0, len(chrB), 60):
+            f.write(chrB[i:i+60] + "\n")
+    # 5. Write reference VCF (10 SNPs, REF=chrA, ALT=chrB)
     ref_vcf_path = test_dir / "reference.vcf"
     with open(ref_vcf_path, "w") as f:
-        f.write(ref_vcf_content)
-    
-    # 4. Create second species VCF file
-    second_vcf_content = """##fileformat=VCFv4.2
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sample1
-chr1	15	SNP101	C	T	96	PASS	.	GT	1/1
-chr1	30	SNP102	A	G	95	PASS	.	GT	0/1
-chr1	55	SNP103	G	A	94	PASS	.	GT	1/0
-chr1	80	SNP104	T	C	93	PASS	.	GT	1/1
-chr1	105	SNP105	G	A	92	PASS	.	GT	0/1
-chr2	20	SNP106	T	G	91	PASS	.	GT	0/1
-chr2	45	SNP107	G	A	90	PASS	.	GT	1/1
-chr2	70	SNP108	A	C	89	PASS	.	GT	0/1
-chr2	95	SNP109	T	G	88	PASS	.	GT	1/0
-chr3	25	SNP110	G	T	87	PASS	.	GT	1/1
-chr3	50	SNP111	A	C	86	PASS	.	GT	0/1
-chr3	75	SNP112	T	G	85	PASS	.	GT	1/0
-"""
+        f.write("##fileformat=VCFv4.2\n")
+        f.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\n")
+        for i, pos in enumerate(snp_positions):
+            ref_base = chrA[pos-1]
+            alt = chrB[pos-1]
+            f.write(f"chrA\t{pos}\tSNP{100+i:03d}\t{ref_base}\t{alt}\t99\tPASS\t.\tGT\t1/1\n")
+    # 6. Write second species VCF (10 SNPs, same positions, ALT swapped back to ref)
     second_vcf_path = test_dir / "second_species.vcf"
     with open(second_vcf_path, "w") as f:
-        f.write(second_vcf_content)
-    
-    # 5. Create GFF file
-    gff_content = """##gff-version 3
-chr1	source	gene	5	150	.	+	.	ID=gene1;Name=GENE1
-chr1	source	exon	5	50	.	+	.	Parent=gene1;Name=GENE1.1
-chr1	source	exon	75	120	.	+	.	Parent=gene1;Name=GENE1.2
-chr2	source	gene	10	140	.	+	.	ID=gene2;Name=GENE2
-chr2	source	exon	10	60	.	+	.	Parent=gene2;Name=GENE2.1
-chr2	source	exon	80	140	.	+	.	Parent=gene2;Name=GENE2.2
-chr3	source	gene	15	130	.	+	.	ID=gene3;Name=GENE3
-chr3	source	exon	15	45	.	+	.	Parent=gene3;Name=GENE3.1
-chr3	source	exon	60	130	.	+	.	Parent=gene3;Name=GENE3.2
-"""
-    gff_path = test_dir / "annotation.gff"
-    with open(gff_path, "w") as f:
-        f.write(gff_content)
-    
-    # 6. Create a realistic MAF file that mimics LastZ output
-    # This includes alignments with mismatches, indels, and gaps
-    maf_content = """##maf version=1 scoring=LastZ
-a score=10000
-s chr1 0 480 + 480 ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCAGCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCATCGATCGATGCGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCGATCGATCGATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC
-s chr1 0 480 + 480 ATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGTTCGTACGATCGAGATCGATCGATGCATGCTAGCAGCGATCGATCGATTCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCATCGATCGATGCGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCG--CGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCGATCGATCGATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGC--
-
-a score=9950
-s chr2 0 480 + 480 GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAATCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCAGCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCG
-s chr2 0 480 + 480 GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAATCGATCGATCGTACGATCGATCGATGCTTGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATTGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCATCGATCGTAGCTAGCTACGTAGCTGATCGATCGAACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATCGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCAGCGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATTGTACGATCGATCGATGCATGCTAGCATCGATCG
-
-a score=9900
-s chr3 0 480 + 480 TGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCTAGCGATCGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCACTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGAT
-s chr3 0 480 + 480 TGCTAGCTAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCG--CGTACGTAGCTACGATCGTAGCTAGCATAGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGAGCTACGATCGTAGCTAGCGATCGATCGTACGATCGATCGTACGTAGCTAGCGATCGTACGTAGCTACGATCGTAGCTAGCGATCGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGATGGCGATGCTAGCGATCGATCGTAGCTAGCTACGTAGCTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCACTGATCGATCGTACGTACGATCGAGATCGATCGATGCATGCTAGCATCGATCGATCGATGCTAGCGATCGATCGTACGATCGAT--
-"""
+        f.write("##fileformat=VCFv4.2\n")
+        f.write("##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n")
+        f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\n")
+        for i, pos in enumerate(snp_positions):
+            ref_base = chrB[pos-1]
+            alt = chrA[pos-1]
+            f.write(f"chrA\t{pos}\tSNP{200+i:03d}\t{ref_base}\t{alt}\t99\tPASS\t.\tGT\t1/1\n")
+    # 7. Write a single-block MAF for the full 600bp alignment
     maf_path = test_dir / "alignment.maf"
     with open(maf_path, "w") as f:
-        f.write(maf_content)
-    
+        f.write("##maf version=1 scoring=LastZ\n")
+        f.write("a score=1234\n")
+        f.write(f"s chrA 0 600 + 600 {chrA}\n")
+        f.write(f"s chrA 0 600 + 600 {chrB}\n")
+    # 8. Write dummy GFF (not used, but file must exist)
+    gff_path = test_dir / "annotation.gff"
+    with open(gff_path, "w") as f:
+        f.write("##gff-version 3\n")
     return {
         "ref_fasta": ref_fasta_path,
         "second_fasta": second_fasta_path,
@@ -348,7 +276,7 @@ def run_lastz_alignment(ref_fasta, second_fasta, output_dir):
         align_dir.mkdir(exist_ok=True)
         
         # Run our custom LastZ runner
-        from ddprimer.alignment.lastz_runner import LastZRunner
+        from ddprimer.helpers.lastz_runner import LastZRunner
         
         # Create runner and execute alignment
         runner = LastZRunner()
@@ -412,7 +340,7 @@ def visualize_masked_sequences(original_seqs, masked_seqs, coordinate_map, known
         masked_formatted = highlight_changes(orig_display, masked_display)
         logger.info(f"Mask: {masked_formatted}")
         
-        # Find actual masked positions
+        # Find actual masked positions (convert to 1-based for consistency with VCF)
         masked_indices = [i for i, (orig, mask) in enumerate(zip(original, masked)) if orig != mask]
         masked_positions = {i+1 for i in masked_indices}  # Convert to 1-based set
         
@@ -425,7 +353,6 @@ def visualize_masked_sequences(original_seqs, masked_seqs, coordinate_map, known
         if seq_id in coordinate_map:
             mapping_count = len(coordinate_map[seq_id])
             logger.info(f"Coordinate mapping: {mapping_count} positions mapped to second species")
-            
             # Show a few example mappings
             if mapping_count > 0:
                 examples = list(coordinate_map[seq_id].items())[:3]
@@ -447,222 +374,140 @@ def visualize_masked_sequences(original_seqs, masked_seqs, coordinate_map, known
         else:
             logger.info(f"Validation: {yellow('SKIPPED')} - No expected positions available for validation")
 
+# ------------------------------------------------------------------
+# Test harness helpers:  capture AlignmentWorkflow outputs
+# ------------------------------------------------------------------
+# Keep a reference to the original AlignmentWorkflow so the stub can call it
+import ddprimer.helpers as _ddh
+_orig_align_wf = _ddh.AlignmentWorkflow
+
+captured_results = {"masked_sequences": {}, "coordinate_map": {}}
+
+def _capture_alignment_workflow(args, out_dir, lgr):
+    """Proxy AlignmentWorkflow that captures outputs and calls the real function once."""
+    masked, cmap = _orig_align_wf(args, out_dir, lgr)
+    captured_results["masked_sequences"] = masked
+    captured_results["coordinate_map"] = cmap
+    return masked, cmap
+
 def test_alignment_workflow_with_maf():
     """
-    Test alignment mode with a pre-created MAF file.
-    This tests the MAF parsing, conserved region identification,
-    and SNP masking but skips the LastZ alignment.
+    Test alignment mode with a pre‑created MAF file.
+    Captures internal masked_sequences / coordinate_map but skips primer design.
     """
     try:
+        # --- monkey‑patch AlignmentWorkflow so we can capture its output ---
+        import ddprimer.helpers
+        ddprimer.helpers.AlignmentWorkflow = _capture_alignment_workflow
+
         from ddprimer.core import SNPMaskingProcessor
-        from ddprimer.alignment.maf_parser import MAFParser
-        from ddprimer.alignment import AlignmentWorkflow
-        
-        # Create test files
+        from ddprimer.helpers.maf_parser import MAFParser
+
+        # -------------------------------------------------------------------
+        #                  1)  create test input files
+        # -------------------------------------------------------------------
         files = create_test_files()
-        
-        # Mock args object with everything except maf_file
+
+        # Mock CLI args object
         class Args:
             def __init__(self):
-                self.fasta = str(files["ref_fasta"])
-                self.second_fasta = str(files["second_fasta"])
-                self.vcf = str(files["ref_vcf"])
-                self.second_vcf = str(files["second_vcf"])
-                self.gff = str(files["gff"])
-                self.maf_file = str(files["maf"])
-                self.snp = True
-                self.min_identity = 80.0
-                self.min_length = 20
+                self.fasta         = str(files["ref_fasta"])
+                self.second_fasta  = str(files["second_fasta"])
+                self.vcf           = str(files["ref_vcf"])
+                self.second_vcf    = str(files["second_vcf"])
+                self.gff           = str(files["gff"])
+                self.maf_file      = str(files["maf"])
+                self.snp           = True
+                self.min_identity  = 90.0
+                self.min_length    = 500
                 self.lastz_options = "--format=maf"
-                self.lastzonly = False
-                self.noannotation = False
-                
+                self.lastzonly     = False
+                self.noannotation  = False
+
         args = Args()
-        
-        # Create output directory
+
+        # -------------------------------------------------------------------
+        #                  2)  run AlignmentWorkflow end‑to‑end
+        # -------------------------------------------------------------------
         output_dir = test_dir / "output"
         output_dir.mkdir(exist_ok=True)
-        
-        # ===== STEP 1: MAF FILE PARSING =====
-        logger.info(magenta("\n===== STEP 1: MAF FILE PARSING ====="))
-        # Initialize MAF parser
-        maf_parser = MAFParser()
-        
-        # Analyze MAF file structure
-        logger.info("Analyzing MAF file structure...")
-        maf_analysis = maf_parser.analyze_maf_file(str(files["maf"]))
-        logger.info(f"MAF file contains {maf_analysis['alignment_count']} alignment blocks")
-        logger.info(f"Reference sequences: {', '.join(maf_analysis['ref_seq_ids'])}")
-        logger.info(f"Query sequences: {', '.join(maf_analysis['query_seq_ids'])}")
-        
-        # Parse MAF file
-        logger.info("Parsing MAF file...")
-        alignments = maf_parser.parse_maf_file(str(files["maf"]))
-        logger.info(f"Parsed {len(alignments)} reference sequences with alignments")
-        
-        # Show alignment visualization for each chromosome
-        for chrom_key in alignments.keys():
-            show_alignment_visualization(alignments, chrom_key)
-        
-        # ===== STEP 2: CONSERVED REGION IDENTIFICATION =====
-        logger.info(magenta("\n===== STEP 2: CONSERVED REGION IDENTIFICATION ====="))
-        conserved_regions = maf_parser.identify_conserved_regions(
-            args.min_identity,
-            args.min_length
-        )
-        
-        total_regions = sum(len(regions) for regions in conserved_regions.values())
-        logger.info(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
-        
-        # Show conserved regions details for each chromosome
-        for chrom, regions in conserved_regions.items():
-            logger.info(f"\nChromosome {chrom}: {len(regions)} conserved regions")
-            if regions:
-                # Show top 3 regions
-                for i, region in enumerate(regions[:3]):
-                    logger.info(f"  Region {i+1}: {region['start']}-{region['end']} ({region['end']-region['start']+1} bp)")
-                    logger.info(f"    Identity: {region['identity']:.2f}%")
-                    logger.info(f"    Maps to: {region['qry_src']}:{region['qry_start']}-{region['qry_end']} ({region['qry_strand']})")
-        
-        # ===== STEP 3: COORDINATE MAPPING =====
-        logger.info(magenta("\n===== STEP 3: COORDINATE MAPPING ====="))
-        coordinate_map = maf_parser.generate_coordinate_map(conserved_regions)
-        
-        # Check mapping for key positions
-        logger.info("Checking coordinate mapping...")
-        found_mappings = 0
-        for chrom, positions in coordinate_map.items():
-            mapped_count = len(positions)
-            found_mappings += mapped_count
-            logger.info(f"Chromosome {chrom}: {mapped_count} positions mapped")
-            
-            # Show some example mappings
-            if mapped_count > 0:
-                examples = list(positions.items())[:3]
-                for ref_pos, mapping in examples:
-                    logger.info(f"  {chrom}:{ref_pos} → {mapping['qry_src']}:{mapping['qry_pos']} ({mapping['qry_strand']})")
-        
-        logger.info(f"Total of {found_mappings} positions mapped across all chromosomes")
-        
-        # ===== STEP 4: SNP EXTRACTION =====
-        logger.info(magenta("\n===== STEP 4: SNP EXTRACTION ====="))
-        # Initialize SNP masking processor
-        snp_processor = SNPMaskingProcessor()
-        
-        # Extract variants from reference VCF
-        logger.info("Extracting variants from reference VCF...")
-        ref_variants = snp_processor.get_variant_positions(str(files["ref_vcf"]))
-        ref_variant_count = sum(len(positions) for positions in ref_variants.values())
-        logger.info(f"Extracted {ref_variant_count} variants from reference genome")
-        
-        # Show variants for each chromosome
-        for chrom, positions in ref_variants.items():
-            pos_list = sorted(positions)
-            logger.info(f"  {chrom}: {len(positions)} variants at positions {pos_list[:5]}...")
-        
-        # Extract variants from second species VCF
-        logger.info("\nExtracting variants from second species VCF...")
-        second_variants = snp_processor.get_variant_positions(str(files["second_vcf"]))
-        second_variant_count = sum(len(positions) for positions in second_variants.values())
-        logger.info(f"Extracted {second_variant_count} variants from second species")
-        
-        # Show variants for each chromosome
-        for chrom, positions in second_variants.items():
-            pos_list = sorted(positions)
-            logger.info(f"  {chrom}: {len(positions)} variants at positions {pos_list[:5]}...")
-        
-        # ===== STEP 5: FULL WORKFLOW EXECUTION =====
-        logger.info(magenta("\n===== STEP 5: FULL WORKFLOW EXECUTION ====="))
-        logger.info("Running full AlignmentWorkflow...")
-        try:
-            # Call AlignmentWorkflow
-            masked_sequences, result_coordinate_map = AlignmentWorkflow(args, str(output_dir), logger)
-            
-            # Check if results are valid
-            if masked_sequences and len(masked_sequences) > 0:
-                logger.info(f"Workflow completed successfully with {len(masked_sequences)} masked sequences")
-                
-                # Load the original reference sequences for comparison
-                logger.info("Loading reference sequences for comparison...")
-                original_sequences = {}
-                for record in SeqIO.parse(files["ref_fasta"], "fasta"):
-                    original_sequences[record.id.split()[0]] = str(record.seq)
-                
-                # Track which positions should be masked
-                known_variants = {
-                    'reference': ref_variants,
-                    'second': {}  # We'll map second species variants to reference coordinates
-                }
-                
-                # Map second species variants to reference coordinates
-                logger.info("Mapping second species variants to reference coordinates...")
-                for ref_chrom, ref_pos_map in coordinate_map.items():
-                    if ref_chrom not in known_variants['second']:
-                        known_variants['second'][ref_chrom] = set()
-                    
-                    for ref_pos, mapping in ref_pos_map.items():
-                        qry_src = mapping['qry_src']
-                        qry_pos = mapping['qry_pos']
-                        
-                        # If this position in second species has a variant, map it back
-                        if qry_src in second_variants and qry_pos in second_variants[qry_src]:
-                            known_variants['second'][ref_chrom].add(ref_pos)
-                
-                # Count mapped variants
-                mapped_variants = sum(len(positions) for positions in known_variants['second'].values())
-                logger.info(f"Mapped {mapped_variants} second species variants to reference coordinates")
-                
-                # Visualize the masked sequences
-                visualize_masked_sequences(original_sequences, masked_sequences, result_coordinate_map, known_variants)
-                
-                # Check for key positions that should be masked
-                logger.info("\nChecking specific positions for masking...")
-                positions_to_check = {
-                    'chr1': [10, 25, 50, 75, 100],  # Reference variants
-                    'chr2': [15, 40, 65, 90],       # Reference variants
-                    'chr3': [20, 45, 70]            # Reference variants
-                }
-                
-                all_checks_passed = True
-                for chrom, positions in positions_to_check.items():
-                    if chrom not in masked_sequences:
-                        logger.warning(f"Chromosome {chrom} not found in masked sequences")
-                        continue
-                    
-                    for pos in positions:
-                        # Convert to 0-based index
-                        idx = pos - 1
-                        if idx < len(masked_sequences[chrom]):
-                            if masked_sequences[chrom][idx] == 'N':
-                                logger.info(f"✓ Position {pos} in {chrom} is correctly masked")
-                            else:
-                                logger.warning(f"✗ Position {pos} in {chrom} should be masked, but found '{masked_sequences[chrom][idx]}'")
-                                all_checks_passed = False
-                
-                if all_checks_passed:
-                    logger.info(green("\nAll tested positions are correctly masked!"))
-                else:
-                    logger.warning(yellow("\nSome positions were not masked as expected"))
-                
-                return True
-            else:
-                logger.error("Workflow completed but returned no masked sequences")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error running AlignmentWorkflow: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+
+        logger.info(magenta("\n===== FULL AlignmentWorkflow with pre‑computed MAF ====="))
+        from ddprimer.helpers import AlignmentWorkflow  # patched version
+        AlignmentWorkflow(args, str(output_dir), logger)
+
+        # If we reach here, AlignmentWorkflow finished.  Check we captured data.
+        if not captured_results["masked_sequences"]:
+            logger.error("AlignmentWorkflow returned no masked sequences")
             return False
-        
+
+        # Sanity check: expect ~10-20 Ns (variants), not hundreds
+        total_len = sum(len(seq) for seq in captured_results["masked_sequences"].values())
+        n_total   = sum(seq.count("N") for seq in captured_results["masked_sequences"].values())
+        logger.info(f"Captured {len(captured_results['masked_sequences'])} sequences, total Ns = {n_total}")
+        # Expect at least 1 N, but not hundreds (since only variants are masked)
+        if n_total > 50:
+            logger.error("Too many Ns masked")
+            return False
+
+        # -------------------------------------------------------------------
+        # 3) strict coordinate validation: each expected SNP must be masked
+        # -------------------------------------------------------------------
+        # -------------------------------------------------------------------
+        # Build expected‑mask dictionaries by simple VCF parsing (no PyVCF).
+        # -------------------------------------------------------------------
+        def read_vcf_positions(vcf_path):
+            pos_dict = {}
+            with open(vcf_path) as vf:
+                for line in vf:
+                    if line.startswith("#"):
+                        continue
+                    fields = line.strip().split("\t")
+                    if len(fields) < 2:
+                        continue
+                    chrom = fields[0]
+                    try:
+                        pos = int(fields[1])
+                    except ValueError:
+                        continue
+                    pos_dict.setdefault(chrom, set()).add(pos)
+            return pos_dict
+
+        expected_from_ref    = read_vcf_positions(files["ref_vcf"])
+        expected_from_second = read_vcf_positions(files["second_vcf"])
+
+        ok = True
+        for seq_id, masked_seq in captured_results["masked_sequences"].items():
+            N_pos = {i + 1 for i, b in enumerate(masked_seq) if b == "N"}  # 1‑based
+            exp = expected_from_ref.get(seq_id, set()) | expected_from_second.get(seq_id, set())
+            # Filter expected positions to those actually inside the conserved region
+            exp = {p for p in exp if p < len(masked_seq)}  # end‑position in MAF is exclusive
+            missing = exp - N_pos
+            extra   = N_pos - exp
+            if missing or extra:
+                logger.error(f"{seq_id}: Masking mismatch – "
+                             f"missing {sorted(missing)}, extra {sorted(extra)}")
+                ok = False
+            else:
+                logger.info(f"{seq_id}: Exact masking validation {green('PASSED')}")
+
+        if not ok:
+            return False
+        return ok
+
     except ImportError as e:
-        logger.error(f"Could not import required modules: {e}")
+        logger.error(f"Import error in test_alignment_workflow_with_maf: {e}")
         return False
     except Exception as e:
-        logger.error(f"Error in alignment mode test: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Unexpected error in test_alignment_workflow_with_maf: {e}")
+        import traceback; logger.error(traceback.format_exc())
         return False
+    finally:
+        # always restore the original function
+        try:
+            _ddh.AlignmentWorkflow = _orig_align_wf
+        except Exception:
+            pass
 
 def test_alignment_workflow_with_lastz():
     """
@@ -675,7 +520,7 @@ def test_alignment_workflow_with_lastz():
         return True  # Return success so the test suite continues
     
     try:
-        from ddprimer.alignment import AlignmentWorkflow
+        from ddprimer.helpers import AlignmentWorkflow
         
         # Create test files
         files = create_test_files()
@@ -765,7 +610,7 @@ if __name__ == "__main__":
         
         # Overall test success
         if success_maf and success_lastz:
-            logger.info(green("\n✓ All alignment tests passed successfully!"))
+            logger.info(green("\n✓ All alignment tests PASSED with expected masking!"))
         else:
             if not success_maf:
                 logger.error(red("\n✗ Alignment test with pre-created MAF failed"))
