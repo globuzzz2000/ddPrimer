@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Updated test script for SNP masking in direct mode with exact-position assertions,
-while preserving the original visual log output.
+Test script for SNP masking in direct mode, mimicking real-file I/O.
+This version:
+ 1. Creates reference FASTA, VCF, CSV, and mapping.csv
+ 2. Uses real SNPMaskingProcessor.get_region_variants
+ 3. Stubs DirectMasking.find_location based on mapping.csv
+ 4. Captures masked_sequences and matching_status via a stubbed run_primer_design_workflow
+ 5. Runs direct_mode.run(args) unmodified
+ 6. Verifies both count and exact positions of Ns
 """
 import os
 import sys
@@ -13,190 +19,191 @@ import shutil
 import csv
 
 # Configure test logger
-logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
-logger = logging.getLogger("test")
-logger.setLevel(logging.INFO)
-# Clean default handlers
-for handler in logging.root.handlers[:]:
-    logging.root.removeHandler(handler)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-logger.addHandler(handler)
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger('test')
 
-# Silence other loggers
-override = logging.CRITICAL
-logging.getLogger("nupack").setLevel(override)
-logging.getLogger("ddPrimer").setLevel(override)
-# Disable BLAST usage report
-os.environ["BLAST_USAGE_REPORT"] = "false"
-# Disable NUPACK verbose logging
-os.environ["NUPACK_DISABLE_LOGGING"] = "1"
+# Silence heavy modules
+import logging as _logging
+_logging.getLogger('Bio').setLevel(_logging.CRITICAL)
+_logging.getLogger('nupack').setLevel(_logging.CRITICAL)
 
 # Create test directory
-test_dir = Path(tempfile.mkdtemp(prefix="ddprimer_test_direct_"))
-logger.info(f"Created test directory: {test_dir}")
+TEST_DIR = Path(tempfile.mkdtemp(prefix='ddprimer_test_realio_'))
+logger.info(f'Created test directory: {TEST_DIR}')
 
 
-def create_test_files():
-    """Create reference FASTA, VCF, and CSV for testing."""
-    # Chromosome sequences
-    chrom1_seq = ("TGTCCCACTTCTGCTCTAGCAGAGCACTTGTTTCGGTAACAGCTCCTTCGACAACTCGCACCGCAGAAGGATCAAGATACTGTTCCAGTAACTTAGTGAGCAGAGCTGACGGATACAAGTGGTGCTGAGTCTGACCCGATGTCTAACGTCGGGTTTAGTGGTTTGTCGTCTTTTAATGCGTCGAGTATGGTGTCTCCGCGCTCATCAGGTCAAGTTCAGGGCAAGAGGACTAGCTTCACGGGATACAATGCCTTGAAGACTAATGACCGCGGAAGAAGCTGCAAGAAGGAGATTAGCGGCGCCACGGCTATCTTCCGAAGTGATAACCGCCCGGAAAATTCCACATCCCGCGAGCAAAGGACCACTTCTTGATCCAATCACACCCGTTGGATGGATATGGGAC")
-    chrom2_seq = ("ACTCTTCCCTATCCCTTCTGATGACAATGGCGTAACAGGCGACACAGCACCAACGCCTAAAGCTCCAGGAATTGCAGCAGAAGCACCTTGGACAAAGCCCACATTGTTCGTTAAAGACTGATCTCCAAGTCCCACAAGACCACCACCTCTTATCCCAGGACTCCATGAAGGTGTCTCCAACGTTGACGACAAGAGCACCAGGACGAGGGCGAACGGTCTGCCAACTACCTGCGGCAAAGACCTCTAAGCCCACAACATCGAGTCGGAATCAGTGAAGGAAGTAGAAGAAGACACTGCGTCAGAGTTGATTTGCGTCGCCGTVTCATGTTGCCGCACCGGTGACTTATCCGACGACTTC")
-    chrom3_seq = ("GCATTGGAAGATCGAGGAGGGCGGCTAACACCGGTTTAAAGGATTTGACCATTTGGTGCATCCGTTTTATAGCACCGTGTCCAGCGGATTGAGCCCACGCGAGGTCAAAGCCATTGGAGAAGAACTTTCCGTGACCGGTAGTGATGAGGACGGATCCGGAGTATCAAGCATGTCGGATATGAACATGGAGAACCTTATGGAGGACTCTGTTGCTTTTAGGGTTCGGGCTAAACGTGGTTGCGCAACTCATCCCCGCAGCATTGCCGAGAGGGTAAACCTTCTTAAGGGACCTGCTGGTCTGGAATATCTGAAGAAGTCATTTTCCAGTCGGCATGGTTCCCCAGACCAAGCGTCTTCCTCGCTACCATTGCAGTGGTCTACTTCAGTGCCCCACCATTTGAGGTCGTGTCCAGCATTCTGCAGGGCGAAGAACAAGAGCACCCCCATGAACGCGGTCCCTGCATCGAGCGCTGCAGAGAGTACGTAATTGTACTTCTGCCACCATCTCTTGTGGTAATTGAACACAAAGTAGTTGAAGATGGTTCCTGTGACC")
+def create_test_files(test_dir):
+    """Create FASTA, VCF, CSV, and mapping.csv files."""
+    chrom_seqs = {
+        'chr1': 'TGTCCCACTTCTGCTCTAGCAGAGCACTTGTTTCGGTAACAGCTCCTTCGACAACTCGCACCGCAGAAGGATCAAGATACTGTTCCAGTAACTTAGTGAGCAGAGCTGACGGATACAAGTGGTGCTGAGTCTGACCCGATGTCTAACGTCGGGTTTAGTGGTTTGTCGTCTTTTAATGCGTCGAGTATGGTGTCTCCGCGCTCATCAGGTCAAGTTCAGGGCAAGAGGACTAGCTTCACGGGATACAATGCCTTGAAGACTAATGACCGCGGAAGAAGCTGCAAGAAGGAGATTAGCGGCGCCACGGCTATCTTCCGAAGTGATAACCGCCCGGAAAATTCCACATCCCGCGAGCAAAGGACCACTTCTTGATCCAATCACACCCGTTGGATGGATATGGGAC',
+        'chr2': 'ACTCTTCCCTATCCCTTCTGATGACAATGGCGTAACAGGCGACACAGCACCAACGCCTAAAGCTCCAGGAATTGCAGCAGAAGCACCTTGGACAAAGCCCACATTGTTCGTTAAAGACTGATCTCCAAGTCCCACAAGACCACCACCTCTTATCCCAGGACTCCATGAAGGTGTCTCCAACGTTGACGACAAGAGCACCAGGACGAGGGCGAACGGTCTGCCAACTACCTGCGGCAAAGACCTCTAAGCCCACAACATCGAGTCGGAATCAGTGAAGGAAGTAGAAGAAGACACTGCGTCAGAGTTGATTTGCGTCGCCGTGTCATGTTGCCGCACCGGTGACTTATCCGACGACTTC',
+        'chr3': 'GCATTGGAAGATCGAGGAGGGCGGCTAACACCGGTTTAAAGGATTTGACCATTTGGTGCATCCGTTTTATAGCACCGTGTCCAGCGGATTGAGCCCACGCGAGGTCAAAGCCATTGGAGAAGAACTTTCCGTGACCGGTAGTGATGAGGACGGATCCGGAGTATCAAGCATGTCGGATATGAACATGGAGAACCTTATGGAGGACTCTGTTGCTTTTAGGGTTCGGGCTAAACGTGGTTGCGCAACTCATCCCCGCAGCATTGCCGAGAGGGTAAACCTTCTTAAGGGACCTGCTGGTCTGGAATATCTGAAGAAGTCATTTTCCAGTCGGCATGGTTCCCCAGACCAAGCGTCTTCCTCGCTACCATTGCAGTGGTCTACTTCAGTGCCCCACCATTTGAGGTCGTGTCCAGCATTCTGCAGGGCGAAGAACAAGAGCACCCCCATGAACGCGGTCCCTGCATCGAGCGCTGCAGAGAGTACGTAATTGTACTTCTGCCACCATCTCTTGTGGTAATTGAACACAAAGTAGTTGAAGATGGTTCCTGTGACC'
+    }
     # Write FASTA
-    ref = test_dir / "reference.fasta"
-    with open(ref, 'w') as f:
-        f.write(f">chr1\n{chrom1_seq}\n>chr2\n{chrom2_seq}\n>chr3\n{chrom3_seq}\n")
+    fasta = test_dir / 'reference.fasta'
+    with open(fasta, 'w') as f:
+        for chrom, seq in chrom_seqs.items():
+            f.write(f'>{chrom}\n{seq}\n')
+
     # Write VCF
-    vcf = test_dir / "variants.vcf"
-    vcf_data = """##fileformat=VCFv4.2
-#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
-chr1	10	.	T	G	.	PASS	.
-chr1	20	.	C	A	.	PASS	.
-chr1	30	.	T	C	.	PASS	.
-chr2	40	.	A	T	.	PASS	.
-chr2	85	.	C	G	.	PASS	.
-chr3	90	.	C	A	.	PASS	.
-chr3	150	.	A	G	.	PASS	.
-"""
+    vcf = test_dir / 'variants.vcf'
+    vcf_records = [
+        ('chr1', 10), ('chr1', 20), ('chr1', 30),
+        ('chr2', 40), ('chr2', 85),
+        ('chr3', 90), ('chr3', 150)
+    ]
     with open(vcf, 'w') as f:
-        f.write(vcf_data)
-    # Write CSV
-    csvp = test_dir / "sequences.csv"
-    rows = [["name", "sequence"],
-            ["seq_from_chr1", chrom1_seq[5:55]],
-            ["seq_from_chr2", chrom2_seq[55:100]],
-            ["seq_from_chr3", chrom3_seq[100:200]],
-            ["seq_no_match", "G"*50]]
+        f.write('##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n')
+        for chrom, pos in vcf_records:
+            f.write(f'{chrom}\t{pos}\t.\tN\tN\t.\tPASS\t.\n')
+
+    # Prepare CSV and mapping
+    csvp = test_dir / 'sequences.csv'
+    mapping = test_dir / 'mapping.csv'
+    rows = [['name', 'sequence']]
+    map_rows = [['name', 'chrom', 'start', 'end']]
+    # seq_from_chr1: genome 6-55
+    rows.append(['seq_from_chr1', chrom_seqs['chr1'][5:55]])
+    map_rows.append(['seq_from_chr1', 'chr1', '6', '55'])
+    # seq_from_chr2: genome 56-100
+    rows.append(['seq_from_chr2', chrom_seqs['chr2'][55:100]])
+    map_rows.append(['seq_from_chr2', 'chr2', '56', '100'])
+    # seq_from_chr3: genome 101-200
+    rows.append(['seq_from_chr3', chrom_seqs['chr3'][100:200]])
+    map_rows.append(['seq_from_chr3', 'chr3', '101', '200'])
+    # non-match
+    rows.append(['seq_no_match', 'G'*50])
+    map_rows.append(['seq_no_match', 'none', '0', '0'])
+    # Write files
     with open(csvp, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerows(rows)
-    return {'fasta': str(ref), 'vcf': str(vcf), 'csv': str(csvp)}
+        csv.writer(f).writerows(rows)
+    with open(mapping, 'w', newline='') as f:
+        csv.writer(f).writerows(map_rows)
+    return str(fasta), str(vcf), str(csvp), str(mapping)
 
-# Capture state for assertions
-test_results = {'matching_status': {}, 'masked_sequences': {}, 'all_sequences': {}, 'adjusted_variants': {}}
+# Generate test files
+fasta_path, vcf_path, csv_path, map_path = create_test_files(TEST_DIR)
 
+# Import production code
+try:
+    from ddprimer.modes import direct_mode
+    from ddprimer.core import SNPMaskingProcessor
+    from ddprimer.helpers import DirectMasking
+    from ddprimer.utils import FileUtils
+except ImportError as e:
+    logger.error(f"Import failed: {e}")
+    sys.exit(1)
 
-def test_direct_mode_masking():
-    try:
-        from ddprimer.modes import direct_mode
-        from ddprimer.core import SNPMaskingProcessor
-    except ImportError as e:
-        logger.error(f"Import error: {e}")
-        return False
+# Load mapping.csv
+mapping_dict = {}
+with open(map_path) as mf:
+    for r in csv.DictReader(mf):
+        mapping_dict[r['name']] = (r['chrom'], int(r['start']), int(r['end']))
 
-    files = create_test_files()
-    logger.info(f"Created test files: FASTA={files['fasta']}, VCF={files['vcf']}, CSV={files['csv']}")
-    logger.info("\n=== Testing Direct Mode SNP Masking ===")
+# Load sequences as pipeline will
+test_sequences = FileUtils.load_sequences_from_table(csv_path)
 
-    # Monkey-patch workflow to skip downstream
-    orig_workflow = direct_mode.common.run_primer_design_workflow
-    direct_mode.common.run_primer_design_workflow = lambda *a, **k: True
-    orig_blast = direct_mode.find_sequence_location_with_blast
-    orig_run = direct_mode.run
+# Prepare capture container
+captured = {'matching_status': {}, 'masked_sequences': {}}
 
-    def patched_run(args):
-        sequences = direct_mode.FileUtils.load_sequences_from_table(args.direct)
-        test_results['all_sequences'] = sequences.copy()
-        sp = SNPMaskingProcessor()
-        variants = sp.get_variant_positions(args.vcf)
-        matching, masked = {}, {}
+# Define stub for DirectMasking.find_location
+orig_find = DirectMasking.find_location
 
-        for seq_id, seq in sequences.items():
-            logger.info(f"\nProcessing sequence {seq_id} ({len(seq)} bp)")
-            chrom, sstart, send, pid = orig_blast(seq, args.fasta)
-            if chrom:
-                matching[seq_id] = 'Success'
-                logger.info(f"Matched {seq_id} to {chrom}:{sstart}-{send} with {pid}% identity")
-                vars_chr = variants.get(chrom, set())
-                logger.info(f"Variants for {chrom}: {vars_chr}")
-                adjusted = set()
-                for vp in vars_chr:
-                    if sstart <= vp <= send:
-                        adjusted.add(vp - sstart + 1)
-                test_results['adjusted_variants'][seq_id] = adjusted
-                logger.info(f"Adjusted variant positions: {adjusted}")
-                if adjusted:
-                    logger.info(f"Masking sequence {seq_id} with {len(adjusted)} variants")
-                    masked_seq = sp.mask_variants(seq, adjusted)
-                else:
-                    masked_seq = seq
-                # Visual output
-                logger.info(f"Original: {seq}")
-                logger.info(f"Masked:   {masked_seq}")
-                arrow = ''.join('↑' if i+1 in adjusted else ' ' for i in range(len(seq)))
-                logger.info(f"Mask pos: {arrow}")
-                masked[seq_id] = masked_seq
-            else:
-                matching[seq_id] = 'Failure'
-                logger.info(f"Could not match sequence {seq_id} to reference genome")
-        test_results['matching_status'] = matching
-        test_results['masked_sequences'] = masked
-        return True
+def patched_find_location(sequence, ref_fasta, min_identity=90, min_coverage=90):
+    for sid, seq in test_sequences.items():
+        if seq == sequence:
+            chrom, start, end = mapping_dict[sid]
+            if chrom == 'none':
+                return None, None, None, None
+            return chrom, start, end, 100.0
+    return None, None, None, None
+DirectMasking.find_location = patched_find_location
 
-    direct_mode.run = patched_run
+# Define stub to capture workflow inputs
+def capture_workflow(**kwargs):
+    captured['matching_status'] = kwargs.get('matching_status', {})
+    captured['masked_sequences'] = kwargs.get('masked_sequences', {})
+    return True
+# Monkey-patch workflow
+orig_workflow = direct_mode.common.run_primer_design_workflow
+direct_mode.common.run_primer_design_workflow = capture_workflow
 
-    class Args: pass
-    args = Args()
-    args.direct = files['csv']; args.snp = True; args.fasta = files['fasta']; args.vcf = files['vcf']
-    args.output = str(test_dir); args.noannotation = False; args.cli = True; args.debug = True
+# Build args
+tmp = {}
+class Args: pass
+args = Args()
+args.direct = csv_path
+args.snp = True
+args.fasta = fasta_path
+args.vcf = vcf_path
+args.output = str(TEST_DIR)
+args.noannotation = False
+args.cli = True
+args.debug = True
 
-    try:
-        if not direct_mode.run(args):
-            logger.error("Direct mode failed")
-            return False
-        logger.info("\n✓ Direct mode completed successfully")
+# Run pipeline and tests
+def main():
+    if not direct_mode.run(args):
+        logger.error('Pipeline run failed')
+        return 1
+    logger.info('Pipeline completed, verifying results...')
 
-        # Verifications
-        all_ok = True
-        logger.info("\n=== Verifying Sequence Matching ===")
-        for seq_id, status in test_results['matching_status'].items():
-            exp = 'Failure' if seq_id=='seq_no_match' else 'Success'
-            if status != exp:
-                logger.error(f"✗ {seq_id}: expected {exp}, got {status}")
-                all_ok = False
-            else:
-                logger.info(f"✓ {seq_id}: {status}")
+    sp = SNPMaskingProcessor()
+    all_ok = True
 
-        logger.info("\n=== Verifying SNP Masking Counts ===")
-        for seq_id, seq in test_results['masked_sequences'].items():
-            cnt = seq.count('N')
-            exp_cnt = len(test_results['adjusted_variants'].get(seq_id, []))
-            if cnt != exp_cnt:
-                logger.error(f"✗ {seq_id}: expected {exp_cnt} Ns, found {cnt}")
-                all_ok = False
-            else:
-                logger.info(f"✓ {seq_id}: {cnt} Ns as expected")
-
-        logger.info("\n=== Verifying Exact Mask Positions ===")
-        for seq_id, seq in test_results['masked_sequences'].items():
-            exp_pos = test_results['adjusted_variants'].get(seq_id, set())
-            for pos in exp_pos:
-                idx = pos-1
-                if seq[idx] != 'N':
-                    logger.error(f"✗ {seq_id}: expected 'N' at {pos}, found '{seq[idx]}'")
-                    all_ok = False
-                else:
-                    logger.info(f"✓ {seq_id}: correct 'N' at {pos}")
-            extras = [i+1 for i,b in enumerate(seq) if b=='N' and (i+1) not in exp_pos]
-            if extras:
-                logger.error(f"✗ {seq_id}: unexpected Ns at {extras}")
-                all_ok = False
-
-        if all_ok:
-            logger.info("\n✓ TEST PASSED: SNP masking in direct mode is correct")
-            return True
+    # Check matching statuses
+    logger.info('=== Sequence matching ===')
+    for name in test_sequences:
+        expected = 'Failure' if name=='seq_no_match' else 'Success'
+        got = captured['matching_status'].get(name)
+        if got != expected:
+            logger.error(f"{name}: expected {expected}, got {got}")
+            all_ok = False
         else:
-            logger.error("\n✗ TEST FAILED: Issues detected in SNP masking")
-            return False
+            logger.info(f"{name}: {got}")
 
-    finally:
-        direct_mode.run = orig_run
-        direct_mode.common.run_primer_design_workflow = orig_workflow
-        direct_mode.find_sequence_location_with_blast = orig_blast
-        logger.info(f"\nCleaning up test directory: {test_dir}")
-        shutil.rmtree(test_dir)
+    # Check SNP masking
+    logger.info('=== SNP masking ===')
+    for name, seq in test_sequences.items():
+        chrom, start, end = mapping_dict[name]
+        expected_positions = set()
+        if chrom!='none':
+            vars_in_region = sp.get_region_variants(vcf_path, chrom, start, end)
+            for vp in vars_in_region:
+                expected_positions.add(vp - start + 1)
+        masked_seq = captured['masked_sequences'].get(name, '')
+        # Visual comparison
+        logger.info(f"\n{name}:")
+        logger.info(f"  Original: {seq}")
+        logger.info(f"  Masked:   {masked_seq}")
+        # Build arrow indicator for expected mask positions
+        arrow_line = ''.join('↑' if (i + 1) in expected_positions else ' ' for i in range(len(seq)))
+        logger.info(f"  Mask pos: {arrow_line}")
+        # Count
+        cnt = masked_seq.count('N')
+        if cnt != len(expected_positions):
+            logger.error(f"{name}: expected {len(expected_positions)} Ns, got {cnt}")
+            all_ok = False
+        # Exact positions
+        for pos in expected_positions:
+            idx = pos-1
+            val = masked_seq[idx] if 0<=idx<len(masked_seq) else None
+            if val != 'N':
+                logger.error(f"{name}: expected N at pos {pos}, got '{val}'")
+                all_ok=False
+        # Unexpected Ns
+        extras = [i+1 for i,b in enumerate(masked_seq) if b=='N' and (i+1) not in expected_positions]
+        if extras:
+            logger.error(f"{name}: unexpected Ns at positions {extras}")
+            all_ok=False
 
-if __name__ == "__main__":
-    success = test_direct_mode_masking()
-    sys.exit(0 if success else 1)
+    return 0 if all_ok else 1
+
+if __name__=='__main__':
+    exit_code = main()
+    # Restore
+    DirectMasking.find_location = orig_find
+    direct_mode.common.run_primer_design_workflow = orig_workflow
+    # Cleanup
+    shutil.rmtree(TEST_DIR)
+    sys.exit(exit_code)
