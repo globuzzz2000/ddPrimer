@@ -128,7 +128,6 @@ def run(args):
             
             # Initialize processors
             snp_processor = SNPMaskingProcessor()
-            direct_masking = DirectMasking()
             
             try:
                 # Process each sequence individually
@@ -146,15 +145,14 @@ def run(args):
                         logger.debug(f"Matched sequence {seq_id} to {source_chrom}:{start_pos}-{end_pos} "
                                     f"with {identity}% identity")
                         
-                        # Extract only the variants for this specific region
-                        # VCF file will be automatically prepared (compressed and indexed) if needed
-                        region_variants = direct_masking.get_region_variants(ref_vcf, source_chrom, start_pos, end_pos)
+                        # Extract only the variants for this specific region using SNPMaskingProcessor
+                        region_variants = snp_processor.get_region_variants(ref_vcf, source_chrom, start_pos, end_pos)
                         
                         # Adjust variant positions to sequence coordinates
                         adjusted_variants = set()
                         for var_pos in region_variants:
-                            # Convert genome coordinate to sequence coordinate
-                            seq_pos = var_pos - start_pos
+                            # Convert 1‑based genome coordinate to 1‑based sequence coordinate
+                            seq_pos = (var_pos - start_pos) + 1
                             adjusted_variants.add(seq_pos)
                         
                         # Mask the sequence with adjusted variants

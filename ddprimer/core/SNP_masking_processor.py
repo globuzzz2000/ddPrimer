@@ -5,6 +5,7 @@ from Bio import SeqIO
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 from tqdm import tqdm
+import gzip
 from ..config import Config
 
 # Set up logging
@@ -16,7 +17,7 @@ class SNPMaskingProcessor:
     def __init__(self):
         """Initialize SNP masking processor."""
         pass
-
+    
     def get_variant_positions(self, vcf_file, chromosome=None):
         """
         Extract variant positions from the VCF file using bcftools.
@@ -64,6 +65,218 @@ class SNPMaskingProcessor:
         logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants across {len(variants)} chromosomes")
         return variants
     
+    def prepare_vcf_file(self, vcf_file):
+        """
+        Prepare a VCF file for region queries by ensuring it's compressed with bgzip and indexed with tabix.
+        
+        Args:
+            vcf_file (str): Path to VCF file (.vcf or .vcf.gz)
+            
+        Returns:
+            str: Path to the prepared VCF file
+        """
+        logger.debug(f"Preparing VCF file: {vcf_file}")
+        
+        # Check if bgzip and tabix are available
+        try:
+            subprocess.run(["bgzip", "--version"], capture_output=True, check=False)
+            subprocess.run(["tabix", "--version"], capture_output=True, check=False)
+        except FileNotFoundError:
+            logger.warning("bgzip or tabix not found. Please install them for optimal performance.")
+            logger.warning("Falling back to slower VCF parsing method.")
+            return vcf_file
+        
+        # Determine if we need to compress the file
+        if vcf_file.endswith('.vcf'):
+            compressed_path = vcf_file + '.gz'
+            
+            # Check if the compressed file already exists and is newer than the original
+            if os.path.exists(compressed_path) and os.path.getmtime(compressed_path) > os.path.getmtime(vcf_file):
+                logger.debug(f"Using existing compressed VCF: {compressed_path}")
+            else:
+                logger.info(f"Compressing VCF file with bgzip...")
+                try:
+                    result = subprocess.run(
+                        ["bgzip", "-c", vcf_file], 
+                        stdout=open(compressed_path, 'wb'),
+                        stderr=subprocess.PIPE,
+                        check=True
+                    )
+                    logger.debug("VCF compression completed successfully")
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to compress VCF file: {e.stderr.decode('utf-8')}")
+                    return vcf_file
+            
+            # Use the compressed file for subsequent operations
+            vcf_file = compressed_path
+        
+        # Ensure the compressed file is indexed
+        index_path = vcf_file + '.tbi'
+        if not os.path.exists(index_path) or os.path.getmtime(index_path) < os.path.getmtime(vcf_file):
+            logger.info(f"Indexing VCF file with tabix...")
+            try:
+                result = subprocess.run(
+                    ["tabix", "-p", "vcf", vcf_file],
+                    stderr=subprocess.PIPE,
+                    check=True
+                )
+                logger.debug("VCF indexing completed successfully")
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"Failed to index VCF file: {e.stderr.decode('utf-8')}")
+                # Even if indexing fails, return the compressed file as we can still use it
+        
+        return vcf_file
+    
+    def get_region_variants(self, vcf_file, chromosome, start_pos, end_pos):
+        """
+        Extract variant positions from the VCF file for a specific genomic region.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chromosome (str): Chromosome name
+            start_pos (int): Start position of the region
+            end_pos (int): End position of the region
+            
+        Returns:
+            set: Set of variant positions within the specified region
+        """
+        logger.debug(f"Fetching variants for region {chromosome}:{start_pos}-{end_pos}")
+        
+        # Prepare the VCF file (compress and index if needed)
+        prepared_vcf = self.prepare_vcf_file(vcf_file)
+        
+        # Use bcftools to query the region
+        command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
+        
+        try:
+            logger.debug(f"Running command: {command}")
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Parse results from bcftools
+                variants = set()
+                for line in result.stdout.strip().split("\n"):
+                    if line:  # Skip empty lines
+                        try:
+                            pos = int(line.strip())
+                            variants.add(pos)
+                        except ValueError:
+                            logger.warning(f"Invalid position value: {line}")
+                            continue
+                
+                logger.debug(f"Extracted {len(variants)} variants in region {chromosome}:{start_pos}-{end_pos}")
+                return variants
+            else:
+                logger.warning(f"bcftools query failed: {result.stderr}")
+                # Fall back to manual parsing
+        except Exception as e:
+            logger.warning(f"Error running bcftools: {str(e)}")
+            # Fall back to manual parsing
+        
+        # Manual parsing approach for when bcftools fails
+        logger.debug("Falling back to manual VCF parsing")
+        return self._extract_variants_manually(prepared_vcf, chromosome, start_pos, end_pos)
+    
+    def _extract_variants_manually(self, vcf_file, chrom, start, end):
+        """
+        Extract variants from a VCF file for a specific region using manual parsing.
+        This is a fallback method when bcftools fails.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chrom (str): Chromosome name
+            start (int): Start position
+            end (int): End position
+            
+        Returns:
+            set: Set of variant positions in the region
+        """
+        variants = set()
+        
+        try:
+            # Determine if we need to handle gzip compression
+            open_func = gzip.open if vcf_file.endswith('.gz') else open
+            mode = 'rt' if vcf_file.endswith('.gz') else 'r'
+            
+            with open_func(vcf_file, mode) as vcf:
+                for line in vcf:
+                    # Skip header lines
+                    if line.startswith('#'):
+                        continue
+                    
+                    # Parse VCF data line
+                    fields = line.strip().split('\t')
+                    if len(fields) < 5:  # Minimum valid VCF line
+                        continue
+                    
+                    # Check chromosome match
+                    vcf_chrom = fields[0]
+                    if vcf_chrom != chrom:
+                        continue
+                    
+                    # Check position is in our region
+                    try:
+                        pos = int(fields[1])
+                        if start <= pos <= end:
+                            variants.add(pos)
+                    except ValueError:
+                        logger.warning(f"Invalid position value in VCF: {fields[1]}")
+                        continue
+            
+            logger.debug(f"Manually extracted {len(variants)} variants in region {chrom}:{start}-{end}")
+            
+        except Exception as e:
+            logger.error(f"Error in manual VCF parsing for region {chrom}:{start}-{end}: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        
+        return variants
+    
+    def extract_variants_by_regions(self, vcf_file, conserved_regions):
+        """
+        Extract variants from VCF file only for specific conserved regions.
+        This optimizes memory usage by only loading variants in regions of interest.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            conserved_regions (dict): Dictionary mapping chromosome names to lists of conserved regions
+            
+        Returns:
+            dict: Dictionary mapping chromosomes to sets of variant positions
+        """
+        logger.info(f"Extracting variants for specific regions from {vcf_file}")
+        
+        # Prepare the VCF file (compress and index if needed)
+        prepared_vcf = self.prepare_vcf_file(vcf_file)
+        
+        # Dictionary to store variants by chromosome
+        variants = {}
+        
+        # Process each chromosome and its conserved regions
+        for chrom, regions in conserved_regions.items():
+            if not regions:
+                continue
+                
+            variants[chrom] = set()
+            logger.debug(f"Processing {len(regions)} conserved regions for {chrom}")
+            
+            # Process each conserved region
+            for region in regions:
+                start = region['start']
+                end = region['end']
+                
+                # Skip very small regions
+                if end - start < 10:
+                    continue
+                    
+                # Extract variants for this specific region
+                region_variants = self.get_region_variants(prepared_vcf, chrom, start, end)
+                variants[chrom].update(region_variants)
+        
+        # Count total variants
+        total_variants = sum(len(positions) for positions in variants.values())
+        logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
+        
+        return variants
     
     def extract_reference_sequences(self, fasta_file):
         """

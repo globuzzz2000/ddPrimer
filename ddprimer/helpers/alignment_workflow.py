@@ -112,9 +112,12 @@ def AlignmentWorkflow(args, output_dir, logger):
     if args.snp and args.vcf:
         logger.info("\n>>> Extracting variants from reference genome VCF <<<")
         try:
-            ref_variants = snp_processor.get_variant_positions(args.vcf)
+            # Use region-specific variant extraction
+            ref_variants = snp_processor.extract_variants_by_regions(
+                args.vcf, conserved_regions
+            )
             total_ref_variants = sum(len(positions) for positions in ref_variants.values())
-            logger.info(f"Extracted {total_ref_variants} variants from reference genome")
+            logger.info(f"Extracted {total_ref_variants} variants from reference genome for conserved regions")
         except Exception as e:
             logger.error(f"Error extracting reference variants: {e}")
             logger.debug(traceback.format_exc())
@@ -122,11 +125,30 @@ def AlignmentWorkflow(args, output_dir, logger):
 
     # Get second genome variants if VCF provided and SNP masking is enabled
     if args.snp and args.second_vcf:
-        logger.info("\n>>> Extracting variants from second VCF <<<")
+        logger.info("\n>>> Extracting variants from second genome VCF <<<")
         try:
-            second_variants = snp_processor.get_variant_positions(args.second_vcf)
+            # Extract variants from the second genome
+            # Create a mapping of conserved regions in the second genome's coordinates
+            second_genome_regions = {}
+            
+            for chrom, regions in conserved_regions.items():
+                for region in regions:
+                    qry_src = region['qry_src']
+                    if qry_src not in second_genome_regions:
+                        second_genome_regions[qry_src] = []
+                    
+                    # Add the region in second genome coordinates
+                    second_genome_regions[qry_src].append({
+                        'start': region['qry_start'],
+                        'end': region['qry_end']
+                    })
+            
+            # Extract variants for these regions in the second genome
+            second_variants = snp_processor.extract_variants_by_regions(
+                args.second_vcf, second_genome_regions
+            )
             total_second_variants = sum(len(positions) for positions in second_variants.values())
-            logger.info(f"Extracted {total_second_variants} variants from second genome")
+            logger.info(f"Extracted {total_second_variants} variants from second genome for conserved regions")
         except Exception as e:
             logger.error(f"Error extracting second genome variants: {e}")
             logger.debug(traceback.format_exc())

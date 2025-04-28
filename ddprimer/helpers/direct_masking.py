@@ -6,7 +6,6 @@ Direct masking utilities for ddPrimer pipeline.
 This module provides utilities for the direct mode workflow, including:
 - Finding sequence locations in the reference genome
 - Handling sequences without primers or that failed to match
-- Processing VCF files and extracting region-specific variants
 """
 
 import os
@@ -14,17 +13,14 @@ import logging
 import pandas as pd
 import tempfile
 import subprocess
-import gzip
 
 # Set up logging
 logger = logging.getLogger("ddPrimer.helpers")
 
 class DirectMasking:
     """
-    Handles all aspects of sequence masking for direct mode:
-    - Sequence location finding
-    - VCF preparation and region-specific variant extraction
-    - Result processing for sequences without primers
+    Handles sequence location finding and result processing for direct mode.
+    Uses SNPMaskingProcessor for variant handling.
     """
     
     def __init__(self):
@@ -169,153 +165,3 @@ class DirectMasking:
             logger.debug(f"Added {len(rows)} rows for no-primer / match failures")
         
         return df
-    
-    def prepare_vcf_file(self, vcf_file):
-        """
-        Prepare a VCF file for region queries by ensuring it's compressed with bgzip and indexed with tabix.
-        
-        Args:
-            vcf_file (str): Path to VCF file (.vcf or .vcf.gz)
-            
-        Returns:
-            str: Path to the prepared VCF file
-        """
-        logger.debug(f"Preparing VCF file: {vcf_file}")
-        
-        # Check if bgzip and tabix are available
-        try:
-            subprocess.run(["bgzip", "--version"], capture_output=True, check=False)
-            subprocess.run(["tabix", "--version"], capture_output=True, check=False)
-        except FileNotFoundError:
-            logger.warning("bgzip or tabix not found. Please install them for optimal performance.")
-            logger.warning("Falling back to slower VCF parsing method.")
-            return vcf_file
-        
-        # Determine if we need to compress the file
-        if vcf_file.endswith('.vcf'):
-            compressed_path = vcf_file + '.gz'
-            
-            # Check if the compressed file already exists and is newer than the original
-            if os.path.exists(compressed_path) and os.path.getmtime(compressed_path) > os.path.getmtime(vcf_file):
-                logger.debug(f"Using existing compressed VCF: {compressed_path}")
-            else:
-                logger.info(f"Compressing VCF file with bgzip...")
-                try:
-                    result = subprocess.run(
-                        ["bgzip", "-c", vcf_file], 
-                        stdout=open(compressed_path, 'wb'),
-                        stderr=subprocess.PIPE,
-                        check=True
-                    )
-                    logger.debug("VCF compression completed successfully")
-                except subprocess.CalledProcessError as e:
-                    logger.warning(f"Failed to compress VCF file: {e.stderr.decode('utf-8')}")
-                    return vcf_file
-            
-            # Use the compressed file for subsequent operations
-            vcf_file = compressed_path
-        
-        # Ensure the compressed file is indexed
-        index_path = vcf_file + '.tbi'
-        if not os.path.exists(index_path) or os.path.getmtime(index_path) < os.path.getmtime(vcf_file):
-            logger.info(f"Indexing VCF file with tabix...")
-            try:
-                result = subprocess.run(
-                    ["tabix", "-p", "vcf", vcf_file],
-                    stderr=subprocess.PIPE,
-                    check=True
-                )
-                logger.debug("VCF indexing completed successfully")
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to index VCF file: {e.stderr.decode('utf-8')}")
-                # Even if indexing fails, return the compressed file as we can still use it
-        
-        return vcf_file
-    
-    def get_region_variants(self, vcf_file, chromosome, start_pos, end_pos):
-        """
-        Extract variant positions from the VCF file for a specific genomic region.
-        
-        Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str): Chromosome name
-            start_pos (int): Start position of the region
-            end_pos (int): End position of the region
-            
-        Returns:
-            set: Set of variant positions within the specified region
-        """
-        logger.debug(f"Fetching variants for region {chromosome}:{start_pos}-{end_pos}")
-        
-        # Prepare the VCF file (compress and index if needed)
-        prepared_vcf = self.prepare_vcf_file(vcf_file)
-        
-        # Use bcftools to query the region
-        command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
-        
-        try:
-            logger.debug(f"Running command: {command}")
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                # Parse results from bcftools
-                variants = set()
-                for line in result.stdout.strip().split("\n"):
-                    if line:  # Skip empty lines
-                        try:
-                            pos = int(line.strip())
-                            variants.add(pos)
-                        except ValueError:
-                            logger.warning(f"Invalid position value: {line}")
-                            continue
-                
-                logger.debug(f"Extracted {len(variants)} variants in region {chromosome}:{start_pos}-{end_pos}")
-                return variants
-            else:
-                logger.warning(f"bcftools query failed: {result.stderr}")
-                # Fall back to manual parsing
-        except Exception as e:
-            logger.warning(f"Error running bcftools: {str(e)}")
-            # Fall back to manual parsing
-        
-        # Manual parsing approach for when bcftools fails
-        logger.debug("Falling back to manual VCF parsing")
-        variants = set()
-        
-        try:
-            # Determine if we need to handle gzip compression
-            open_func = gzip.open if prepared_vcf.endswith('.gz') else open
-            mode = 'rt' if prepared_vcf.endswith('.gz') else 'r'
-            
-            with open_func(prepared_vcf, mode) as vcf:
-                for line in vcf:
-                    # Skip header lines
-                    if line.startswith('#'):
-                        continue
-                    
-                    # Parse VCF data line
-                    fields = line.strip().split('\t')
-                    if len(fields) < 5:  # Minimum valid VCF line
-                        continue
-                    
-                    # Check chromosome match
-                    chrom = fields[0]
-                    if chrom != chromosome:
-                        continue
-                    
-                    # Check position is in our region
-                    try:
-                        pos = int(fields[1])
-                        if start_pos <= pos <= end_pos:
-                            variants.add(pos)
-                    except ValueError:
-                        logger.warning(f"Invalid position value in VCF: {fields[1]}")
-                        continue
-            
-            logger.debug(f"Extracted {len(variants)} variants in region {chromosome}:{start_pos}-{end_pos} using manual parsing")
-            return variants
-            
-        except Exception as e:
-            logger.error(f"Error parsing VCF file {prepared_vcf}: {str(e)}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return set()
