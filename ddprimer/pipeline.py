@@ -20,31 +20,53 @@ import argparse
 import logging
 import traceback
 from datetime import datetime
+import tempfile
+import shutil
 
-# Import package modules with corrected import paths
-from .config import (Config, setup_logging, PrimerDesignError)
-from .utils.file_utils import FileUtils
+# Import package modules
+from .config import Config, setup_logging
+from .config.exceptions import DDPrimerError, BlastError, FileSelectionError
+from .utils.file_io import FileIO
 from .utils.blast_db_creator import BlastDBCreator
+from .utils.blast_verification import BlastVerification
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Define logger
 logger = logging.getLogger("ddPrimer")
 
+
 def parse_arguments():
-    """Parse command line arguments."""
+    """
+    Parse command line arguments.
+    
+    Returns:
+        argparse.Namespace: Parsed arguments
+        
+    Raises:
+        argparse.ArgumentError: If there are conflicting or invalid arguments
+    """
     parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
 
-    parser.add_argument('--fasta', help='Input FASTA file (reference genome)')
-    parser.add_argument('--vcf', help='VCF file with variants')
-    parser.add_argument('--gff', help='GFF annotation file')
+    # Modes
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     parser.add_argument('--direct', nargs='?', const=True, help='CSV or Excel file with sequence name and sequence columns (shortcut mode)')
+    parser.add_argument("--alignment", action="store_true", help="Enable alignment mode primer design workflow")
+
+    # Inputs
+    parser.add_argument('--fasta', help='Input FASTA file (reference genome)')
+    parser.add_argument("--second-fasta", help="Second species genome FASTA file")
+    parser.add_argument('--vcf', help='VCF file with variants')
+    parser.add_argument("--second-vcf", help="Variant Call Format (VCF) file for the second genome")
+    parser.add_argument('--gff', help='GFF annotation file')
     parser.add_argument('--output', help='Output directory')
     parser.add_argument('--config', help='Configuration file')
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+
+    # Mode options
     parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
     parser.add_argument('--snp', action='store_true', help='Enable SNP masking in sequences (requires --fasta and --vcf)')
     parser.add_argument('--noannotation', action='store_true', help='Disable gene annotation filtering in all modes')
+    parser.add_argument("--maf", nargs='?', const=True, help="Pre-computed MAF alignment file (skips LastZ alignment)")
     parser.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
     
     # BLAST database creation
@@ -52,28 +74,15 @@ def parse_arguments():
     parser.add_argument('--dbname', help='Custom name for the BLAST database (default: derived from filename)')
     parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (default: "blast_db" in same directory as FASTA)')
     
-    # Alignment mode options
-    alignment_group = parser.add_argument_group("Alignment Options")
-    alignment_group.add_argument("--alignment", action="store_true", 
-                            help="Enable alignment mode primer design workflow")
-    alignment_group.add_argument("--maf-file", nargs='?', const=True, 
-                            help="Pre-computed MAF alignment file (skips LastZ alignment)")
-    alignment_group.add_argument("--second-fasta", 
-                            help="Second species genome FASTA file")
-    alignment_group.add_argument("--second-vcf", 
-                            help="Variant Call Format (VCF) file for the second genome")
-    alignment_group.add_argument("--min-identity", type=float, default=80, 
-                            help="Minimum sequence identity for primer regions (default: 80)")
-    alignment_group.add_argument("--min-length", type=int, default=20,
-                            help="Minimum length of conserved regions (default: 20)")
-    alignment_group.add_argument("--lastz-options", default="--format=maf",
-                            help="Additional options for LastZ alignment")
-    
     args = parser.parse_args()
 
     # Check for conflicting options
     if args.direct and args.alignment:
         parser.error("--direct cannot be used with --alignment")
+    
+    # If --maf is used, automatically activate alignment mode
+    if args.maf:
+        args.alignment = True
     
     # Handle --snp requirements
     if args.snp and args.cli:
@@ -100,9 +109,9 @@ def parse_arguments():
     
     # Alignment mode validation (only in CLI mode)
     if args.cli and args.alignment and not args.lastzonly:
-        if not (args.maf_file or args.second_fasta):
-            parser.error("Alignment mode requires either --maf-file or --second-fasta")
-        if not args.maf_file and not args.fasta:
+        if not (args.maf or args.second_fasta):
+            parser.error("Alignment mode requires either --maf or --second-fasta")
+        if not args.maf and not args.fasta:
             parser.error("Reference genome FASTA (--fasta) is required for alignment")
         if args.snp:
             # Only require VCF files if SNP masking is enabled
@@ -121,12 +130,11 @@ class WorkflowFactory:
         Create and return the appropriate workflow based on command line arguments.
         
         Args:
-            args: Command line arguments
+            args (argparse.Namespace): Command line arguments
             
         Returns:
             callable: Workflow function to execute
         """
-        
         # For both lastzonly and alignment, use alignment mode
         if args.alignment or args.lastzonly:
             # Alignment mode (also handles lastzonly)
@@ -139,33 +147,56 @@ class WorkflowFactory:
             return run_standard_mode
 
 
-class TempDirectory:
+class TempDirectoryManager:
     """Context manager for temporary directory creation and cleanup."""
     
     def __init__(self, base_dir=None):
+        """
+        Initialize the temporary directory manager.
+        
+        Args:
+            base_dir (str, optional): Base directory to create the temp directory in
+        """
         self.temp_dir = None
         self.base_dir = base_dir
+        self.logger = logging.getLogger("ddPrimer")
         
     def __enter__(self):
-        """Create and return the temporary directory path."""
-        import tempfile
+        """
+        Create and return the temporary directory path.
+        
+        Returns:
+            str: Path to the temporary directory
+        """
         self.temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=self.base_dir)
-        logger.debug(f"Created temporary directory: {self.temp_dir}")
+        self.logger.debug(f"Created temporary directory: {self.temp_dir}")
         return self.temp_dir
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Clean up the temporary directory."""
-        import shutil
+        """
+        Clean up the temporary directory.
+        
+        Args:
+            exc_type: Exception type if an exception was raised
+            exc_val: Exception value if an exception was raised
+            exc_tb: Exception traceback if an exception was raised
+        """
         try:
             if self.temp_dir and os.path.exists(self.temp_dir):
-                logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
+                self.logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
                 shutil.rmtree(self.temp_dir)
         except Exception as e:
-            logger.warning(f"Error cleaning up temporary files: {e}")
+            self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
 
 
 def run_pipeline():
-    """Run the primer design pipeline."""
+    """
+    Run the primer design pipeline.
+    
+    Returns:
+        bool: True if the pipeline completed successfully, False otherwise
+    """
     try:
         # Parse command line arguments
         args = parse_arguments()
@@ -182,7 +213,7 @@ def run_pipeline():
         
         # Force CLI mode if specified
         if args.cli:
-            FileUtils.use_cli = True
+            FileIO.use_cli = True
             logger.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
@@ -207,11 +238,11 @@ def run_pipeline():
                 # If no FASTA file was provided, prompt for one
                 if not fasta_file:
                     logger.info("No FASTA file provided, prompting for file selection")
-                    from .utils.file_utils import FileUtils
-                    fasta_file = FileUtils.get_file(
-                        "Select FASTA file for BLAST database creation",
-                        [("FASTA files", "*.fasta"), ("FASTA files", "*.fa"), ("All files", "*")]
-                    )
+                    try:
+                        fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
+                    except FileSelectionError as e:
+                        logger.error(f"Failed to select FASTA file: {str(e)}")
+                        return False
                     
                 logger.info(f"Creating BLAST database from {fasta_file}")
                 db_path = blast_db_creator.create_database(
@@ -223,21 +254,18 @@ def run_pipeline():
                 Config.USE_CUSTOM_DB = True
                 logger.info(f"BLAST database created: {db_path}")
             except Exception as e:
-                logger.error(f"Error creating BLAST database: {e}")
-                logger.debug(traceback.format_exc())
-                # Cleanup the wxPython app if it was used
-                from .utils.file_utils import FileUtils
-                if hasattr(FileUtils, '_wx_app') and FileUtils._wx_app is not None:
-                    FileUtils.cleanup_wx_app()
+                logger.error(f"Error creating BLAST database: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                # Mark file selection as complete
+                FileIO.mark_selection_complete()
                 return False
         
         # Skip BLAST verification for lastzonly mode
         if not args.lastzonly:
             # Verify BLAST database
             logger.debug("Verifying BLAST database...")
-            from .utils import verify_blast_database
-
-            if not verify_blast_database(logger):
+            
+            if not BlastVerification.verify_blast_database(logger):
                 logger.error("\n======================================")
                 logger.error("ERROR: BLAST database verification failed!")
                 logger.error("\nPossible solutions:")
@@ -250,10 +278,8 @@ def run_pipeline():
                 logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
                 logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
                 logger.error("======================================")
-                # Cleanup the wxPython app if it was used
-                from .utils.file_utils import FileUtils
-                if hasattr(FileUtils, '_wx_app') and FileUtils._wx_app is not None:
-                    FileUtils.cleanup_wx_app()
+                # Mark file selection as complete
+                FileIO.mark_selection_complete()
                 return False
         
         logger.debug("=== Primer Design Pipeline ===")
@@ -272,20 +298,25 @@ def run_pipeline():
             logger.error("Pipeline execution failed")
             return False
             
-    except PrimerDesignError as e:
+    except DDPrimerError as e:
         # Handle application-specific exceptions
-        logger.error(f"Pipeline error: {e}")
-        logger.debug(traceback.format_exc())
+        logger.error(f"Pipeline error: {str(e)}")
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
         # Handle unexpected exceptions
-        logger.error(f"Unhandled exception during pipeline execution: {e}")
-        logger.debug(traceback.format_exc())
+        logger.error(f"Unhandled exception during pipeline execution: {str(e)}")
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
 
 
 def main():
-    """Entry point when running the script directly."""
+    """
+    Entry point when running the script directly.
+    
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
     success = run_pipeline()
     sys.exit(0 if success else 1)
 

@@ -14,8 +14,11 @@ import pandas as pd
 import tempfile
 import subprocess
 
-# Set up logging
+from ..config.exceptions import SequenceProcessingError
+
+# Set up logger
 logger = logging.getLogger("ddPrimer.helpers")
+
 
 class DirectMasking:
     """
@@ -23,31 +26,32 @@ class DirectMasking:
     Uses SNPMaskingProcessor for variant handling.
     """
     
-    def __init__(self):
-        """Initialize DirectMasking processor."""
-        pass
-    
     @staticmethod
     def find_location(sequence, ref_fasta, min_identity=90, min_coverage=90):
         """
         Find the location of a sequence in the reference genome using BLAST.
         
         Args:
-            sequence: Query sequence to locate
-            ref_fasta: Path to reference FASTA file
-            min_identity: Minimum percent identity (default: 90)
-            min_coverage: Minimum query coverage (default: 90)
+            sequence (str): Query sequence to locate
+            ref_fasta (str): Path to reference FASTA file
+            min_identity (float): Minimum percent identity (default: 90)
+            min_coverage (float): Minimum query coverage (default: 90)
             
         Returns:
             tuple: (chromosome, start_position, end_position, percent_identity) or (None, None, None, None) if not found
+            
+        Raises:
+            SequenceProcessingError: If there is an error during BLAST search
         """
-        # Create temporary file for query sequence
-        with tempfile.NamedTemporaryFile(mode='w+', suffix='.fasta', delete=False) as temp_file:
-            temp_file_path = temp_file.name
-            temp_file.write(">query\n")
-            temp_file.write(sequence)
+        temp_file_path = None
         
         try:
+            # Create temporary file for query sequence
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.fasta', delete=False) as temp_file:
+                temp_file_path = temp_file.name
+                temp_file.write(">query\n")
+                temp_file.write(sequence)
+            
             # Run BLAST command
             cmd = [
                 'blastn',
@@ -89,19 +93,22 @@ class DirectMasking:
             return None, None, None, None
         
         except subprocess.CalledProcessError as e:
-            logger.error(f"BLAST error: {e}")
+            logger.error(f"BLAST error: {str(e)}")
             logger.debug(f"BLAST stderr: {e.stderr}")
-            return None, None, None, None
+            raise SequenceProcessingError(f"BLAST error: {str(e)}")
         
         except Exception as e:
-            logger.error(f"Error in BLAST search: {e}")
+            logger.error(f"Error in BLAST search: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return None, None, None, None
+            raise SequenceProcessingError(f"BLAST search failed: {str(e)}")
         
         finally:
             # Clean up temporary file
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(f"Could not remove temporary file {temp_file_path}: {str(e)}")
 
     @staticmethod
     def add_missing_sequences(df, masked_sequences, matching_status=None):
@@ -110,9 +117,9 @@ class DirectMasking:
         Also add rows for sequences that failed to match to reference genome.
         
         Args:
-            df: DataFrame with primer results
-            masked_sequences: Dictionary of masked sequences
-            matching_status: Dictionary with reference matching status for sequences
+            df (pandas.DataFrame): DataFrame with primer results
+            masked_sequences (dict): Dictionary of masked sequences
+            matching_status (dict, optional): Dictionary with reference matching status for sequences
             
         Returns:
             pandas.DataFrame: Updated DataFrame with rows for sequences without primers
@@ -141,6 +148,7 @@ class DirectMasking:
         
         # 6) Build rows
         rows = []
+        
         # a) sequences that matched but got no primers
         for seq in sorted(no_primer):
             rows.append({
@@ -148,6 +156,7 @@ class DirectMasking:
                 "Primer F": "No suitable primers found",
                 "Reference Match": matching_status.get(seq, "Not attempted") if matching_status else "Not attempted"
             })
+            
         # b) sequences that never matched
         for seq in sorted(failures):
             rows.append({

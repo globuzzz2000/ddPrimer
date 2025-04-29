@@ -3,6 +3,7 @@
 Common utility functions for ddPrimer pipeline.
 """
 
+import logging
 
 class CommonUtils:
     """General utility functions used across the pipeline."""
@@ -19,6 +20,16 @@ class CommonUtils:
         Returns:
             list: List of chunks from the original list
         """
+        if not isinstance(lst, list):
+            logger = logging.getLogger("ddPrimer")
+            logger.warning("Input to chunks must be a list")
+            return []
+            
+        if not isinstance(n, int) or n <= 0:
+            logger = logging.getLogger("ddPrimer")
+            logger.warning("Chunk size must be a positive integer")
+            return [lst]
+            
         chunks_list = []
         for i in range(0, len(lst), n):
             chunks_list.append(lst[i:i + n])
@@ -35,4 +46,9 @@ class CommonUtils:
         Returns:
             list: Flattened list
         """
+        if not isinstance(list_of_lists, list):
+            logger = logging.getLogger("ddPrimer")
+            logger.warning("Input to flatten_list must be a list")
+            return []
+            
         return [item for sublist in list_of_lists for item in sublist]

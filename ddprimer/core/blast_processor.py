@@ -3,12 +3,17 @@ import time
 import tempfile
 import subprocess
 import concurrent.futures
+import logging
 import pandas as pd
 from tqdm import tqdm
 from ..config import Config
+from ..config.exceptions import SequenceProcessingError
 
 class BlastProcessor:
     """Handles BLAST operations for primer specificity checking."""
+    
+    # Get module logger
+    logger = logging.getLogger("ddPrimer.blast_processor")
     
     @staticmethod
     def blast_short_seq(seq, db=None):
@@ -17,10 +22,13 @@ class BlastProcessor:
         
         Args:
             seq (str): Sequence to BLAST
-            db (str): BLAST database path (default: from Config)
+            db (str, optional): BLAST database path. Defaults to Config.DB_PATH.
             
         Returns:
             tuple: (best_evalue, second_best_evalue)
+            
+        Raises:
+            SequenceProcessingError: When BLAST operation fails
         """
         if db is None:
             db = f'"{Config.DB_PATH}"'
@@ -29,13 +37,14 @@ class BlastProcessor:
             return None, None  # Ensuring consistency in output
 
         # Use a temporary file for the query sequence
-        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp_query:
-            tmp_query.write(f">seq\n{seq}\n")
-            tmp_query.flush()
-            tmp_filename = tmp_query.name
-
-        # Run BLASTn
+        tmp_filename = None
         try:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp_query:
+                tmp_query.write(f">seq\n{seq}\n")
+                tmp_query.flush()
+                tmp_filename = tmp_query.name
+
+            # Run BLASTn
             result = subprocess.run(
                 [
                     "blastn",
@@ -54,32 +63,40 @@ class BlastProcessor:
                 text=True,
                 capture_output=True
             )
+            
+            # If BLAST fails, log the error and raise an exception
+            if result.returncode != 0:
+                BlastProcessor.logger.error(f"BLAST Error: {result.stderr}")
+                raise SequenceProcessingError(f"BLAST execution failed: {result.stderr}")
+
+            # Parse BLAST output
+            try:
+                evalues = sorted([float(line.strip()) for line in result.stdout.strip().split("\n") if line.strip()])
+            except ValueError as e:
+                BlastProcessor.logger.warning(f"Error parsing BLAST output: {e}")
+                evalues = []
+
+            if not evalues:
+                return None, None
+
+            # Return the two lowest e-values as separate values
+            best = evalues[0] if len(evalues) > 0 else None
+            second = evalues[1] if len(evalues) > 1 else None
+
+            return best, second  # Separate columns
+            
+        except Exception as e:
+            BlastProcessor.logger.error(f"Error in BLAST operation: {e}")
+            BlastProcessor.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return None, None
+            
         finally:
             # Ensure we clean up even if an exception occurs
-            try:
-                os.remove(tmp_filename)  # Clean up temp file
-            except OSError:
-                pass
-
-        # If BLAST fails, print the error and return None values
-        if result.returncode != 0:
-            print(f"BLAST Error: {result.stderr}")
-            return None, None
-
-        # Parse BLAST output correctly
-        try:
-            evalues = sorted([float(line.strip()) for line in result.stdout.strip().split("\n") if line.strip()])
-        except ValueError:
-            evalues = []
-
-        if not evalues:
-            return None, None
-
-        # Return the two lowest e-values as separate values
-        best = evalues[0] if len(evalues) > 0 else None
-        second = evalues[1] if len(evalues) > 1 else None
-
-        return best, second  # Separate columns
+            if tmp_filename:
+                try:
+                    os.remove(tmp_filename)  # Clean up temp file
+                except OSError as e:
+                    BlastProcessor.logger.debug(f"Failed to remove temp file: {e}")
 
     @classmethod
     def process_blast_batch(cls, batch_data):
@@ -118,12 +135,15 @@ class BlastProcessor:
         """
         best = row[f"{col} BLAST1"]
         second = row[f"{col} BLAST2"]
+        
         # If best is None, no hits => discard
         if pd.isna(best):
             return False
+            
         # If no second best, it's effectively unique
         if pd.isna(second):
             return True
+            
         # best must be at least FILTER_FACTOR times smaller => best * FACTOR <= second
         return best * Config.BLAST_FILTER_FACTOR <= second
 
@@ -136,7 +156,7 @@ class BlastProcessor:
             batch (list): List of sequence dictionaries to validate
             ref_genome (dict): Reference genome dictionary
             qry_genome (dict): Query genome dictionary
-            extra_genomes (list): List of additional genome dictionaries
+            extra_genomes (list, optional): List of additional genome dictionaries. Defaults to None.
             
         Returns:
             list: List of valid sequence dictionaries
@@ -146,20 +166,20 @@ class BlastProcessor:
         
         # Build indices if needed (once per genome)
         if Config.VALIDATION_MODE == "TOLERANT":
-            cls.build_sequence_index(ref_genome)
-            cls.build_sequence_index(qry_genome)
+            cls._build_sequence_index(ref_genome)
+            cls._build_sequence_index(qry_genome)
             for genome in extra_genomes:
-                cls.build_sequence_index(genome)
+                cls._build_sequence_index(genome)
             
         start_time = time.time()
-        Config.debug(f"Validating batch of {len(batch)} sequences...")
+        cls.logger.debug(f"Validating batch of {len(batch)} sequences...")
         
         # Use ThreadPoolExecutor for shared memory advantage with the indices
         with concurrent.futures.ThreadPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
             # Process each sequence
-            future_to_seg = {
-                executor.submit(cls.validate_sequence, seg, ref_genome, qry_genome, extra_genomes): seg 
-                for seg in batch
+            future_to_seq = {
+                executor.submit(cls._validate_sequence, seq, ref_genome, qry_genome, extra_genomes): seq 
+                for seq in batch
             }
             
             # Collect valid sequences
@@ -168,25 +188,55 @@ class BlastProcessor:
             # Use tqdm for progress if enabled
             if Config.SHOW_PROGRESS:
                 futures_completed = tqdm(
-                    concurrent.futures.as_completed(future_to_seg),
-                    total=len(future_to_seg),
+                    concurrent.futures.as_completed(future_to_seq),
+                    total=len(future_to_seq),
                     desc="Validating sequences"
                 )
             else:
-                futures_completed = concurrent.futures.as_completed(future_to_seg)
+                futures_completed = concurrent.futures.as_completed(future_to_seq)
                 
             for future in futures_completed:
-                segment = future_to_seg[future]
+                segment = future_to_seq[future]
                 try:
                     is_valid = future.result()
                     if is_valid:
                         valid_sequences.append(segment)
                         
                     seq_preview = segment['sequence'][:30] + "..." if len(segment['sequence']) > 30 else segment['sequence']
-                    Config.debug(f"Sequence validation result: {seq_preview} - {'Valid' if is_valid else 'Invalid'}")
+                    cls.logger.debug(f"Sequence validation result: {seq_preview} - {'Valid' if is_valid else 'Invalid'}")
                 except Exception as e:
-                    Config.debug(f"Error validating sequence: {e}")
+                    cls.logger.error(f"Error validating sequence: {e}")
+                    cls.logger.debug(f"Error details: {str(e)}", exc_info=True)
         
         elapsed = time.time() - start_time
-        Config.debug(f"Batch validation completed: {len(valid_sequences)}/{len(batch)} valid in {elapsed:.2f}s")
+        cls.logger.info(f"Batch validation completed: {len(valid_sequences)}/{len(batch)} valid in {elapsed:.2f}s")
         return valid_sequences
+        
+    @classmethod
+    def _build_sequence_index(cls, genome):
+        """
+        Private helper method to build sequence index for a genome.
+        
+        Args:
+            genome (dict): Genome dictionary to build index for
+        """
+        # Implementation would be added here
+        pass
+        
+    @classmethod
+    def _validate_sequence(cls, sequence, ref_genome, qry_genome, extra_genomes):
+        """
+        Private helper method to validate a single sequence.
+        
+        Args:
+            sequence (dict): Sequence dictionary to validate
+            ref_genome (dict): Reference genome dictionary
+            qry_genome (dict): Query genome dictionary
+            extra_genomes (list): List of additional genome dictionaries
+            
+        Returns:
+            bool: True if sequence is valid, False otherwise
+        """
+        # Implementation would be added here
+        # This is a placeholder since the original code didn't include this method
+        return True

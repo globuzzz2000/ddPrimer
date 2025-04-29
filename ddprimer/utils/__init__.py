@@ -9,16 +9,14 @@ This subpackage contains utility functions:
 """
 
 from .sequence_utils import SequenceUtils
-from .file_utils import FileUtils
+from .file_io import FileIO
 from .common_utils import CommonUtils
 from .blast_db_creator import BlastDBCreator
-from .snp_checker import SNPChecker
-from .blast_verification import verify_blast_database
+from .blast_verification import BlastVerification
 
 __all__ = [
     'FileUtils',
     'BlastDBCreator',
-    'SNPChecker',
     'SequnceUtils',
     'CommonUtils',
     'verify_blast_database'

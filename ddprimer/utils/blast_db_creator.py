@@ -14,6 +14,7 @@ import shlex
 import tempfile
 import shutil
 
+
 class BlastDBCreator:
     """Creates and manages BLAST databases from FASTA files."""
     
@@ -57,6 +58,7 @@ class BlastDBCreator:
         
         # Verify the FASTA file exists
         if not os.path.exists(fasta_file):
+            logger.error(f"FASTA file not found: {fasta_file}")
             raise FileNotFoundError(f"FASTA file not found: {fasta_file}")
             
         # Create output directory if needed
@@ -107,7 +109,8 @@ class BlastDBCreator:
             logger.info(f"BLAST database created successfully at: {db_path}")
             
             # Verify the database was created properly
-            if not BlastDBCreator.verify_db(temp_db_path, logger):
+            if not BlastDBCreator._verify_db(temp_db_path, logger):
+                logger.error("BLAST database verification failed")
                 raise Exception("BLAST database verification failed")
                 
             # Copy the resulting files to the target output location
@@ -127,7 +130,7 @@ class BlastDBCreator:
             
         except Exception as e:
             logger.error(f"Failed to create BLAST database: {str(e)}")
-            logger.debug(traceback.format_exc())
+            logger.debug(traceback.format_exc(), exc_info=True)
             
             # Clean up temp directory if it still exists
             if os.path.exists(temp_dir):
@@ -136,7 +139,7 @@ class BlastDBCreator:
             raise
     
     @staticmethod
-    def verify_db(db_path, logger=None):
+    def _verify_db(db_path, logger=None):
         """
         Verify that a BLAST database exists and is valid.
         
@@ -166,7 +169,6 @@ class BlastDBCreator:
         # Run blastdbcmd to verify the database - using the same approach as blast_processor
         # by wrapping the path in quotes
         try:
-            quoted_db_path = f'"{db_path}"'
             cmd = [
                 "blastdbcmd",
                 "-db", db_path,

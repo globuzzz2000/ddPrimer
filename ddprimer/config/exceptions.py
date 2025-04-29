@@ -1,106 +1,118 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Exception handling module for the ddPrimer pipeline.
+Custom exceptions for ddPrimer pipeline.
+
+This module defines exception classes used throughout the ddPrimer pipeline
+to provide more specific error information and improve error handling.
 """
 
-from typing import Optional
+
+class DDPrimerError(Exception):
+    """Base exception class for all ddPrimer-specific errors."""
+    pass
 
 
-class PrimerDesignError(Exception):
-    """Base exception class for all primer design errors."""
-    
-    def __init__(self, message: str = "An error occurred in the primer design pipeline"):
-        self.message = message
-        super().__init__(self.message)
+class FileError(DDPrimerError):
+    """Base class for file-related errors."""
+    pass
 
 
-class FileError(PrimerDesignError):
-    """Exception raised for file-related errors."""
-    
-    def __init__(self, message: str = "File error", filename: Optional[str] = None):
-        self.filename = filename
-        msg = message
-        if filename:
-            msg = f"{message}: '{filename}'"
-        super().__init__(msg)
+class FileSelectionError(FileError):
+    """Error during file selection via GUI or CLI."""
+    pass
 
 
 class FileFormatError(FileError):
-    """Exception raised for file format errors."""
+    """Error with file formatting or parsing."""
+    pass
+
+
+class ConfigError(DDPrimerError):
+    """Error with configuration parameters."""
+    pass
+
+
+class SequenceProcessingError(DDPrimerError):
+    """Error during sequence processing."""
+    pass
+
+
+class BlastError(DDPrimerError):
+    """Base class for BLAST-related errors."""
+    pass
+
+
+class BlastDBError(BlastError):
+    """Error with BLAST database creation or access."""
+    pass
+
+
+class BlastExecutionError(BlastError):
+    """Error when executing BLAST commands."""
+    pass
+
+
+class NupackError(SequenceProcessingError):
+    """Error during NUPACK thermodynamic calculations."""
+    pass
+
+
+class Primer3Error(SequenceProcessingError):
+    """Error during Primer3 execution or parsing."""
+    pass
+
+
+class SNPVerificationError(DDPrimerError):
+    """Error during SNP verification or checking."""
+    pass
+
+
+class PrimerDesignError(DDPrimerError):
+    """Error during primer design process."""
+    pass
+
+
+class ValidationError(DDPrimerError):
+    """Error during validation of primers or parameters."""
+    pass
+
+
+class AlignmentError(DDPrimerError):
+    """Error during sequence alignment."""
+    pass
+
+
+class WorkflowError(DDPrimerError):
+    """Error in workflow execution."""
+    pass
+
+
+class ExternalToolError(DDPrimerError):
+    """Error related to external tools like Primer3, NUPACK, etc."""
     
-    def __init__(self, message: str = "Invalid file format", filename: Optional[str] = None):
-        super().__init__(message, filename)
-
-
-class FileMissingError(FileError):
-    """Exception raised when a required file is missing."""
-    
-    def __init__(self, message: str = "Required file is missing", filename: Optional[str] = None):
-        super().__init__(message, filename)
-
-
-class SequenceError(PrimerDesignError):
-    """Exception raised for sequence-related errors."""
-    
-    def __init__(self, message: str = "Sequence error", sequence_id: Optional[str] = None):
-        self.sequence_id = sequence_id
-        msg = message
-        if sequence_id:
-            msg = f"{message} for sequence '{sequence_id}'"
-        super().__init__(msg)
-
-
-class PrimerError(PrimerDesignError):
-    """Exception raised for primer-related errors."""
-    
-    def __init__(self, message: str = "Primer error", primer_id: Optional[str] = None):
-        self.primer_id = primer_id
-        msg = message
-        if primer_id:
-            msg = f"{message} for primer '{primer_id}'"
-        super().__init__(msg)
-
-
-class Primer3Error(PrimerDesignError):
-    """Exception raised for Primer3 execution errors."""
-    
-    def __init__(self, message: str = "Primer3 error", details: Optional[str] = None):
-        self.details = details
-        msg = message
-        if details:
-            msg = f"{message}: {details}"
-        super().__init__(msg)
-
-
-class BlastError(PrimerDesignError):
-    """Exception raised for BLAST-related errors."""
-    
-    def __init__(self, message: str = "BLAST error", details: Optional[str] = None):
-        self.details = details
-        msg = message
-        if details:
-            msg = f"{message}: {details}"
-        super().__init__(msg)
-
-
-class ConfigError(PrimerDesignError):
-    """Exception raised for configuration errors."""
-    
-    def __init__(self, message: str = "Configuration error", setting: Optional[str] = None):
-        self.setting = setting
-        msg = message
-        if setting:
-            msg = f"{message}: '{setting}'"
-        super().__init__(msg)
-
-
-class ValidationError(PrimerDesignError):
-    """Exception raised for validation errors."""
-    
-    def __init__(self, message: str = "Validation error", details: Optional[str] = None):
-        self.details = details
-        msg = message
-        if details:
-            msg = f"{message}: {details}"
-        super().__init__(msg)
+    def __init__(self, message, tool_name=None, command=None, return_code=None, stdout=None, stderr=None):
+        """
+        Initialize with extended information about the external tool error.
+        
+        Args:
+            message (str): Error message
+            tool_name (str, optional): Name of the external tool
+            command (str, optional): Command that was executed
+            return_code (int, optional): Return code from the command
+            stdout (str, optional): Standard output from the command
+            stderr (str, optional): Standard error from the command
+        """
+        self.tool_name = tool_name
+        self.command = command
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+        
+        detailed_message = message
+        if tool_name:
+            detailed_message = f"{tool_name} error: {message}"
+        if return_code is not None:
+            detailed_message += f" (return code: {return_code})"
+            
+        super().__init__(detailed_message)

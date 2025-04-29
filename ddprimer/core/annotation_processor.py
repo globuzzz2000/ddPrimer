@@ -3,11 +3,13 @@
 """
 Annotation processing module for ddPrimer pipeline.
 
-Handles GFF annotation file parsing and processing.
+Handles GFF annotation file parsing and processing to extract gene information
+from GFF files for use in primer design workflows.
 """
 
 import re
 import concurrent.futures
+import logging
 from tqdm import tqdm
 from ..config import Config
 from ..utils.common_utils import CommonUtils
@@ -24,17 +26,19 @@ class AnnotationProcessor:
         re.compile(r'^ENS.*$', re.IGNORECASE)         # Ensembl IDs (humans, etc.)
     ]
     
+    # Get module logger
+    logger = logging.getLogger("ddPrimer.annotation_processor")
+    
     @staticmethod
     def parse_gff_attributes(attribute_str):
         """
         Convert GFF attribute string (key1=val1;key2=val2) -> dict.
-        Keys forced to lower case.
         
         Args:
-            attribute_str (str): GFF attribute string
+            attribute_str (str): GFF attribute string in format key1=val1;key2=val2
             
         Returns:
-            dict: Dictionary of attribute key-value pairs
+            dict: Dictionary of attribute key-value pairs with keys forced to lowercase
         """
         attr_dict = {}
         for attr in attribute_str.split(';'):
@@ -51,8 +55,8 @@ class AnnotationProcessor:
         
         Args:
             name (str): Gene name to check
-            gene_id (str): Gene ID for comparison
-            locus_tag (str): Locus tag for comparison
+            gene_id (str, optional): Gene ID for comparison. Defaults to None.
+            locus_tag (str, optional): Locus tag for comparison. Defaults to None.
             
         Returns:
             bool: True if name is meaningful, False otherwise
@@ -84,7 +88,7 @@ class AnnotationProcessor:
             chunk (list): List of GFF file lines
             
         Returns:
-            list: List of gene dictionaries
+            list: List of gene dictionaries with extracted information
         """
         chunk_genes = []
         for line in chunk:
@@ -117,15 +121,16 @@ class AnnotationProcessor:
                     "strand": strand,
                     "id": name
                 })
-            except ValueError:
-                pass
+            except ValueError as e:
+                cls.logger.debug(f"Error converting position data: {e}", exc_info=True)
         
         return chunk_genes
     
     @classmethod
     def load_genes_from_gff(cls, gff_path):
         """
-        Return a list of gene dicts: {chr, start, end, strand, id}.
+        Extract gene information from a GFF file.
+        
         Uses global RETAIN_TYPES and FILTER_MEANINGFUL_NAMES for filtering.
         Optimized version that processes the file in parallel chunks.
         
@@ -133,34 +138,42 @@ class AnnotationProcessor:
             gff_path (str): Path to the GFF file
             
         Returns:
-            list: List of gene dictionaries
+            list: List of gene dictionaries with extracted information
         """
-        Config.debug(f"Loading genes from GFF file: {gff_path}")
-        # Read all lines from the file
-        with open(gff_path, 'r') as f:
-            all_lines = f.readlines()
+        cls.logger.debug(f"Loading genes from GFF file: {gff_path}")
         
-        # Calculate chunk size for parallel processing
-        chunk_size = max(1, len(all_lines) // Config.NUM_PROCESSES)
-        chunks = CommonUtils.chunks(all_lines, chunk_size)
-        
-        Config.debug(f"Processing GFF in {len(chunks)} chunks with {Config.NUM_PROCESSES} processes")
-        
-        # Process chunks in parallel
-        genes = []
-        with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
-            futures = [executor.submit(cls.process_gff_chunk, chunk) for chunk in chunks]
+        try:
+            # Read all lines from the file
+            with open(gff_path, 'r') as f:
+                all_lines = f.readlines()
             
-            if Config.SHOW_PROGRESS:
-                for future in tqdm(concurrent.futures.as_completed(futures), 
-                                  total=len(futures), 
-                                  desc="Processing GFF file"):
-                    genes.extend(future.result())
-            else:
-                for future in concurrent.futures.as_completed(futures):
-                    genes.extend(future.result())
-
-        return genes
+            # Calculate chunk size for parallel processing
+            chunk_size = max(1, len(all_lines) // Config.NUM_PROCESSES)
+            chunks = CommonUtils.chunks(all_lines, chunk_size)
+            
+            cls.logger.debug(f"Processing GFF in {len(chunks)} chunks with {Config.NUM_PROCESSES} processes")
+            
+            # Process chunks in parallel
+            genes = []
+            with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
+                futures = [executor.submit(cls.process_gff_chunk, chunk) for chunk in chunks]
+                
+                if Config.SHOW_PROGRESS:
+                    for future in tqdm(concurrent.futures.as_completed(futures), 
+                                      total=len(futures), 
+                                      desc="Processing GFF file"):
+                        genes.extend(future.result())
+                else:
+                    for future in concurrent.futures.as_completed(futures):
+                        genes.extend(future.result())
+            
+            cls.logger.info(f"Extracted {len(genes)} genes from GFF file")
+            return genes
+        
+        except Exception as e:
+            cls.logger.error(f"Failed to load genes from GFF: {e}")
+            cls.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return []
 
     @staticmethod
     def extract_gene_name(sequence_id):

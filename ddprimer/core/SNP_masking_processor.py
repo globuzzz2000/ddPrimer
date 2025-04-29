@@ -1,22 +1,23 @@
 import os
 import logging
 import subprocess
+import gzip
 from Bio import SeqIO
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
 from tqdm import tqdm
-import gzip
 from ..config import Config
+from ..config.exceptions import FileError, SequenceProcessingError
 
 # Set up logging
-logger = logging.getLogger("ddPrimer")
+logger = logging.getLogger("ddPrimer.snp_masking_processor")
 
 class SNPMaskingProcessor:
     """Handles masking of SNPs in sequences to prepare them for primer design."""
     
     def __init__(self):
         """Initialize SNP masking processor."""
-        pass
+        logger.debug("Initialized SNPMaskingProcessor")
     
     def get_variant_positions(self, vcf_file, chromosome=None):
         """
@@ -28,8 +29,15 @@ class SNPMaskingProcessor:
             
         Returns:
             dict: Dictionary mapping chromosomes to sets of variant positions
+            
+        Raises:
+            FileError: If VCF file cannot be processed
         """
-        logger.debug(f"Fetching variant positions from {vcf_file}...")
+        logger.debug(f"\nFetching variant positions from {vcf_file}")
+        
+        if not os.path.exists(vcf_file):
+            logger.error(f"VCF file not found: {vcf_file}")
+            raise FileError(f"VCF file not found: {vcf_file}")
         
         # Base command
         command = f'bcftools query -f "%CHROM\\t%POS\\n" "{vcf_file}"'
@@ -37,33 +45,44 @@ class SNPMaskingProcessor:
         # Add chromosome filter if specified
         if chromosome:
             command += f' -r "{chromosome}"'
+            logger.debug(f"Filtering variants for chromosome: {chromosome}")
         
         # Run command
         logger.debug(f"Running command: {command}")
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            logger.error(f"Error running bcftools: {result.stderr}")
-            return {}
-        
-        # Parse results
-        variants = {}
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-                
-            parts = line.split("\t")
-            if len(parts) == 2:
-                chrom, pos = parts
-                pos = int(pos)
-                
-                if chrom not in variants:
-                    variants[chrom] = set()
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.error(f"Error running bcftools: {result.stderr}")
+                raise FileError(f"bcftools query failed: {result.stderr}")
+            
+            # Parse results
+            variants = {}
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
                     
-                variants[chrom].add(pos)
-        
-        logger.info(f"Extracted {sum(len(positions) for positions in variants.values())} variants across {len(variants)} chromosomes")
-        return variants
+                parts = line.split("\t")
+                if len(parts) == 2:
+                    chrom, pos = parts
+                    try:
+                        pos = int(pos)
+                        
+                        if chrom not in variants:
+                            variants[chrom] = set()
+                            
+                        variants[chrom].add(pos)
+                    except ValueError:
+                        logger.warning(f"Invalid position value in VCF: {pos}")
+            
+            total_variants = sum(len(positions) for positions in variants.values())
+            logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
+            return variants
+            
+        except subprocess.SubprocessError as e:
+            logger.error(f"Failed to run bcftools: {e}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(f"Failed to run bcftools: {e}")
     
     def prepare_vcf_file(self, vcf_file):
         """
@@ -74,8 +93,14 @@ class SNPMaskingProcessor:
             
         Returns:
             str: Path to the prepared VCF file
+            
+        Raises:
+            FileError: If VCF file cannot be prepared
         """
-        logger.debug(f"Preparing VCF file: {vcf_file}")
+        
+        if not os.path.exists(vcf_file):
+            logger.error(f"VCF file not found: {vcf_file}")
+            raise FileError(f"VCF file not found: {vcf_file}")
         
         # Check if bgzip and tabix are available
         try:
@@ -139,16 +164,19 @@ class SNPMaskingProcessor:
             
         Returns:
             set: Set of variant positions within the specified region
+            
+        Raises:
+            SequenceProcessingError: If region variants cannot be extracted
         """
         logger.debug(f"Fetching variants for region {chromosome}:{start_pos}-{end_pos}")
         
         # Prepare the VCF file (compress and index if needed)
-        prepared_vcf = self.prepare_vcf_file(vcf_file)
-        
-        # Use bcftools to query the region
-        command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
-        
         try:
+            prepared_vcf = self.prepare_vcf_file(vcf_file)
+            
+            # Use bcftools to query the region
+            command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
+            
             logger.debug(f"Running command: {command}")
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             
@@ -171,6 +199,7 @@ class SNPMaskingProcessor:
                 # Fall back to manual parsing
         except Exception as e:
             logger.warning(f"Error running bcftools: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             # Fall back to manual parsing
         
         # Manual parsing approach for when bcftools fails
@@ -243,40 +272,55 @@ class SNPMaskingProcessor:
         Returns:
             dict: Dictionary mapping chromosomes to sets of variant positions
         """
-        logger.info(f"Extracting variants for specific regions from {vcf_file}")
+        logger.debug(f"Extracting variants for specific regions from {vcf_file}")
+        
+        if not os.path.exists(vcf_file):
+            logger.error(f"VCF file not found: {vcf_file}")
+            raise FileError(f"VCF file not found: {vcf_file}")
+            
+        if not conserved_regions:
+            logger.warning("No conserved regions provided")
+            return {}
         
         # Prepare the VCF file (compress and index if needed)
-        prepared_vcf = self.prepare_vcf_file(vcf_file)
-        
-        # Dictionary to store variants by chromosome
-        variants = {}
-        
-        # Process each chromosome and its conserved regions
-        for chrom, regions in conserved_regions.items():
-            if not regions:
-                continue
-                
-            variants[chrom] = set()
-            logger.debug(f"Processing {len(regions)} conserved regions for {chrom}")
+        try:
+            prepared_vcf = self.prepare_vcf_file(vcf_file)
             
-            # Process each conserved region
-            for region in regions:
-                start = region['start']
-                end = region['end']
-                
-                # Skip very small regions
-                if end - start < 10:
+            # Dictionary to store variants by chromosome
+            variants = {}
+            
+            # Process each chromosome and its conserved regions
+            for chrom, regions in conserved_regions.items():
+                if not regions:
                     continue
                     
-                # Extract variants for this specific region
-                region_variants = self.get_region_variants(prepared_vcf, chrom, start, end)
-                variants[chrom].update(region_variants)
-        
-        # Count total variants
-        total_variants = sum(len(positions) for positions in variants.values())
-        logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
-        
-        return variants
+                variants[chrom] = set()
+                logger.debug(f"Processing {len(regions)} conserved regions for {chrom}")
+                
+                # Process each conserved region
+                for region in regions:
+                    start = region['start']
+                    end = region['end']
+                    
+                    # Skip very small regions
+                    if end - start < 10:
+                        logger.debug(f"Skipping small region {chrom}:{start}-{end} (< 10 bp)")
+                        continue
+                        
+                    # Extract variants for this specific region
+                    region_variants = self.get_region_variants(prepared_vcf, chrom, start, end)
+                    variants[chrom].update(region_variants)
+            
+            # Count total variants
+            total_variants = sum(len(positions) for positions in variants.values())
+            logger.info(f"Extracted {total_variants} variants across {len(variants)} chromosomes")
+            
+            return variants
+            
+        except Exception as e:
+            logger.error(f"Failed to extract variants by regions: {e}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise SequenceProcessingError(f"Failed to extract variants by regions: {e}")
     
     def extract_reference_sequences(self, fasta_file):
         """
@@ -287,16 +331,30 @@ class SNPMaskingProcessor:
             
         Returns:
             dict: Dictionary mapping sequence IDs to sequences
+            
+        Raises:
+            FileError: If FASTA file cannot be read
         """
-        logger.info(f"Extracting sequences from {fasta_file}...")
+        logger.info(f"Extracting sequences from {fasta_file}")
+        
+        if not os.path.exists(fasta_file):
+            logger.error(f"FASTA file not found: {fasta_file}")
+            raise FileError(f"FASTA file not found: {fasta_file}")
+            
         sequences = {}
         
-        with open(fasta_file, "r") as handle:
-            for record in SeqIO.parse(handle, "fasta"):
-                sequences[record.id] = str(record.seq)
-                
-        logger.debug(f"Extracted {len(sequences)} sequences from FASTA file")
-        return sequences
+        try:
+            with open(fasta_file, "r") as handle:
+                for record in SeqIO.parse(handle, "fasta"):
+                    sequences[record.id] = str(record.seq)
+                    
+            logger.info(f"Extracted {len(sequences)} sequences from FASTA file")
+            return sequences
+            
+        except Exception as e:
+            logger.error(f"Failed to read FASTA file: {e}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(f"Failed to read FASTA file: {e}")
     
     def mask_variants(self, sequence, variant_positions):
         """
@@ -406,7 +464,7 @@ class SNPMaskingProcessor:
         
         # Get all sequence IDs from both sets
         all_seq_ids = set(masked_sequences1.keys()) | set(masked_sequences2.keys())
-        logger.debug(f"Combining masking from two sets ({len(masked_sequences1)} and {len(masked_sequences2)} sequences)")
+        logger.info(f"Combining masking from two sets ({len(masked_sequences1)} and {len(masked_sequences2)} sequences)")
         
         for seq_id in all_seq_ids:
             # If sequence only exists in one set, use that version

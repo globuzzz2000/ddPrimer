@@ -3,8 +3,8 @@
 Sequence utility functions for ddPrimer pipeline.
 """
 import re
-from ..config import Config
 import logging
+from ..config import Config
 
 class SequenceUtils:
     """Sequence-specific utility functions."""
@@ -20,8 +20,12 @@ class SequenceUtils:
         Returns:
             bool: True if disallowed repeats found, False otherwise
         """
+        logger = logging.getLogger("ddPrimer")
+        
         if not isinstance(seq, str):
+            logger.debug("Invalid sequence type provided to has_disallowed_repeats")
             return True
+            
         return "CCCC" in seq or "GGGG" in seq
     
     @staticmethod
@@ -35,8 +39,12 @@ class SequenceUtils:
         Returns:
             float: GC content percentage
         """
+        logger = logging.getLogger("ddPrimer")
+        
         if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to calculate_gc")
             return 0
+            
         seq = seq.upper()
         gc_count = sum(1 for base in seq if base in "GC")
         return (gc_count / len(seq)) * 100 if seq else 0
@@ -52,7 +60,10 @@ class SequenceUtils:
         Returns:
             str: Reverse complement sequence
         """
+        logger = logging.getLogger("ddPrimer")
+        
         if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to reverse_complement")
             return ""
         
         seq = seq.upper()
@@ -78,7 +89,10 @@ class SequenceUtils:
         Returns:
             tuple: (possibly_reversed_sequence, was_reversed)
         """
+        logger = logging.getLogger("ddPrimer")
+        
         if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to ensure_more_c_than_g")
             return seq, False
         
         seq = seq.upper()

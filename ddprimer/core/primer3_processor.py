@@ -2,31 +2,40 @@
 # -*- coding: utf-8 -*-
 """
 Primer3 processing module for ddPrimer pipeline.
+
+Handles primer design through Primer3 including:
+1. Running primer3 to design primers and probes
+2. Parsing primer3 output
+3. Handling amplicon extraction and validation
 """
 
-import primer3
+import logging
 import re
-import os
-from concurrent.futures import ProcessPoolExecutor
+import primer3
 import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
-# Change to use the ddPrimer package config
 from ..config import Config
-from ..utils.sequence_utils import SequenceUtils  # Use SequenceUtils from your package
+from ..utils.sequence_utils import SequenceUtils
+from ..config.exceptions import SequenceProcessingError
 
 class Primer3Processor:
     """Handles Primer3 operations for primer design using the primer3-py package."""
+    
+    # Get module logger
+    logger = logging.getLogger("ddPrimer.primer3_processor")
     
     def __init__(self, config=None):
         """
         Initialize Primer3Processor.
         
         Args:
-            config (Config, optional): Configuration class with primer3 settings
+            config (Config, optional): Configuration class with primer3 settings. Defaults to Config.
         """
         # Default to the shared Config if none provided
         self.config = config if config is not None else Config
+        self.logger.debug("Initialized Primer3Processor")
     
     def run_primer3_batch(self, input_blocks):
         """
@@ -38,6 +47,7 @@ class Primer3Processor:
         Returns:
             str: Combined primer3 output that mimics primer3_core output format
         """
+        self.logger.debug(f"Running Primer3 on {len(input_blocks)} input blocks")
         results = []
         
         try:
@@ -56,9 +66,11 @@ class Primer3Processor:
                 formatted_result = self._format_primer3_result(sequence_id, block, primer_result)
                 results.append(formatted_result)
             
+            self.logger.debug(f"Successfully processed {len(results)} primer3 blocks")
             return "\n".join(results)
         except Exception as e:
-            print(f"Error running Primer3: {e}")
+            self.logger.error(f"Error running Primer3: {e}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
             return ""
     
     def run_primer3_batch_parallel(self, input_blocks, max_workers=None):
@@ -67,13 +79,15 @@ class Primer3Processor:
         
         Args:
             input_blocks (list): List of dictionaries containing primer3 parameters
-            max_workers (int): Maximum number of worker processes
+            max_workers (int, optional): Maximum number of worker processes. Defaults to CPU count.
             
         Returns:
             str: Combined primer3 output
         """
         if max_workers is None:
             max_workers = min(multiprocessing.cpu_count(), len(input_blocks))
+        
+        self.logger.debug(f"Running Primer3 in parallel with {max_workers} workers for {len(input_blocks)} blocks")
         
         # Split input blocks into chunks for parallel processing
         chunk_size = max(1, len(input_blocks) // max_workers)
@@ -94,6 +108,7 @@ class Primer3Processor:
                 for future in futures:
                     results.append(future.result())
         
+        self.logger.debug(f"Completed parallel Primer3 processing")
         return "\n".join(results)
     
     def _format_primer3_result(self, sequence_id, input_block, primer_result):
@@ -177,14 +192,20 @@ class Primer3Processor:
         to the 3' end of the reverse primer, with corrected alignment.
         
         Addresses systematic off-by-one issues with Primer3 coordinates.
-        For both forward and reverse primers, adjusts positions based on common 
-        Primer3 coordinate interpretation issues.
-        """
-        import logging
-        logger = logging.getLogger("ddPrimer")
         
+        Args:
+            seq (str): Template sequence
+            left_start (int): Start position of the forward primer (1-based)
+            left_len (int): Length of the forward primer
+            right_start (int): Start position of the reverse primer (1-based)
+            right_len (int): Length of the reverse primer
+            
+        Returns:
+            str: Amplicon sequence
+        """
         # Check if any required parameter is None
         if None in (left_start, left_len, right_start, right_len):
+            self.logger.warning("Missing required parameters for amplicon extraction")
             return ""
         
         # Convert to integers just in case
@@ -193,22 +214,23 @@ class Primer3Processor:
             left_len = int(left_len)
             right_start = int(right_start)
             right_len = int(right_len)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as e:
+            self.logger.error(f"Invalid numerical values for amplicon extraction: {e}")
             return ""
         
         # Debug info to help diagnose issues
-        logger.debug(f"Extracting amplicon - Original: left_start={left_start}, left_len={left_len}, right_start={right_start}, right_len={right_len}")
+        self.logger.debug(f"Extracting amplicon - Original: left_start={left_start}, left_len={left_len}, right_start={right_start}, right_len={right_len}")
             
         # Adjust left_start (considering possible off-by-one error for the forward primer)
-        # Look at the logs to see if we need left_start-1 or left_start
         # Based on our observations, it seems we need to adjust by -1
         adj_left_start = left_start - 1
         if adj_left_start < 1:
             adj_left_start = 1  # Can't go below 1
+            self.logger.debug(f"Adjusted left_start to minimum value (1)")
             
         # Handle edge case: if right_start is beyond the end of the template
         if right_start > len(seq):
-            logger.debug(f"Adjusting right_start from {right_start} to {len(seq)} (template length)")
+            self.logger.debug(f"Adjusting right_start from {right_start} to {len(seq)} (template length)")
             right_start = len(seq)
         
         # The amplicon starts at the adjusted position and ends at the right position
@@ -217,7 +239,7 @@ class Primer3Processor:
         
         # Validate coordinates
         if amp_start < 1 or amp_end > len(seq) or amp_start > amp_end:
-            logger.debug(f"Invalid amplicon coordinates: start={amp_start}, end={amp_end}, seq_len={len(seq)}")
+            self.logger.debug(f"Invalid amplicon coordinates: start={amp_start}, end={amp_end}, seq_len={len(seq)}")
             return ""
         
         # Extract the amplicon sequence (convert to 0-based indexing for Python)
@@ -230,11 +252,11 @@ class Primer3Processor:
         # And also extract from our adjusted positions
         adj_forward_primer = seq[adj_left_start - 1 : adj_left_start - 1 + left_len]
         
-        logger.debug(f"Forward primer from original position: {forward_primer}")
-        logger.debug(f"Forward primer from adjusted position: {adj_forward_primer}")
-        logger.debug(f"Start of amplicon: {amplicon[:left_len]}")
-        logger.debug(f"Reverse primer: {reverse_primer}")
-        logger.debug(f"End of amplicon: {amplicon[-right_len:]}")
+        self.logger.debug(f"Forward primer from original position: {forward_primer}")
+        self.logger.debug(f"Forward primer from adjusted position: {adj_forward_primer}")
+        self.logger.debug(f"Start of amplicon: {amplicon[:left_len]}")
+        self.logger.debug(f"Reverse primer: {reverse_primer}")
+        self.logger.debug(f"End of amplicon: {amplicon[-right_len:]}")
         
         return amplicon
     
@@ -250,8 +272,7 @@ class Primer3Processor:
         Returns:
             list: List of primer record dictionaries
         """
-        import logging
-        logger = logging.getLogger("ddPrimer")
+        self.logger.debug("Parsing Primer3 batch output")
         
         records = []
         current_id = None
@@ -271,9 +292,9 @@ class Primer3Processor:
             if not debug_mode:
                 return
                 
-            logger.debug(f"===== ALL PRIMER PAIRS FOR {record_id} =====")
-            logger.debug(f"Sequence length: {len(sequence)} bp")
-            logger.debug(f"Total pairs found: {len(pairs_data)}")
+            self.logger.debug(f"===== ALL PRIMER PAIRS FOR {record_id} =====")
+            self.logger.debug(f"Sequence length: {len(sequence)} bp")
+            self.logger.debug(f"Total pairs found: {len(pairs_data)}")
             
             # Sort pairs by penalty
             sorted_pairs = sorted(pairs_data, key=lambda p: p.get('pair_penalty', 999))
@@ -285,10 +306,10 @@ class Primer3Processor:
                 penalty = pair.get('pair_penalty', 'N/A')
                 product_size = pair.get('product_size', 'N/A')
                 
-                logger.debug(f"Pair #{i+1}: Penalty={penalty}")
-                logger.debug(f"  Forward: {left_seq}")
-                logger.debug(f"  Reverse: {right_seq}")
-                logger.debug(f"  Product size: {product_size}")
+                self.logger.debug(f"Pair #{i+1}: Penalty={penalty}")
+                self.logger.debug(f"  Forward: {left_seq}")
+                self.logger.debug(f"  Reverse: {right_seq}")
+                self.logger.debug(f"  Product size: {product_size}")
 
         # Helper function: finalize the current record
         def finalize_record():
@@ -309,7 +330,7 @@ class Primer3Processor:
                 
             # Debug log amplicon creation
             if debug_mode:
-                logger.debug(f"Creating amplicons for {current_id}...")
+                self.logger.debug(f"Creating amplicons for {current_id}...")
             
             for p in acceptable:
                 left_seq = p.get("left_sequence", "")
@@ -340,24 +361,24 @@ class Primer3Processor:
                 
                 if debug_mode:
                     if not ampseq:
-                        logger.debug(f"WARNING: Could not create amplicon for pair {p['idx']} in {current_id}")
-                        logger.debug(f"  Left start: {ls}, Left len: {ll}")
-                        logger.debug(f"  Right start: {rs}, Right len: {rl}")
-                        logger.debug(f"  Template length: {len(sequence_template)}")
+                        self.logger.debug(f"WARNING: Could not create amplicon for pair {p['idx']} in {current_id}")
+                        self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
+                        self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
+                        self.logger.debug(f"  Template length: {len(sequence_template)}")
                     else:
-                        logger.debug(f"Created amplicon for pair {p['idx']} in {current_id}: {len(ampseq)}bp")
-                        logger.debug(f"  Left start: {ls}, Left len: {ll}")
-                        logger.debug(f"  Right start: {rs}, Right len: {rl}")
+                        self.logger.debug(f"Created amplicon for pair {p['idx']} in {current_id}: {len(ampseq)}bp")
+                        self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
+                        self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
                         if len(ampseq) > 40:
-                            logger.debug(f"  Amplicon (excerpt): {ampseq[:20]}...{ampseq[-20:]}")
+                            self.logger.debug(f"  Amplicon (excerpt): {ampseq[:20]}...{ampseq[-20:]}")
                         else:
-                            logger.debug(f"  Amplicon: {ampseq}")
+                            self.logger.debug(f"  Amplicon: {ampseq}")
                         
                         # Verify that the amplicon actually contains the primers
                         if left_seq and not ampseq.startswith(left_seq[:min(len(left_seq), 10)]):
-                            logger.debug(f"  WARNING: Amplicon does not start with forward primer")
+                            self.logger.debug(f"  WARNING: Amplicon does not start with forward primer")
                         if right_seq and SequenceUtils.reverse_complement(right_seq)[:min(len(right_seq), 10)] not in ampseq[-len(right_seq):]:
-                            logger.debug(f"  WARNING: Amplicon does not end with reverse primer complement")
+                            self.logger.debug(f"  WARNING: Amplicon does not end with reverse primer complement")
                 
                 # Get chromosome and location info from fragment_info
                 frag_info = fragment_info.get(current_id, {})
@@ -378,14 +399,14 @@ class Primer3Processor:
                 
                 # For debugging, check the amplicon - if it's empty, create it again
                 if debug_mode and not ampseq and sequence_template:
-                    logger.debug(f"Attempting to reconstruct missing amplicon for {current_id}")
+                    self.logger.debug(f"Attempting to reconstruct missing amplicon for {current_id}")
                     # Try with direct template extraction
                     if ls is not None and rs is not None and ls <= rs and ls >= 1 and rs <= len(sequence_template):
                         direct_amplicon = sequence_template[ls-1:rs]
-                        logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)}bp")
+                        self.logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)}bp")
                         if len(direct_amplicon) > 0:
                             ampseq = direct_amplicon
-                            logger.debug(f"Successfully reconstructed amplicon")
+                            self.logger.debug(f"Successfully reconstructed amplicon")
                 
                 # Check for valid amplicon
                 if not ampseq:
@@ -400,9 +421,9 @@ class Primer3Processor:
                     
                     if debug_mode:
                         if ampseq:
-                            logger.debug(f"Recovered amplicon from sequence: {len(ampseq)} bp")
+                            self.logger.debug(f"Recovered amplicon from sequence: {len(ampseq)} bp")
                         else:
-                            logger.debug(f"Could not recover amplicon. ls={ls}, rs={rs}, seq_len={len(sequence_template)}")
+                            self.logger.debug(f"Could not recover amplicon. ls={ls}, rs={rs}, seq_len={len(sequence_template)}")
                 else:
                     # Use the reported product size if available
                     product_size = p.get("product_size", None)
@@ -519,4 +540,5 @@ class Primer3Processor:
             log_all_primer_pairs(current_id, sequence_template, pairs)
         finalize_record()
         
+        self.logger.debug(f"Parsed {len(records)} primer records from Primer3 output")
         return records

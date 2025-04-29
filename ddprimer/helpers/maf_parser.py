@@ -11,12 +11,16 @@ and masking sequences based on alignment data for cross-species primer design.
 
 import os
 import re
+import logging
 from collections import defaultdict
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from tqdm import tqdm
+
 from ..config import Config
+from ..config.exceptions import AlignmentError
+
 
 class MAFParser:
     """
@@ -32,6 +36,7 @@ class MAFParser:
             config: Configuration object (defaults to global Config)
         """
         self.config = config if config else Config
+        self.logger = logging.getLogger("ddPrimer.helpers")
         self.alignments = defaultdict(list)  # Store alignments by reference sequence
         self.masked_regions = defaultdict(list)  # Store regions to mask
     
@@ -44,42 +49,55 @@ class MAFParser:
             
         Returns:
             dict: Parsed alignment data organized by reference sequence
+            
+        Raises:
+            AlignmentError: If there's an error parsing the MAF file
         """
-        self.config.debug(f"Parsing MAF file: {maf_file}")
+        self.logger.debug(f"Parsing MAF file: {maf_file}")
         
-        current_alignment = []
-        with open(maf_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                
-                # Skip empty lines and comments
-                if not line or line.startswith('#'):
-                    continue
-                
-                # New alignment block
-                if line.startswith('a'):
-                    # Process previous alignment if it exists
-                    if current_alignment:
+        if not os.path.exists(maf_file):
+            self.logger.error(f"MAF file not found: {maf_file}")
+            raise AlignmentError(f"MAF file not found: {maf_file}")
+            
+        try:
+            current_alignment = []
+            with open(maf_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    
+                    # Skip empty lines and comments
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    # New alignment block
+                    if line.startswith('a'):
+                        # Process previous alignment if it exists
+                        if current_alignment:
+                            self._process_alignment_block(current_alignment)
+                            current_alignment = []
+                        # Start new alignment with header line
+                        current_alignment.append(line)
+                    
+                    # Sequence lines
+                    elif line.startswith('s'):
+                        current_alignment.append(line)
+                    
+                    # End of alignment block (blank line or new 'a' line)
+                    elif current_alignment and not line:
                         self._process_alignment_block(current_alignment)
                         current_alignment = []
-                    # Start new alignment with header line
-                    current_alignment.append(line)
                 
-                # Sequence lines
-                elif line.startswith('s'):
-                    current_alignment.append(line)
-                
-                # End of alignment block (blank line or new 'a' line)
-                elif current_alignment and not line:
+                # Process the last alignment block if it exists
+                if current_alignment:
                     self._process_alignment_block(current_alignment)
-                    current_alignment = []
             
-            # Process the last alignment block if it exists
-            if current_alignment:
-                self._process_alignment_block(current_alignment)
-        
-        self.config.debug(f"Parsed {len(self.alignments)} reference sequences with alignments")
-        return self.alignments
+            self.logger.debug(f"Parsed {len(self.alignments)} reference sequences with alignments")
+            return self.alignments
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing MAF file: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"Failed to parse MAF file: {str(e)}")
     
     def _process_alignment_block(self, alignment_lines):
         """
@@ -178,50 +196,68 @@ class MAFParser:
             
         Returns:
             dict: Conserved regions by chromosome
+            
+        Raises:
+            AlignmentError: If no alignments are loaded or conservation analysis fails
         """
-        self.config.debug(f"Identifying conserved regions (min identity: {min_identity}%, min length: {min_length}bp)")
+        if not self.alignments:
+            self.logger.error("No alignments loaded. Call parse_maf_file() first.")
+            raise AlignmentError("No alignments loaded. Call parse_maf_file() first.")
+            
+        self.logger.debug(f"Identifying conserved regions (min identity: {min_identity}%, min length: {min_length}bp)")
         
-        conserved_regions = defaultdict(list)
-        
-        for chrom, alignments in self.alignments.items():
-            for alignment in alignments:
-                # Skip alignments below the identity threshold
-                if alignment['identity'] < min_identity:
-                    continue
-                
-                # Find conserved blocks within this alignment
-                blocks = self._find_conserved_blocks(
-                    alignment['ref_seq'], 
-                    alignment['qry_seq'],
-                    alignment['ref_start'],
-                    min_length
-                )
-                
-                for block in blocks:
-                    conserved_regions[chrom].append({
-                        'start': block['start'],
-                        'end': block['end'],
-                        'identity': block['identity'],
-                        'qry_src': alignment['qry_src'],
-                        'qry_start': self._map_to_query_coords(
+        try:
+            conserved_regions = defaultdict(list)
+            
+            for chrom, alignments in self.alignments.items():
+                for alignment in alignments:
+                    # Skip alignments below the identity threshold
+                    if alignment['identity'] < min_identity:
+                        continue
+                    
+                    # Find conserved blocks within this alignment
+                    blocks = self._find_conserved_blocks(
+                        alignment['ref_seq'], 
+                        alignment['qry_seq'],
+                        alignment['ref_start'],
+                        min_length
+                    )
+                    
+                    for block in blocks:
+                        # Map query coordinates for this block
+                        qry_start = self._map_to_query_coords(
                             block['start'] - alignment['ref_start'],
                             alignment['ref_seq'],
                             alignment['qry_seq'],
                             alignment['qry_start']
-                        ),
-                        'qry_end': self._map_to_query_coords(
+                        )
+                        
+                        qry_end = self._map_to_query_coords(
                             block['end'] - alignment['ref_start'],
                             alignment['ref_seq'],
                             alignment['qry_seq'],
                             alignment['qry_start']
-                        ),
-                        'qry_strand': alignment['qry_strand']
-                    })
-        
-        total_regions = sum(len(regions) for regions in conserved_regions.values())
-        self.config.debug(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
-        
-        return conserved_regions
+                        )
+                        
+                        conserved_regions[chrom].append({
+                            'start': block['start'],
+                            'end': block['end'],
+                            'identity': block['identity'],
+                            'qry_src': alignment['qry_src'],
+                            'qry_start': qry_start,
+                            'qry_end': qry_end,
+                            'qry_strand': alignment['qry_strand']
+                        })
+            
+            total_regions = sum(len(regions) for regions in conserved_regions.values())
+            self.logger.debug(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
+            
+            return conserved_regions
+            
+        except Exception as e:
+            self.logger.error(f"Error identifying conserved regions: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"Failed to identify conserved regions: {str(e)}")
     
     def _find_conserved_blocks(self, ref_seq, qry_seq, ref_start, min_length):
         """
@@ -323,57 +359,67 @@ class MAFParser:
         
         Returns:
             dict: Dictionary mapping reference sequence IDs to sequences
+            
+        Raises:
+            AlignmentError: If no alignments are loaded or extraction fails
         """
-        self.config.debug("Extracting reference sequences from MAF file")
+        self.logger.debug("Extracting reference sequences from MAF file")
         
         if not self.alignments:
-            raise ValueError("No alignments loaded. Call parse_maf_file() first.")
+            self.logger.error("No alignments loaded. Call parse_maf_file() first.")
+            raise AlignmentError("No alignments loaded. Call parse_maf_file() first.")
         
-        # Dictionary to store reference sequences
-        reference_sequences = {}
-        
-        # Keep track of sequence lengths
-        sequence_lengths = {}
-        
-        # For each chromosome/reference sequence in the alignments
-        for chrom, alignments in self.alignments.items():
-            self.config.debug(f"Processing reference sequence: {chrom}")
+        try:
+            # Dictionary to store reference sequences
+            reference_sequences = {}
             
-            # Find the maximum coordinate to determine sequence length
-            max_end = 0
-            for alignment in alignments:
-                max_end = max(max_end, alignment['ref_end'])
+            # Keep track of sequence lengths
+            sequence_lengths = {}
             
-            # Create a blank sequence of appropriate length
-            sequence_lengths[chrom] = max_end
-            sequence = ['N'] * max_end
-            
-            # Fill in the sequence from alignments
-            for alignment in alignments:
-                ref_start = alignment['ref_start']
-                ref_seq = alignment['ref_seq']
+            # For each chromosome/reference sequence in the alignments
+            for chrom, alignments in self.alignments.items():
+                self.logger.debug(f"Processing reference sequence: {chrom}")
                 
-                # Remove gaps from reference sequence
-                ref_seq_ungapped = ref_seq.replace('-', '')
+                # Find the maximum coordinate to determine sequence length
+                max_end = 0
+                for alignment in alignments:
+                    max_end = max(max_end, alignment['ref_end'])
                 
-                # Fill in the sequence at the appropriate position
-                for i, base in enumerate(ref_seq_ungapped):
-                    pos = ref_start + i
-                    if pos < len(sequence):
-                        sequence[pos] = base
+                # Create a blank sequence of appropriate length
+                sequence_lengths[chrom] = max_end
+                sequence = ['N'] * max_end
+                
+                # Fill in the sequence from alignments
+                for alignment in alignments:
+                    ref_start = alignment['ref_start']
+                    ref_seq = alignment['ref_seq']
+                    
+                    # Remove gaps from reference sequence
+                    ref_seq_ungapped = ref_seq.replace('-', '')
+                    
+                    # Fill in the sequence at the appropriate position
+                    for i, base in enumerate(ref_seq_ungapped):
+                        pos = ref_start + i
+                        if pos < len(sequence):
+                            sequence[pos] = base
+                
+                # Convert to string and store
+                reference_sequences[chrom] = ''.join(sequence)
+                
+                self.logger.debug(f"Extracted reference sequence {chrom}: {len(reference_sequences[chrom])} bp")
             
-            # Convert to string and store
-            reference_sequences[chrom] = ''.join(sequence)
+            # Check if we have empty sequences
+            for chrom, seq in reference_sequences.items():
+                if set(seq) == {'N'}:
+                    self.logger.warning(f"Reference sequence {chrom} contains only N's")
             
-            self.config.debug(f"Extracted reference sequence {chrom}: {len(reference_sequences[chrom])} bp")
-        
-        # Check if we have empty sequences
-        for chrom, seq in reference_sequences.items():
-            if set(seq) == {'N'}:
-                self.config.debug(f"WARNING: Reference sequence {chrom} contains only N's")
-        
-        self.config.debug(f"Extracted {len(reference_sequences)} reference sequences from MAF file")
-        return reference_sequences
+            self.logger.debug(f"Extracted {len(reference_sequences)} reference sequences from MAF file")
+            return reference_sequences
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting reference sequences from MAF: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"Failed to extract reference sequences: {str(e)}")
     
     def mask_non_conserved_regions(self, input_file_or_dict, output_file, conserved_regions, min_identity=80):
         """
@@ -387,67 +433,130 @@ class MAFParser:
             
         Returns:
             str: Path to masked FASTA file
+            
+        Raises:
+            AlignmentError: If masking fails
         """
-        self.config.debug(f"Masking non-conserved regions in reference genome")
+        self.logger.debug(f"Masking non-conserved regions in reference genome")
         
-        # Get sequences either from file or from provided dictionary
+        try:
+            # Get sequences either from file or from provided dictionary
+            sequences = self._load_input_sequences(input_file_or_dict)
+            
+            # Get the list of FASTA sequence IDs
+            fasta_ids = {seq_id: len(sequence) for seq_id, sequence in sequences.items()}
+            
+            # Get the list of alignment chromosome names
+            align_chroms = list(conserved_regions.keys())
+            
+            self.logger.debug(f"FASTA IDs ({len(fasta_ids)}): {', '.join(list(fasta_ids.keys())[:5])}...")
+            self.logger.debug(f"Alignment sequence IDs ({len(align_chroms)}): {', '.join(align_chroms[:5])}...")
+            
+            # Create chromosome mapping between alignment and FASTA sequences
+            chrom_map = self._map_chromosomes(align_chroms, fasta_ids.keys())
+            
+            # Log the mapping results
+            self.logger.debug("Chromosome mapping results:")
+            for ac, fid in chrom_map.items():
+                self.logger.debug(f"  Mapped: '{ac}' => '{fid}'")
+            
+            # Initialize masks with all positions masked (value of 0)
+            masks = {}
+            for record_id, length in fasta_ids.items():
+                masks[record_id] = [0] * length
+            
+            # Create reverse mapping from FASTA IDs to alignment chromosomes
+            reverse_map = {}
+            for ac, fid in chrom_map.items():
+                if fid not in reverse_map:
+                    reverse_map[fid] = []
+                reverse_map[fid].append(ac)
+            
+            # Apply masking to sequences
+            masked_records, stats = self._apply_region_masks(
+                sequences, masks, reverse_map, conserved_regions, min_identity
+            )
+            
+            # Write masked sequences to output file
+            SeqIO.write(masked_records, output_file, "fasta")
+            
+            # Calculate and log overall statistics
+            total_n_count = stats["total_n_count"]
+            total_bases = stats["total_bases"]
+            applied_regions = stats["applied_regions"]
+            total_regions = stats["total_regions"]
+            
+            mask_percent = (total_n_count / total_bases) * 100 if total_bases > 0 else 0
+            unmask_percent = 100 - mask_percent
+            
+            self.logger.debug(f"Created masked FASTA file: {output_file}")
+            self.logger.debug(f"Total statistics: {applied_regions}/{total_regions} regions applied")
+            self.logger.debug(f"Masking summary: {total_n_count}/{total_bases} bases masked to N ({mask_percent:.2f}%)")
+            self.logger.debug(f"Conserved bases: {total_bases - total_n_count}/{total_bases} bases kept ({unmask_percent:.2f}%)")
+            
+            # Check if everything was masked
+            if total_n_count == total_bases:
+                self.logger.warning("ALL bases in output FASTA are masked (100% Ns)")
+                self.logger.warning("This indicates no regions were successfully mapped between alignment and FASTA")
+            
+            return output_file
+            
+        except Exception as e:
+            self.logger.error(f"Error masking non-conserved regions: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"Failed to mask non-conserved regions: {str(e)}")
+    
+    def _load_input_sequences(self, input_file_or_dict):
+        """
+        Load sequences from a file or use provided dictionary.
+        
+        Args:
+            input_file_or_dict (str/dict): Input FASTA file or dictionary of sequences
+            
+        Returns:
+            dict: Dictionary of sequences
+        """
         if isinstance(input_file_or_dict, str):
             # Load sequences from FASTA file
             sequences = {}
             for record in SeqIO.parse(input_file_or_dict, "fasta"):
                 sequences[record.id] = str(record.seq)
-            self.config.debug(f"Loaded {len(sequences)} sequences from {input_file_or_dict}")
+            self.logger.debug(f"Loaded {len(sequences)} sequences from {input_file_or_dict}")
+            return sequences
         else:
             # Use provided dictionary
-            sequences = input_file_or_dict
-            self.config.debug(f"Using provided dictionary with {len(sequences)} sequences")
+            self.logger.debug(f"Using provided dictionary with {len(input_file_or_dict)} sequences")
+            return input_file_or_dict
+            
+    def _apply_region_masks(self, sequences, masks, reverse_map, conserved_regions, min_identity):
+        """
+        Apply masking to sequences based on conserved regions.
         
-        # Get the list of FASTA sequence IDs
-        fasta_ids = {}
-        for seq_id, sequence in sequences.items():
-            fasta_ids[seq_id] = len(sequence)
-        
-        # Get the list of alignment chromosome names
-        align_chroms = list(conserved_regions.keys())
-        
-        self.config.debug(f"FASTA IDs ({len(fasta_ids)}): {', '.join(list(fasta_ids.keys())[:5])}...")
-        self.config.debug(f"Alignment sequence IDs ({len(align_chroms)}): {', '.join(align_chroms[:5])}...")
-        
-        # Create chromosome mapping between alignment and FASTA sequences
-        chrom_map = self._map_chromosomes(align_chroms, fasta_ids.keys())
-        
-        # Log the mapping results
-        self.config.debug("Chromosome mapping results:")
-        for ac, fid in chrom_map.items():
-            self.config.debug(f"  Mapped: '{ac}' => '{fid}'")
-        
-        # Initialize masks with all positions masked (value of 0)
-        masks = {}
-        for record_id, length in fasta_ids.items():
-            masks[record_id] = [0] * length
-        
-        # Create reverse mapping from FASTA IDs to alignment chromosomes
-        reverse_map = {}
-        for ac, fid in chrom_map.items():
-            if fid not in reverse_map:
-                reverse_map[fid] = []
-            reverse_map[fid].append(ac)
-        
+        Args:
+            sequences (dict): Dictionary of sequences
+            masks (dict): Dictionary of mask arrays
+            reverse_map (dict): Mapping from FASTA IDs to alignment chromosomes
+            conserved_regions (dict): Conserved regions by chromosome
+            min_identity (float): Minimum identity to consider a region conserved
+            
+        Returns:
+            tuple: (masked_records, stats) - List of masked sequence records and statistics
+        """
         # Count total regions for statistics
         total_regions = sum(len(regions) for regions in conserved_regions.values())
         applied_regions = 0
         unmasked_bases = 0
         
         # Analyze each FASTA sequence
-        for fasta_id, sequence_length in fasta_ids.items():
+        for fasta_id, sequence_length in {id: len(seq) for id, seq in sequences.items()}.items():
             # Get all alignment chromosomes that map to this FASTA ID
             corresponding_align_chroms = reverse_map.get(fasta_id, [])
             
             if not corresponding_align_chroms:
-                self.config.debug(f"No alignment chromosomes map to FASTA ID '{fasta_id}'")
+                self.logger.debug(f"No alignment chromosomes map to FASTA ID '{fasta_id}'")
                 continue
                 
-            self.config.debug(f"Processing FASTA ID '{fasta_id}', mapped to alignment chromosomes: {corresponding_align_chroms}")
+            self.logger.debug(f"Processing FASTA ID '{fasta_id}', mapped to alignment chromosomes: {corresponding_align_chroms}")
             
             # Apply all relevant conserved regions
             regions_applied = 0
@@ -455,7 +564,7 @@ class MAFParser:
             
             for align_chrom in corresponding_align_chroms:
                 regions = conserved_regions.get(align_chrom, [])
-                self.config.debug(f"  - Applying {len(regions)} regions from alignment chromosome '{align_chrom}'")
+                self.logger.debug(f"  - Applying {len(regions)} regions from alignment chromosome '{align_chrom}'")
                 
                 # Use progress bar for large numbers of regions
                 region_iter = regions
@@ -479,7 +588,7 @@ class MAFParser:
             
             applied_regions += regions_applied
             unmasked_bases += bases_unmasked
-            self.config.debug(f"Applied {regions_applied} conserved regions to {fasta_id}, unmasked {bases_unmasked} bases")
+            self.logger.debug(f"Applied {regions_applied} conserved regions to {fasta_id}, unmasked {bases_unmasked} bases")
         
         # Create masked sequences
         masked_records = []
@@ -503,7 +612,7 @@ class MAFParser:
                 total_n_count += n_count
                 n_percent = (n_count / len(sequence)) * 100 if len(sequence) > 0 else 0
                 
-                self.config.debug(f"Sequence {seq_id}: {n_count}/{len(sequence)} bases masked to N ({n_percent:.2f}%)")
+                self.logger.debug(f"Sequence {seq_id}: {n_count}/{len(sequence)} bases masked to N ({n_percent:.2f}%)")
                 
                 # Create new record with masked sequence
                 masked_record = SeqRecord(
@@ -515,7 +624,7 @@ class MAFParser:
                 masked_records.append(masked_record)
             else:
                 # No mask for this chromosome - include unmasked
-                self.config.debug(f"No mask created for {seq_id}, adding unmasked sequence")
+                self.logger.debug(f"No mask created for {seq_id}, adding unmasked sequence")
                 masked_record = SeqRecord(
                     Seq(sequence),
                     id=seq_id,
@@ -524,24 +633,15 @@ class MAFParser:
                 )
                 masked_records.append(masked_record)
         
-        # Write masked sequences to output file
-        SeqIO.write(masked_records, output_file, "fasta")
+        # Return records and statistics
+        stats = {
+            "total_n_count": total_n_count,
+            "total_bases": total_bases,
+            "applied_regions": applied_regions,
+            "total_regions": total_regions
+        }
         
-        # Calculate and log overall statistics
-        mask_percent = (total_n_count / total_bases) * 100 if total_bases > 0 else 0
-        unmask_percent = 100 - mask_percent
-        
-        self.config.debug(f"Created masked FASTA file: {output_file}")
-        self.config.debug(f"Total statistics: {applied_regions}/{total_regions} regions applied")
-        self.config.debug(f"Masking summary: {total_n_count}/{total_bases} bases masked to N ({mask_percent:.2f}%)")
-        self.config.debug(f"Conserved bases: {total_bases - total_n_count}/{total_bases} bases kept ({unmask_percent:.2f}%)")
-        
-        # Check if everything was masked
-        if total_n_count == total_bases:
-            self.config.debug("WARNING: ALL bases in output FASTA are masked (100% Ns)")
-            self.config.debug("This indicates no regions were successfully mapped between alignment and FASTA")
-        
-        return output_file
+        return masked_records, stats
     
     def generate_coordinate_map(self, conserved_regions):
         """
@@ -553,6 +653,8 @@ class MAFParser:
         Returns:
             dict: Coordinate mapping from reference to query
         """
+        self.logger.debug("Generating coordinate map between reference and query genomes")
+        
         coordinate_map = {}
         
         for chrom, regions in conserved_regions.items():
@@ -578,6 +680,10 @@ class MAFParser:
                         'qry_strand': qry_strand
                     }
         
+        # Log statistics
+        total_mappings = sum(len(pos_map) for pos_map in coordinate_map.values())
+        self.logger.debug(f"Generated coordinate map with {total_mappings} position mappings across {len(coordinate_map)} chromosomes")
+        
         return coordinate_map
     
     def map_second_variants_to_reference(self, second_variants, coordinate_map):
@@ -590,20 +696,71 @@ class MAFParser:
             
         Returns:
             dict: Dictionary mapping reference chromosomes to sets of mapped variant positions
+            
+        Raises:
+            AlignmentError: If mapping fails
         """
-        self.config.debug("Mapping second species variants to reference genome coordinates")
+        self.logger.debug("Mapping second species variants to reference genome coordinates")
         
-        # Dictionary to store mapped variants for each reference chromosome
-        mapped_variants = {}
+        try:
+            # Dictionary to store mapped variants for each reference chromosome
+            mapped_variants = {}
+            
+            # Create reverse mapping (from second species to reference)
+            reverse_map = self._create_reverse_coordinate_map(coordinate_map)
+            
+            # Count statistics
+            total_second_variants = sum(len(pos_set) for pos_set in second_variants.values())
+            mapped_count = 0
+            
+            # For each second species chromosome and its variants
+            for qry_chrom, positions in second_variants.items():
+                if qry_chrom not in reverse_map:
+                    self.logger.debug(f"No mapping found for second species chromosome: {qry_chrom}")
+                    continue
+                    
+                # For each variant position
+                for pos in positions:
+                    # Check if this position is in our mapping
+                    if pos in reverse_map[qry_chrom]:
+                        # Get the corresponding reference position
+                        mapping = reverse_map[qry_chrom][pos]
+                        ref_chrom = mapping['ref_chrom']
+                        ref_pos = mapping['ref_pos']
+                        
+                        # Add to mapped variants
+                        if ref_chrom not in mapped_variants:
+                            mapped_variants[ref_chrom] = set()
+                            
+                        mapped_variants[ref_chrom].add(ref_pos)
+                        mapped_count += 1
+            
+            # Log mapping statistics
+            self.logger.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second species variants to reference genome")
+            for ref_chrom, variants in mapped_variants.items():
+                self.logger.debug(f"Reference chromosome {ref_chrom}: {len(variants)} mapped variants")
+            
+            return mapped_variants
+            
+        except Exception as e:
+            self.logger.error(f"Error mapping second species variants: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"Failed to map second species variants: {str(e)}")
+    
+    def _create_reverse_coordinate_map(self, coordinate_map):
+        """
+        Create a reverse mapping from query coordinates to reference coordinates.
         
-        # Create reverse mapping (from second species to reference)
+        Args:
+            coordinate_map (dict): Forward coordinate mapping (ref -> query)
+            
+        Returns:
+            dict: Reverse coordinate mapping (query -> ref)
+        """
         reverse_map = {}
         
         # Build the reverse map
         for ref_chrom, positions in coordinate_map.items():
-            if ref_chrom not in mapped_variants:
-                mapped_variants[ref_chrom] = set()
-                
             for ref_pos, mapping in positions.items():
                 qry_src = mapping['qry_src']
                 qry_pos = mapping['qry_pos']
@@ -620,38 +777,7 @@ class MAFParser:
                     'strand': qry_strand
                 }
         
-        # Count statistics
-        total_second_variants = sum(len(pos_set) for pos_set in second_variants.values())
-        mapped_count = 0
-        
-        # For each second species chromosome and its variants
-        for qry_chrom, positions in second_variants.items():
-            if qry_chrom not in reverse_map:
-                self.config.debug(f"No mapping found for second species chromosome: {qry_chrom}")
-                continue
-                
-            # For each variant position
-            for pos in positions:
-                # Check if this position is in our mapping
-                if pos in reverse_map[qry_chrom]:
-                    # Get the corresponding reference position
-                    mapping = reverse_map[qry_chrom][pos]
-                    ref_chrom = mapping['ref_chrom']
-                    ref_pos = mapping['ref_pos']
-                    
-                    # Add to mapped variants
-                    if ref_chrom not in mapped_variants:
-                        mapped_variants[ref_chrom] = set()
-                        
-                    mapped_variants[ref_chrom].add(ref_pos)
-                    mapped_count += 1
-        
-        # Log mapping statistics
-        self.config.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second species variants to reference genome")
-        for ref_chrom, variants in mapped_variants.items():
-            self.config.debug(f"Reference chromosome {ref_chrom}: {len(variants)} mapped variants")
-        
-        return mapped_variants
+        return reverse_map
     
     def analyze_maf_file(self, maf_file):
         """
@@ -662,15 +788,22 @@ class MAFParser:
             
         Returns:
             dict: Information about the MAF file structure
+            
+        Raises:
+            AlignmentError: If analysis fails
         """
-        self.config.debug(f"Analyzing MAF file structure: {maf_file}")
+        self.logger.debug(f"Analyzing MAF file structure: {maf_file}")
         
-        seq_ids = set()
-        ref_seq_ids = set()
-        query_seq_ids = set()
-        alignment_count = 0
-        
+        if not os.path.exists(maf_file):
+            self.logger.error(f"MAF file not found: {maf_file}")
+            raise AlignmentError(f"MAF file not found: {maf_file}")
+            
         try:
+            seq_ids = set()
+            ref_seq_ids = set()
+            query_seq_ids = set()
+            alignment_count = 0
+            
             with open(maf_file, 'r') as f:
                 current_alignment = []
                 
@@ -728,10 +861,10 @@ class MAFParser:
                                 seq_ids.add(query_id)
             
             # Log results
-            self.config.debug(f"MAF file contains {alignment_count} alignment blocks")
-            self.config.debug(f"Found {len(seq_ids)} unique sequence IDs: {', '.join(list(seq_ids)[:5])}...")
-            self.config.debug(f"Reference sequences ({len(ref_seq_ids)}): {', '.join(list(ref_seq_ids)[:5])}...")
-            self.config.debug(f"Query sequences ({len(query_seq_ids)}): {', '.join(list(query_seq_ids)[:5])}...")
+            self.logger.debug(f"MAF file contains {alignment_count} alignment blocks")
+            self.logger.debug(f"Found {len(seq_ids)} unique sequence IDs: {', '.join(list(seq_ids)[:5])}...")
+            self.logger.debug(f"Reference sequences ({len(ref_seq_ids)}): {', '.join(list(ref_seq_ids)[:5])}...")
+            self.logger.debug(f"Query sequences ({len(query_seq_ids)}): {', '.join(list(query_seq_ids)[:5])}...")
             
             return {
                 'alignment_count': alignment_count,
@@ -741,10 +874,9 @@ class MAFParser:
             }
             
         except Exception as e:
-            self.config.debug(f"Error analyzing MAF file: {str(e)}")
-            return {
-                'error': str(e)
-            }
+            self.logger.error(f"Error analyzing MAF file: {str(e)}")
+            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise AlignmentError(f"MAF file analysis failed: {str(e)}")
     
     def _map_chromosomes(self, align_chroms, fasta_ids):
         """
@@ -802,7 +934,7 @@ class MAFParser:
             unmapped_fasta = [fid for fid in fasta_ids if fid not in chrom_map.values()]
             
             if unmapped_align and unmapped_fasta:
-                self.config.debug("Using fallback positional mapping for unmapped chromosomes")
+                self.logger.debug("Using fallback positional mapping for unmapped chromosomes")
                 
                 # Try to sort both lists in a meaningful way
                 if all(c.isdigit() for c in unmapped_align):

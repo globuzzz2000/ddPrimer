@@ -90,6 +90,25 @@ class Config:
     NUPACK_SODIUM = 0.05     # Molar
     NUPACK_MAGNESIUM = 0.0   # Molar
 
+    #############################################################################
+    #                           Alignment Parameters
+    #############################################################################
+    # Sequence identity settings for alignment mode
+    MIN_IDENTITY = 80.0  # Minimum sequence identity for primer regions (percentage)
+    MIN_LENGTH = 20      # Minimum length of conserved regions
+
+    # LastZ alignment options
+    LASTZ_OPTIONS = "--format=maf --chain --gapped --step=10 --ambiguous=iupac"
+    # Options commonly used:
+    # --format=maf      : Output in Multiple Alignment Format (required)
+    # --step=10         : Step size for search (smaller = more sensitive but slower)
+    # --hspthresh=3000  : Threshold for high-scoring segment pairs (lower = more alignments)
+    # --chain           : Enable chaining of HSPs
+    # --gapped          : Enable gapped extension of HSPs
+    # --inner=2000      : Inner radius for seeding alignments
+    # --ydrop=3400      : Y-drop parameter (controls extension termination)
+    # --gappedthresh=3000 : Threshold for gapped alignments
+
     
     #############################################################################
     #                           Primer3 Settings
