@@ -24,7 +24,7 @@ import tempfile
 import shutil
 
 # Import package modules
-from .config import Config, setup_logging
+from .config import Config, setup_logging, display_config, display_primer3_settings
 from .config.exceptions import DDPrimerError, BlastError, FileSelectionError
 from .utils.file_io import FileIO
 from .utils.blast_db_creator import BlastDBCreator
@@ -59,7 +59,12 @@ def parse_arguments():
     parser.add_argument("--second-vcf", help="Variant Call Format (VCF) file for the second genome")
     parser.add_argument('--gff', help='GFF annotation file')
     parser.add_argument('--output', help='Output directory')
-    parser.add_argument('--config', help='Configuration file')
+    
+    # Configuration
+    parser.add_argument('--config', nargs='?', const='DISPLAY', 
+                      help='Configuration file path or special mode ("all", "basic", or "template"); if provided without value, displays basic configuration')
+    
+    # Other options
     parser.add_argument('--cli', action='store_true', help='Force CLI mode')
 
     # Mode options
@@ -75,6 +80,7 @@ def parse_arguments():
     parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (default: "blast_db" in same directory as FASTA)')
     
     args = parser.parse_args()
+
 
     # Check for conflicting options
     if args.direct and args.alignment:
@@ -211,16 +217,30 @@ def run_pipeline():
         logger.debug(f"Arguments: {args}")
         logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
+        # Display configuration if --config is provided with special values
+        if args.config in ['DISPLAY', 'all', 'basic', 'template']:
+            if args.config == 'template':
+                # Generate template configuration file
+                from .config.template_generator import generate_config_template
+                generate_config_template(Config)
+            else:
+                # Display configuration
+                display_config(Config)
+                # Show Primer3 settings only for 'all' mode
+                if args.config == 'all':
+                    display_primer3_settings(Config)
+            return True
+            
         # Force CLI mode if specified
         if args.cli:
             FileIO.use_cli = True
             logger.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
-        if args.config:
+        if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
             logger.debug(f"Loading custom configuration from {args.config}")
             Config.load_from_file(args.config)
-
+            
         # Apply nooligo setting if specified
         if args.nooligo:
             logger.info("Internal oligo (probe) design is disabled")

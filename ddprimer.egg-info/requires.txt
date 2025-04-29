@@ -4,6 +4,7 @@ numpy
 tqdm
 primer3-py
 openpyxl>=3.0.5
+wxpython
 
 [dev]
 pytest>=6.0.0

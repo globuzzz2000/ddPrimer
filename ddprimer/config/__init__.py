@@ -8,5 +8,14 @@ Configuration package for the ddPrimer pipeline.
 from .config import Config
 from .logging_config import setup_logging
 from .exceptions import PrimerDesignError
+from .config_display import display_config, display_primer3_settings
+from .template_generator import generate_config_template
 
-__all__ = ['Config', 'setup_logging', 'PrimerDesignError']
+__all__ = [
+    'Config', 
+    'setup_logging', 
+    'PrimerDesignError', 
+    'display_config', 
+    'display_primer3_settings',
+    'generate_config_template'
+]

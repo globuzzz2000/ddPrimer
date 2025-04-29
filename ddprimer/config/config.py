@@ -59,14 +59,6 @@ class Config:
     SEQUENCE_MAX_GC = 60.0
     
     #############################################################################
-    #                           Validation Options
-    #############################################################################
-    VALIDATION_MODE = "TOLERANT"  # "STRICT" or "TOLERANT"
-    ALLOW_AMP_MISMATCHES = 2  # Number of mismatches allowed in amplicon for TOLERANT mode
-    ALLOW_AMP_MISMATCH_PERCENT = 5  # Percentage of mismatches allowed (0 = use absolute count)
-    MAX_SEARCH_LENGTH = 1000000  # Limit search in large chromosomes to improve performance
-    
-    #############################################################################
     #                           BLAST Database Options
     #############################################################################
     DB_FASTA = None            # Path to a FASTA file to create a BLAST database from
