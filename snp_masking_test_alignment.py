@@ -377,18 +377,18 @@ def visualize_masked_sequences(original_seqs, masked_seqs, coordinate_map, known
 # ------------------------------------------------------------------
 # Test harness helpers:  capture AlignmentWorkflow outputs
 # ------------------------------------------------------------------
-# Keep a reference to the original AlignmentWorkflow so the stub can call it
-import ddprimer.helpers as _ddh
-_orig_align_wf = _ddh.AlignmentWorkflow
+# Keep a reference to the original run_alignment_workflow function
+import ddprimer.helpers.alignment_workflow as _alignment_wf
+_orig_run_alignment_workflow = _alignment_wf.run_alignment_workflow
 
 captured_results = {"masked_sequences": {}, "coordinate_map": {}}
 
-def _capture_alignment_workflow(args, out_dir, lgr):
-    """Proxy AlignmentWorkflow that captures outputs and calls the real function once."""
-    masked, cmap = _orig_align_wf(args, out_dir, lgr)
-    captured_results["masked_sequences"] = masked
+def _capture_alignment_workflow(args, out_dir):
+    """Proxy AlignmentWorkflow that captures outputs and calls the real function."""
+    masked_seqs, cmap = _orig_run_alignment_workflow(args, out_dir)
+    captured_results["masked_sequences"] = masked_seqs
     captured_results["coordinate_map"] = cmap
-    return masked, cmap
+    return masked_seqs, cmap
 
 def test_alignment_workflow_with_maf():
     """
@@ -396,11 +396,11 @@ def test_alignment_workflow_with_maf():
     Captures internal masked_sequences / coordinate_map but skips primer design.
     """
     try:
-        # --- monkey‑patch AlignmentWorkflow so we can capture its output ---
-        import ddprimer.helpers
-        ddprimer.helpers.AlignmentWorkflow = _capture_alignment_workflow
+        # --- monkey‑patch run_alignment_workflow function so we can capture its output ---
+        import ddprimer.helpers.alignment_workflow
+        ddprimer.helpers.alignment_workflow.run_alignment_workflow = _capture_alignment_workflow
 
-        from ddprimer.core import SNPMaskingProcessor
+        from ddprimer.core.SNP_masking_processor import SNPMaskingProcessor
         from ddprimer.helpers.maf_parser import MAFParser
 
         # -------------------------------------------------------------------
@@ -416,7 +416,7 @@ def test_alignment_workflow_with_maf():
                 self.vcf           = str(files["ref_vcf"])
                 self.second_vcf    = str(files["second_vcf"])
                 self.gff           = str(files["gff"])
-                self.maf_file      = str(files["maf"])
+                self.maf           = str(files["maf"])
                 self.snp           = True
                 self.min_identity  = 90.0
                 self.min_length    = 500
@@ -433,8 +433,8 @@ def test_alignment_workflow_with_maf():
         output_dir.mkdir(exist_ok=True)
 
         logger.info(magenta("\n===== FULL AlignmentWorkflow with pre‑computed MAF ====="))
-        from ddprimer.helpers import AlignmentWorkflow  # patched version
-        AlignmentWorkflow(args, str(output_dir), logger)
+        from ddprimer.helpers.alignment_workflow import run_alignment_workflow
+        run_alignment_workflow(args, str(output_dir))
 
         # If we reach here, AlignmentWorkflow finished.  Check we captured data.
         if not captured_results["masked_sequences"]:
@@ -505,7 +505,7 @@ def test_alignment_workflow_with_maf():
     finally:
         # always restore the original function
         try:
-            _ddh.AlignmentWorkflow = _orig_align_wf
+            ddprimer.helpers.alignment_workflow.run_alignment_workflow = _orig_run_alignment_workflow
         except Exception:
             pass
 
@@ -520,7 +520,7 @@ def test_alignment_workflow_with_lastz():
         return True  # Return success so the test suite continues
     
     try:
-        from ddprimer.helpers import AlignmentWorkflow
+        from ddprimer.helpers.alignment_workflow import run_alignment_workflow
         
         # Create test files
         files = create_test_files()
@@ -549,7 +549,7 @@ def test_alignment_workflow_with_lastz():
                 self.vcf = str(files["ref_vcf"])
                 self.second_vcf = str(files["second_vcf"])
                 self.gff = str(files["gff"])
-                self.maf_file = None  # We'll use our fresh LastZ alignment
+                self.maf = None  # We'll use our fresh LastZ alignment
                 self.snp = True
                 self.min_identity = 80.0
                 self.min_length = 20
@@ -562,8 +562,8 @@ def test_alignment_workflow_with_lastz():
         # Run the full AlignmentWorkflow with our generated MAF file
         logger.info("\nTesting full alignment workflow with fresh LastZ alignment...")
         try:
-            # Call AlignmentWorkflow
-            masked_sequences, coordinate_map = AlignmentWorkflow(args, str(output_dir), logger)
+            # Call run_alignment_workflow
+            masked_sequences, coordinate_map = run_alignment_workflow(args, str(output_dir))
             
             # Check if results are valid
             if masked_sequences and len(masked_sequences) > 0:
@@ -581,7 +581,7 @@ def test_alignment_workflow_with_lastz():
                 return False
                 
         except Exception as e:
-            logger.error(f"Error running AlignmentWorkflow with LastZ: {e}")
+            logger.error(f"Error running alignment workflow with LastZ: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
