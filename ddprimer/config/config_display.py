@@ -98,6 +98,7 @@ def display_config(config_cls):
     print(f"- View basic settings: {Fore.YELLOW}ddprimer --config{Style.RESET_ALL}")
     print(f"- View all settings (including Primer3): {Fore.YELLOW}ddprimer --config all{Style.RESET_ALL}")
     print(f"- Generate a template config file: {Fore.YELLOW}ddprimer --config template{Style.RESET_ALL}")
+    print(f"- Generate a template in specific directory: {Fore.YELLOW}ddprimer --config template --output /path/to/dir{Style.RESET_ALL}")
     print(f"- Use custom config: {Fore.YELLOW}ddprimer --config your_config.json{Style.RESET_ALL}")
     print(f"\nExample config file format:")
     print(f"{Fore.BLUE}{{")

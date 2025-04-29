@@ -11,13 +11,14 @@ from datetime import datetime
 import colorama
 from colorama import Fore, Style
 
-def generate_config_template(config_cls, filename=None):
+def generate_config_template(config_cls, filename=None, output_dir=None):
     """
     Generate a template configuration file based on current settings.
     
     Args:
         config_cls: The Config class
         filename (str, optional): Filename to save the template. If None, uses default name.
+        output_dir (str, optional): Directory to save the template. If None, uses current directory.
         
     Returns:
         str: Path to the generated template file
@@ -25,8 +26,19 @@ def generate_config_template(config_cls, filename=None):
     # Initialize colorama for cross-platform colored output
     colorama.init()
     
-    # Get current working directory
-    cwd = os.getcwd()
+    # Determine output directory
+    if output_dir is None:
+        output_dir = os.getcwd()
+    else:
+        # Create the directory if it doesn't exist
+        if not os.path.exists(output_dir):
+            try:
+                os.makedirs(output_dir)
+                print(f"{Fore.GREEN}Created output directory: {output_dir}{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}Error creating output directory: {str(e)}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}Using current directory instead.{Style.RESET_ALL}")
+                output_dir = os.getcwd()
     
     # If no filename is provided, create a default one
     if filename is None:
@@ -38,7 +50,7 @@ def generate_config_template(config_cls, filename=None):
         filename += '.json'
     
     # Create full path
-    filepath = os.path.join(cwd, filename)
+    filepath = os.path.join(output_dir, filename)
     
     # Helper function to safely get attributes
     def safe_get_attr(obj, attr, default=None):
@@ -117,7 +129,7 @@ def generate_config_template(config_cls, filename=None):
         print(f"Template saved to: {Fore.YELLOW}{filepath}{Style.RESET_ALL}")
         print(f"\nTo use this template:")
         print(f"1. Edit the file with your preferred settings")
-        print(f"2. Run: {Fore.YELLOW}ddprimer --config {filename}{Style.RESET_ALL}")
+        print(f"2. Run: {Fore.YELLOW}ddprimer --config {filepath}{Style.RESET_ALL}")
         print()
         
         return filepath

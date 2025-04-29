@@ -45,42 +45,44 @@ def parse_arguments():
     Raises:
         argparse.ArgumentError: If there are conflicting or invalid arguments
     """
-    parser = argparse.ArgumentParser(description='ddPrimer: A pipeline for primer design and filtering')
+    parser = argparse.ArgumentParser(
+        description='ddPrimer: A pipeline for primer design and filtering',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug] [--config [.json]] \n                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] [--createdb [.fasta, .fna, .fa [DB_NAME]]] \n                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
+    )
+
+    # Create argument groups for better organization
+    mode_group = parser.add_argument_group('modes')
+    option_group = parser.add_argument_group('options')
+    input_group = parser.add_argument_group('inputs (optional)')
 
     # Modes
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--direct', nargs='?', const=True, help='CSV or Excel file with sequence name and sequence columns (shortcut mode)')
-    parser.add_argument("--alignment", action="store_true", help="Enable alignment mode primer design workflow")
+    mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, help='Enable target-sequence based primer design workflow')
+    mode_group.add_argument("--alignment", action="store_true", help="Enable alignment-based primer design workflow")
 
-    # Inputs
-    parser.add_argument('--fasta', help='Input FASTA file (reference genome)')
-    parser.add_argument("--second-fasta", help="Second species genome FASTA file")
-    parser.add_argument('--vcf', help='VCF file with variants')
-    parser.add_argument("--second-vcf", help="Variant Call Format (VCF) file for the second genome")
-    parser.add_argument('--gff', help='GFF annotation file')
-    parser.add_argument('--output', help='Output directory')
-    
-    # Configuration
-    parser.add_argument('--config', nargs='?', const='DISPLAY', 
-                      help='Configuration file path or special mode ("all", "basic", or "template"); if provided without value, displays basic configuration')
-    
-    # Other options
-    parser.add_argument('--cli', action='store_true', help='Force CLI mode')
+    # Options - DO NOT add help here, argparse adds it automatically
+    option_group.add_argument('--debug', action='store_true', help='Enable debug mode')
+    option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
+    option_group.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
+                      help='Configuration file path or special mode ("all", "basic", or "template")')
 
-    # Mode options
-    parser.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    parser.add_argument('--snp', action='store_true', help='Enable SNP masking in sequences (requires --fasta and --vcf)')
-    parser.add_argument('--noannotation', action='store_true', help='Disable gene annotation filtering in all modes')
-    parser.add_argument("--maf", nargs='?', const=True, help="Pre-computed MAF alignment file (skips LastZ alignment)")
-    parser.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
+    option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
+    option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
+    option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
+    option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    option_group.add_argument('--createdb', nargs='+', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
+                      help='Create a BLAST database. Optional arguments: [.fasta, .fna, .fa] [DB_NAME]')
     
-    # BLAST database creation
-    parser.add_argument('--createdb', nargs='?', const=True, help='Create a BLAST database (optionally provide FASTA file path, or will prompt for one)')
-    parser.add_argument('--dbname', help='Custom name for the BLAST database (default: derived from filename)')
-    parser.add_argument('--dboutdir', help='Custom output directory for the BLAST database (default: "blast_db" in same directory as FASTA)')
+    # Input files
+    input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', help='Reference genome FASTA file')
+    input_group.add_argument('--second-fasta', metavar='[.fasta, .fna, .fa]', help='Second genome FASTA file')
+    input_group.add_argument('--vcf', metavar='[.vcf, .vcf.gz]', help='Variant Call Format (VCF) file with variants')
+    input_group.add_argument('--second-vcf', metavar='[.vcf, .vcf.gz]', help='VCF file for the second genome')
+    input_group.add_argument('--gff', metavar='[.gff, .gff3]', help='GFF annotation file')
+    input_group.add_argument('--maf', metavar='[.maf]', nargs='?', const=True, help="For alignment mode: Pre-computed MAF alignment file (skips LastZ alignment)")
     
     args = parser.parse_args()
-
 
     # Check for conflicting options
     if args.direct and args.alignment:
@@ -123,6 +125,23 @@ def parse_arguments():
             # Only require VCF files if SNP masking is enabled
             if args.second_fasta and not args.second_vcf:
                 parser.error("Second species VCF file (--second-vcf) is required for SNP masking")
+    
+    # Process createdb arguments
+    if args.createdb is not None:
+        # First argument is the FASTA file (if provided)
+        if len(args.createdb) >= 1:
+            args.createdb_fasta = args.createdb[0]
+        else:
+            args.createdb_fasta = True  # Will prompt for file selection
+        
+        # Second argument is the database name (if provided)
+        if len(args.createdb) >= 2:
+            args.dbname = args.createdb[1]
+        else:
+            args.dbname = None
+            
+        # Use output directory for BLAST database if provided
+        args.dboutdir = args.output if args.output else None
     
     return args
 
@@ -203,6 +222,8 @@ def run_pipeline():
     Returns:
         bool: True if the pipeline completed successfully, False otherwise
     """
+    # Initialize logger first to handle any early errors
+    logger = None
     try:
         # Parse command line arguments
         args = parse_arguments()
@@ -222,7 +243,9 @@ def run_pipeline():
             if args.config == 'template':
                 # Generate template configuration file
                 from .config.template_generator import generate_config_template
-                generate_config_template(Config)
+                # Use the output directory if provided
+                output_dir = args.output if hasattr(args, 'output') and args.output else None
+                generate_config_template(Config, output_dir=output_dir)
             else:
                 # Display configuration
                 display_config(Config)
@@ -249,11 +272,13 @@ def run_pipeline():
             Config.DISABLE_INTERNAL_OLIGO = True
         
         # Process BLAST database arguments
-        if args.createdb:
+        if args.createdb is not None:
             logger.info("BLAST database creation requested")
             try:
                 blast_db_creator = BlastDBCreator()
-                fasta_file = args.createdb if isinstance(args.createdb, str) else None
+                
+                # Get the FASTA file path from args.createdb_fasta
+                fasta_file = args.createdb_fasta if isinstance(args.createdb_fasta, str) else None
                 
                 # If no FASTA file was provided, prompt for one
                 if not fasta_file:
@@ -263,12 +288,16 @@ def run_pipeline():
                     except FileSelectionError as e:
                         logger.error(f"Failed to select FASTA file: {str(e)}")
                         return False
-                    
+                        
                 logger.info(f"Creating BLAST database from {fasta_file}")
+                
+                # Use the output directory if provided, otherwise use default
+                output_dir = args.output if args.output else None
+                
                 db_path = blast_db_creator.create_database(
                     fasta_file,
-                    args.dbname,
-                    args.dboutdir
+                    args.dbname,  # This comes from the second argument to --createdb
+                    output_dir
                 )
                 Config.DB_PATH = db_path
                 Config.USE_CUSTOM_DB = True
@@ -292,9 +321,9 @@ def run_pipeline():
                 logger.error("1. Rebuild the database with the makeblastdb command:")
                 logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
                 logger.error("\n2. Create a BLAST database directly with ddprimer:")
-                logger.error("   python -m ddprimer --createdb [path/to/your_genome.fasta] [--dbname custom_name] [--dboutdir output_dir]")
+                logger.error("   ddprimer --createdb path/to/your_genome.fasta [optional_db_name] --output output_dir")
                 logger.error("\n3. Set a different database path in your configuration file:")
-                logger.error("   python -m ddprimer --config your_config.json")
+                logger.error("   ddprimer --config your_config.json")
                 logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
                 logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
                 logger.error("======================================")
@@ -320,13 +349,22 @@ def run_pipeline():
             
     except DDPrimerError as e:
         # Handle application-specific exceptions
-        logger.error(f"Pipeline error: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        if logger:
+            logger.error(f"Pipeline error: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        else:
+            print(f"Pipeline error: {str(e)}")
+            print(f"Run with --debug for more detailed error information")
         return False
     except Exception as e:
         # Handle unexpected exceptions
-        logger.error(f"Unhandled exception during pipeline execution: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        if logger:
+            logger.error(f"Unhandled exception during pipeline execution: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        else:
+            print(f"Unhandled exception during pipeline execution: {str(e)}")
+            print(f"Run with --debug for more detailed error information")
+            print(traceback.format_exc())
         return False
 
 

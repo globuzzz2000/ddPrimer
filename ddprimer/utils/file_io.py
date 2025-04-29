@@ -268,7 +268,7 @@ class FileIO:
         logger.debug(f"Starting file selection from directory: {last_directory}")
 
         if cls.use_cli:
-            logger.info(f"{prompt} (CLI mode)")
+            logger.debug(f"{prompt} (CLI mode)")
             file_path = input(f"{prompt}: ").strip()
             if not file_path:
                 logger.error("No file path provided in CLI mode")

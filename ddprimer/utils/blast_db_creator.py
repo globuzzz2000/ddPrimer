@@ -33,6 +33,24 @@ class BlastDBCreator:
         """
         return self.create_db(fasta_file, output_dir, db_name, logger)
     
+class BlastDBCreator:
+    """Creates and manages BLAST databases from FASTA files."""
+    
+    def create_database(self, fasta_file, db_name=None, output_dir=None, logger=None):
+        """
+        Create a BLAST database from a FASTA file.
+        
+        Args:
+            fasta_file (str): Path to the FASTA file
+            db_name (str, optional): Custom name for the database
+            output_dir (str, optional): Directory to store the database files
+            logger (logging.Logger, optional): Logger instance to use
+            
+        Returns:
+            str: Path to the created BLAST database
+        """
+        return self.create_db(fasta_file, output_dir, db_name, logger)
+    
     @staticmethod
     def create_db(fasta_file, output_dir=None, db_name=None, logger=None):
         """
