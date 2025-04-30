@@ -3,7 +3,8 @@
 """
 BLAST Database Verification Utilities
 
-This module provides functions to verify BLAST databases before pipeline execution.
+This module provides functions to verify BLAST databases before pipeline execution
+and offers options to create databases from model organisms when verification fails.
 """
 
 import os
@@ -15,6 +16,7 @@ import shlex
 import time
 from ..config import Config
 from .blast_db_creator import BlastDBCreator
+from .model_organism_manager import ModelOrganismManager
 
 class BlastVerification:
     """Handles BLAST database verification before pipeline execution."""
@@ -23,6 +25,7 @@ class BlastVerification:
     def verify_blast_database(logger=None):
         """
         Verify that a valid BLAST database exists and can be accessed.
+        If verification fails, offer options to create a new database.
         
         Args:
             logger (logging.Logger, optional): Logger instance for output messages
@@ -34,6 +37,11 @@ class BlastVerification:
             logger = logging.getLogger("ddPrimer")
         
         db_path = Config.DB_PATH
+        
+        # If no database path is set, immediately offer to create one
+        if db_path is None:
+            logger.info("No BLAST database configured. You need to create or select one.")
+            return BlastVerification._handle_failed_verification(logger)
         
         # Ensure path is absolute and properly expanded
         db_path = os.path.abspath(os.path.expanduser(db_path))
@@ -50,18 +58,8 @@ class BlastVerification:
         
         if missing_files:
             logger.warning(f"BLAST database at {db_path} is missing files: {', '.join(missing_files)}")
-            # If basic files are missing, return False right away
-            logger.error("\n======================================")
-            logger.error("ERROR: BLAST database files missing!")
-            logger.error("\nPossible solutions:")
-            logger.error("1. Create a BLAST database with the makeblastdb command:")
-            logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
-            logger.error("\n2. Create a BLAST database directly with ddprimer:")
-            logger.error("   python -m ddprimer --dbfasta your_genome.fasta [--dbname custom_name] [--dboutdir output_dir]")
-            logger.error("\n3. Set a different database path in your configuration file:")
-            logger.error("   python -m ddprimer --config your_config.json")
-            logger.error("======================================")
-            return False
+            # Database files are missing, offer to create a new database
+            return BlastVerification._handle_failed_verification(logger)
         else:
             logger.debug("BLAST database files found.")
         
@@ -76,14 +74,11 @@ class BlastVerification:
                 tmp_filename = tmp_query.name
             
             try:
-                # Quote the database path exactly like blast_processor.py does
-                quoted_db_path = f'"{db_path}"'
-                
                 # Run test BLAST command with a very simple query
                 cmd = [
                     "blastn",
                     "-task", "blastn-short",
-                    "-db", quoted_db_path,  # Use the quoted path here
+                    "-db", f'"{db_path}"',  # Use the quoted path here
                     "-query", tmp_filename,
                     "-outfmt", "6",
                     "-max_target_seqs", "5"  # Increased to avoid warning
@@ -138,18 +133,21 @@ class BlastVerification:
                         
                     # Log the full error
                     logger.error(f"BLAST database test failed: {error_msg}")
-                    return False
+                    # Database test failed, offer to create a new database
+                    return BlastVerification._handle_failed_verification(logger)
                     
             except subprocess.TimeoutExpired:
                 logger.error("BLAST command timed out - database may be corrupted or inaccessible")
                 # Clean up temp file
                 os.remove(tmp_filename)
-                return False
+                # Database test failed, offer to create a new database
+                return BlastVerification._handle_failed_verification(logger)
                 
         except Exception as e:
             logger.error(f"Error testing BLAST database: {str(e)}")
             logger.debug(str(e), exc_info=True)
-            return False
+            # Database test failed, offer to create a new database
+            return BlastVerification._handle_failed_verification(logger)
             
         # This code should not be reached, but just in case
         return BlastVerification._retry_verify_with_blastdbcmd(db_path, logger)
@@ -198,32 +196,164 @@ class BlastVerification:
                 return True
             else:
                 logger.error(f"blastdbcmd verification failed: {result.stderr}")
-                
-                # If we've exhausted all options
-                logger.error("\n======================================")
-                logger.error("ERROR: BLAST database verification failed!")
-                
-                if "memory map file error" in result.stderr:
-                    logger.error("Memory map error detected. This can happen due to:")
-                    logger.error("1. Paths with spaces in them")
-                    logger.error("2. Permission issues")
-                    logger.error("3. System resource limitations")
-                    logger.error("\nRecommended solutions:")
-                    logger.error("- Create the database in a path without spaces:")
-                    logger.error("  mkdir -p ~/blast_dbs")
-                    logger.error("  makeblastdb -in your_genome.fasta -dbtype nucl -out ~/blast_dbs/your_db_name")
-                    logger.error("- Update your config to use this new database:")
-                    logger.error("  DB_PATH: ~/blast_dbs/your_db_name")
-                else:
-                    logger.error("The database exists but appears to be corrupted or inaccessible.")
-                    logger.error("\nTry rebuilding the database with:")
-                    logger.error("  makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
-                    
-                logger.error("======================================")
-                
-                return False
+                # Database verification failed with all methods, offer to create a new database
+                return BlastVerification._handle_failed_verification(logger)
                 
         except Exception as e:
             logger.error(f"Error during fallback verification: {str(e)}")
+            logger.debug(str(e), exc_info=True)
+            # Database verification failed with all methods, offer to create a new database
+            return BlastVerification._handle_failed_verification(logger)
+    
+    @staticmethod
+    def _handle_failed_verification(logger):
+        """
+        Handle failed database verification by offering options:
+        1. Create a new database from a model organism
+        2. Create a new database from a custom file
+        3. Try again with the current database
+        4. Exit
+        
+        Args:
+            logger (logging.Logger): Logger instance
+            
+        Returns:
+            bool: True if a new database was created and verified, False otherwise
+        """
+        logger.error("\n======================================")
+        logger.error("ERROR: BLAST database verification failed!")
+        logger.error("======================================")
+        logger.info("You have the following options:")
+        logger.info("1. Create a new database from a model organism genome")
+        logger.info("2. Create a new database from a custom FASTA file")
+        logger.info("3. Try again with the current database")
+        logger.info("4. Exit")
+        
+        try:
+            choice = input("Enter your choice [1-4]: ")
+            
+            if choice == "1":
+                # Create a new database from a model organism
+                logger.info("Creating a new database from a model organism genome...")
+                
+                # Use ModelOrganismManager to select and fetch a model organism
+                from .model_organism_manager import ModelOrganismManager
+                organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism(logger)
+                
+                if fasta_file is None:
+                    logger.info("Database creation canceled. Exiting...")
+                    return False
+                
+                # Use database name based on organism name
+                if organism_key is not None:
+                    organism_name = ModelOrganismManager.MODEL_ORGANISMS[organism_key]["name"]
+                    # Extract just the scientific name (remove parentheses part)
+                    scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
+                    # Replace spaces with underscores
+                    db_name = scientific_name.replace(' ', '_')
+                    logger.debug(f"Using database name: {db_name}")
+                else:
+                    db_name = None
+                
+                # Create the database
+                from .blast_db_creator import BlastDBCreator
+                blast_db_creator = BlastDBCreator()
+                db_path = blast_db_creator.create_database(fasta_file, db_name)
+                
+                # If a database was successfully created
+                if db_path:
+                    # Check if there's already a database path set that's not the default
+                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                        # If there's already a non-default database, ask if we should use the new one
+                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
+                        
+                        if use_new_db == "" or use_new_db.startswith("y"):
+                            Config.DB_PATH = db_path
+                            Config.USE_CUSTOM_DB = True
+                            # Save the database path for future runs
+                            Config.save_database_config(db_path)
+                            logger.info(f"Now using new BLAST database: {db_path}")
+                        else:
+                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                    else:
+                        # If no database or default database, automatically use the new one
+                        Config.DB_PATH = db_path
+                        Config.USE_CUSTOM_DB = True
+                        # Save the database path for future runs
+                        Config.save_database_config(db_path)
+                        logger.debug(f"BLAST database created and set as active: {db_path}")
+                    
+                    # Clean up genome file if it was from a model organism
+                    if fasta_file and organism_key is not None:
+                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
+                    
+                    return True
+                else:
+                    logger.error("Failed to create database. Please try again.")
+                    return False
+                    
+            elif choice == "2":
+                # Create a new database from a custom FASTA file
+                logger.info("Creating a new database from a custom FASTA file...")
+                
+                # Create the database using BlastDBCreator
+                from .blast_db_creator import BlastDBCreator
+                blast_db_creator = BlastDBCreator()
+                db_path = blast_db_creator.create_database(True)  # True means prompt for file
+                
+                if db_path is None:
+                    logger.info("Database creation canceled. Exiting...")
+                    return False
+                
+                # If a database was successfully created
+                if db_path:
+                    # Check if there's already a database path set that's not the default
+                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                        # If there's already a non-default database, ask if we should use the new one
+                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
+                        
+                        if use_new_db == "" or use_new_db.startswith("y"):
+                            Config.DB_PATH = db_path
+                            Config.USE_CUSTOM_DB = True
+                            # Save the database path for future runs
+                            Config.save_database_config(db_path)
+                            logger.info(f"Now using new BLAST database: {db_path}")
+                        else:
+                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                    else:
+                        # If no database or default database, automatically use the new one
+                        Config.DB_PATH = db_path
+                        Config.USE_CUSTOM_DB = True
+                        # Save the database path for future runs
+                        Config.save_database_config(db_path)
+                        logger.info(f"BLAST database created and set as active: {db_path}")
+                    
+                    return True
+                else:
+                    logger.error("Failed to create database. Please try again.")
+                    return False
+                    
+            elif choice == "3":
+                # Try again with the current database
+                logger.info("Retrying with the current database...")
+                logger.info("Please ensure all BLAST processes are closed and try again.")
+                return False
+                
+            elif choice == "4" or choice.lower() == "exit" or choice.lower() == "quit":
+                # Exit
+                logger.info("Exiting...")
+                return False
+                
+            else:
+                logger.error("Invalid choice. Please enter a number between 1 and 4.")
+                return BlastVerification._handle_failed_verification(logger)
+                
+        except KeyboardInterrupt:
+            logger.info("\nOperation canceled by user.")
+            return False
+        except Exception as e:
+            logger.error(f"Error handling failed verification: {str(e)}")
             logger.debug(str(e), exc_info=True)
             return False

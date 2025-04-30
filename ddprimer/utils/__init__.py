@@ -13,11 +13,15 @@ from .file_io import FileIO
 from .common_utils import CommonUtils
 from .blast_db_creator import BlastDBCreator
 from .blast_verification import BlastVerification
+from .model_organism_manager import ModelOrganismManager
+from .db_selector import DatabaseSelector
 
 __all__ = [
     'FileUtils',
     'BlastDBCreator',
     'SequnceUtils',
     'CommonUtils',
-    'verify_blast_database'
+    'BlastVerification',
+    'ModelOrganismManager',
+    'DatabaseSelector'
 ]

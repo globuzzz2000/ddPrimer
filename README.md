@@ -178,10 +178,17 @@ Example configuration:
 
 ## Additional Utilities
 
-### Creating a BLAST Database
+### Managing a BLAST Database
 
 ```bash
-ddprimer --createdb genome.fasta --dbname my_genome
+# Create a BLAST database from a genome file
+ddprimer --db genome.fasta
+
+# Create a BLAST database with a custom name
+ddprimer --db genome.fasta my_custom_name
+
+# Launch the model organism selection menu
+ddprimer --db
 ```
 
 ### Running Only Alignment (without primer design)

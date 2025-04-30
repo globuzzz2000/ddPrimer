@@ -12,6 +12,8 @@ A streamlined script that:
 6. Runs NUPACK for thermodynamic properties
 7. BLASTs primers and oligos for specificity
 8. Saves results to an Excel file
+
+Now with support for automatic model organism database creation!
 """
 
 import os
@@ -29,6 +31,7 @@ from .config.exceptions import DDPrimerError, BlastError, FileSelectionError
 from .utils.file_io import FileIO
 from .utils.blast_db_creator import BlastDBCreator
 from .utils.blast_verification import BlastVerification
+from .utils.model_organism_manager import ModelOrganismManager
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Define logger
@@ -48,8 +51,13 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug] [--config [.json]] \n                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] [--createdb [.fasta, .fna, .fa [DB_NAME]]] \n                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
+        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug] [--config [.json]] \n'
+            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
+            '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
+            '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
+            '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
     )
+
 
     # Create argument groups for better organization
     mode_group = parser.add_argument_group('modes')
@@ -71,9 +79,11 @@ def parse_arguments():
     option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
     option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
     option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
-    option_group.add_argument('--createdb', nargs='+', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
-                      help='Create a BLAST database. Optional arguments: [.fasta, .fna, .fa] [DB_NAME]')
-    
+    option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
+                    help='Create or select a BLAST database. With no arguments, shows model organism selection menu. '
+                        'With one argument, creates database from the specified FASTA file. '
+                        'With two arguments, creates database from the first argument and uses the second as the database name.')
+        
     # Input files
     input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', help='Reference genome FASTA file')
     input_group.add_argument('--second-fasta', metavar='[.fasta, .fna, .fa]', help='Second genome FASTA file')
@@ -126,22 +136,30 @@ def parse_arguments():
             if args.second_fasta and not args.second_vcf:
                 parser.error("Second species VCF file (--second-vcf) is required for SNP masking")
     
-    # Process createdb arguments
-    if args.createdb is not None:
-        # First argument is the FASTA file (if provided)
-        if len(args.createdb) >= 1:
-            args.createdb_fasta = args.createdb[0]
-        else:
-            args.createdb_fasta = True  # Will prompt for file selection
-        
-        # Second argument is the database name (if provided)
-        if len(args.createdb) >= 2:
-            args.dbname = args.createdb[1]
-        else:
-            args.dbname = None
-            
-        # Use output directory for BLAST database if provided
+    # Process --db arguments
+    if args.db is not None:
+        # Set the db output directory if provided
         args.dboutdir = args.output if args.output else None
+        
+        if len(args.db) == 0:
+            # User ran "--db" without any arguments, show the selection menu
+            args.db_action = 'select'
+            args.db_fasta = None
+            args.db_name = None
+        elif len(args.db) >= 1:
+            # User provided a specific file path: "--db path/to/file.fasta"
+            args.db_action = 'file'
+            args.db_fasta = args.db[0]
+            
+            # Check for optional database name
+            if len(args.db) >= 2:
+                args.db_name = args.db[1]
+            else:
+                args.db_name = None
+    else:
+        args.db_action = None
+        args.db_fasta = None
+        args.db_name = None
     
     return args
 
@@ -224,6 +242,7 @@ def run_pipeline():
     """
     # Initialize logger first to handle any early errors
     logger = None
+
     try:
         # Parse command line arguments
         args = parse_arguments()
@@ -234,6 +253,9 @@ def run_pipeline():
         logging.getLogger("nupack.rebind.render").setLevel(logging.WARNING)
         
         logger = logging.getLogger("ddPrimer")
+        logger.debug("Initializing Config settings")
+        Config.get_instance()
+        logger.debug(f"Initial DB_PATH: {Config.DB_PATH}")
         logger.debug("Starting pipeline execution")
         logger.debug(f"Arguments: {args}")
         logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
@@ -271,62 +293,113 @@ def run_pipeline():
             Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
             Config.DISABLE_INTERNAL_OLIGO = True
         
-        # Process BLAST database arguments
-        if args.createdb is not None:
-            logger.info("BLAST database creation requested")
+        # Process BLAST database arguments - simplified handling
+        if args.db is not None:
+            logger.info("BLAST database operation requested")
             try:
                 blast_db_creator = BlastDBCreator()
                 
-                # Get the FASTA file path from args.createdb_fasta
-                fasta_file = args.createdb_fasta if isinstance(args.createdb_fasta, str) else None
-                
-                # If no FASTA file was provided, prompt for one
-                if not fasta_file:
-                    logger.info("No FASTA file provided, prompting for file selection")
-                    try:
-                        fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
-                    except FileSelectionError as e:
-                        logger.error(f"Failed to select FASTA file: {str(e)}")
+                # Handle model organism / existing db selection
+                if args.db_action == 'select':
+                    logger.info("Database selection requested")
+                    from .utils.model_organism_manager import ModelOrganismManager as MOManager
+                    organism_key, organism_name, fasta_file = MOManager.select_model_organism(logger)
+                    
+                    if organism_key is None and fasta_file is None:
+                        logger.info("Database selection canceled. Exiting...")
                         return False
+                    
+                    # Handle the case of selecting an existing database
+                    if organism_key == 'existing_db':
+                        # fasta_file actually contains the database path in this case
+                        selected_db_path = fasta_file
+                        Config.DB_PATH = selected_db_path
+                        Config.save_database_config(selected_db_path)
+                        Config.USE_CUSTOM_DB = True
+                        logger.info(f"Now using BLAST database: {selected_db_path}")
                         
-                logger.info(f"Creating BLAST database from {fasta_file}")
+                        # If only running database operations, exit successfully
+                        if not args.fasta:
+                            return True
+                        else:
+                            # Continue with other operations using the selected database
+                            pass
+                    
+                    # For model organism or custom file cases, continue with database creation
+                    if organism_key is not None and args.db_name is None:
+                        # For model organism, use scientific name as the database name
+                        organism_name = MOManager.MODEL_ORGANISMS[organism_key]["name"]
+                        scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
+                        db_name = scientific_name.replace(' ', '_')
+                        logger.info(f"Using database name: {db_name}")
+                    else:
+                        db_name = args.db_name
                 
-                # Use the output directory if provided, otherwise use default
-                output_dir = args.output if args.output else None
-                
-                db_path = blast_db_creator.create_database(
-                    fasta_file,
-                    args.dbname,  # This comes from the second argument to --createdb
-                    output_dir
-                )
-                Config.DB_PATH = db_path
-                Config.USE_CUSTOM_DB = True
-                logger.info(f"BLAST database created: {db_path}")
+                # Handle direct file path
+                elif args.db_action == 'file':
+                    fasta_file = args.db_fasta
+                    if not os.path.exists(fasta_file):
+                        logger.error(f"FASTA file not found: {fasta_file}")
+                        return False
+                    organism_key = None  # Not a model organism
+                    db_name = args.db_name
+                    
+                # If we have a file to create a database from
+                if fasta_file and organism_key != 'existing_db':
+                    logger.info(f"Creating BLAST database from {fasta_file}")
+                    
+                    # Use the output directory if provided, otherwise use default
+                    output_dir = args.output if args.output else None
+                    
+                    # Create the database
+                    db_path = blast_db_creator.create_database(
+                        fasta_file,
+                        db_name,  # Custom database name
+                        output_dir
+                    )
+                    
+                    # Clean up genome file if it was from a model organism
+                    if organism_key is not None and organism_key != 'existing_db':
+                        from .utils.model_organism_manager import ModelOrganismManager
+                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
+
+                    # Check if there's already a database path set
+                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                        # If there's already a non-default database, ask if we should use the new one
+                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
+                        if use_new_db == "" or use_new_db.startswith("y"):
+                            Config.DB_PATH = db_path
+                            Config.save_database_config(db_path)
+                            Config.USE_CUSTOM_DB = True
+                            logger.info(f"Now using new BLAST database: {db_path}")
+                        else:
+                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                    else:
+                        # If no database or default database, automatically use the new one
+                        Config.DB_PATH = db_path
+                        Config.save_database_config(db_path)
+                        Config.USE_CUSTOM_DB = True
+                        logger.info(f"BLAST database created and set as active: {db_path}")
+                        
+                    # If only running database operations, exit successfully
+                    if not args.fasta:
+                        return True
+                        
             except Exception as e:
-                logger.error(f"Error creating BLAST database: {str(e)}")
+                logger.error(f"Error during database operation: {str(e)}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 return False
-        
+                
         # Skip BLAST verification for lastzonly mode
         if not args.lastzonly:
             # Verify BLAST database
             logger.debug("Verifying BLAST database...")
             
             if not BlastVerification.verify_blast_database(logger):
-                logger.error("\n======================================")
-                logger.error("ERROR: BLAST database verification failed!")
-                logger.error("\nPossible solutions:")
-                logger.error("1. Rebuild the database with the makeblastdb command:")
-                logger.error("   makeblastdb -in your_genome.fasta -dbtype nucl -out your_db_name")
-                logger.error("\n2. Create a BLAST database directly with ddprimer:")
-                logger.error("   ddprimer --createdb path/to/your_genome.fasta [optional_db_name] --output output_dir")
-                logger.error("\n3. Set a different database path in your configuration file:")
-                logger.error("   ddprimer --config your_config.json")
-                logger.error("\n4. For memory map errors, try closing any other BLAST processes and restart.")
-                logger.error("   Some memory map errors are recoverable - use --debug for detailed information.")
-                logger.error("======================================")
+                logger.error("BLAST database verification failed, and no new database created.")
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 return False

@@ -64,8 +64,8 @@ class Config:
     DB_FASTA = None            # Path to a FASTA file to create a BLAST database from
     DB_OUTPUT_DIR = None       # Custom output directory for the BLAST database
     DB_NAME = None             # Custom name for the BLAST database
-    USE_CUSTOM_DB = False      # Whether to use a custom database or the default
-    DB_PATH = "/Library/Application Support/Blast_DBs/Tair DB/TAIR10"
+    USE_CUSTOM_DB = False      # Whether to use a custom database or an auto-detected one
+    DB_PATH = None
     
     # BLAST+ parameters
     BLAST_WORD_SIZE = 7
@@ -530,6 +530,98 @@ class Config:
         except Exception as e:
             print(f"Error saving Primer3 settings to {filepath}: {e}")
             return False
+
+
+    @classmethod
+    def _initialize_db_path(cls):
+        """Find a BLAST database path for use."""
+        from pathlib import Path
+        import logging
+        logger = logging.getLogger("ddPrimer")
+        
+        # First check for a saved database path in config file
+        config_dir = os.path.join(Path.home(), ".ddprimer")
+        config_file = os.path.join(config_dir, "db_config.txt")
+        
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r") as f:
+                    db_path = f.read().strip()
+                    
+                # Verify this path still has database files
+                if db_path and os.path.exists(db_path + ".nhr"):
+                    logger.debug(f"Using configured BLAST database: {db_path}")
+                    return db_path
+                else:
+                    logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
+            except Exception as e:
+                logger.debug(f"Error reading database config: {str(e)}")
+        else:
+            logger.debug(f"No database config file found at {config_file}")
+        
+        # If no saved config or the saved path is invalid, 
+        # fall back to looking in standard directories
+        possible_locations = [
+            # System directory
+            "/usr/local/share/ddprimer/blast_db",
+            # User directory
+            os.path.join(Path.home(), ".ddprimer", "blast_db")
+        ]
+        
+        for location in possible_locations:
+            if os.path.exists(location):
+                logger.debug(f"Checking for BLAST databases in {location}")
+                # Look for any .nhr files which indicate BLAST databases
+                db_files = [f for f in os.listdir(location) if f.endswith(".nhr")]
+                if db_files:
+                    # Use the first database found, without the extension
+                    db_name = os.path.splitext(db_files[0])[0]
+                    db_path = os.path.join(location, db_name)
+                    logger.debug(f"Found existing BLAST database: {db_path}")
+                    return db_path
+                else:
+                    logger.debug(f"No database files (.nhr) found in {location}")
+        
+        # If no database found, return None
+        logger.debug("No existing BLAST database found.")
+        return None
+
+
+    @classmethod
+    def get_instance(cls) -> 'Config':
+        """
+        Get the singleton instance of Config.
+        
+        Returns:
+            Config: Singleton instance
+        """
+        if cls._instance is None:
+            cls._instance = cls()
+            # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
+            if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
+                cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
+            
+            # Initialize the BLAST database path if not already set
+            if cls.DB_PATH is None:
+                cls.DB_PATH = cls._initialize_db_path()
+        return cls._instance
+    
+    @classmethod
+    def save_database_config(cls, db_path):
+        """
+        Save the database path to a config file for future runs.
+        
+        Args:
+            db_path (str): Path to the BLAST database
+        """
+        from pathlib import Path
+        config_dir = os.path.join(Path.home(), ".ddprimer")
+        os.makedirs(config_dir, exist_ok=True)
+        
+        # Save the database path to a simple config file
+        config_file = os.path.join(config_dir, "db_config.txt")
+        with open(config_file, "w") as f:
+            f.write(db_path)
     
     @classmethod
     def _save_to_json(cls, filepath: str) -> bool:
