@@ -18,3 +18,5 @@ from .SNP_masking_processor import SNPMaskingProcessor
 from .primer3_processor import Primer3Processor
 from .blast_processor import BlastProcessor
 from .nupack_processor import NupackProcessor
+from .vienna_processor import ViennaRNAProcessor
+from .thermo_processor import ThermoProcessor

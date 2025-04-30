@@ -477,7 +477,7 @@ def filter_primers(primer_results):
 
 def calculate_thermodynamics(df):
     """
-    Calculate thermodynamic properties using NUPACK.
+    Calculate thermodynamic properties using the available backend.
     
     Args:
         df (pandas.DataFrame): DataFrame with primer information
@@ -488,17 +488,27 @@ def calculate_thermodynamics(df):
     Raises:
         PrimerDesignError: If there's an error in thermodynamic calculations
     """
-    logger.info("\nCalculating thermodynamic properties with NUPACK...")
+    # Import the flexible ThermoProcessor
+    from ..core.thermo_processor import ThermoProcessor
+    
+    # Get the backend name for logging
+    backend = ThermoProcessor.get_backend()
+    if backend is None:
+        logger.warning("No thermodynamic calculation package available. Skipping thermodynamic analysis.")
+        return df
+        
+    backend_name = "NUPACK" if backend == 'nupack' else "ViennaRNA"
+    logger.info(f"\nCalculating thermodynamic properties with {backend_name}...")
     
     # Calculate deltaG for forward primers
     logger.debug("Calculating ΔG for forward primers...")
     try:
-        logger.debug(f"NUPACK settings: Temp={Config.NUPACK_TEMPERATURE}°C, Na={Config.NUPACK_SODIUM}M, Mg={Config.NUPACK_MAGNESIUM}M")
+        logger.debug(f"Thermodynamic settings: Temp={Config.THERMO_TEMPERATURE}°C, Na={Config.THERMO_SODIUM}M, Mg={Config.THERMO_MAGNESIUM}M")
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc="Processing forward primers")
-            df["Primer F dG"] = df["Primer F"].progress_apply(NupackProcessor.calc_deltaG)
+            tqdm.pandas(desc=f"Processing forward primers with {backend_name}")
+            df["Primer F dG"] = df["Primer F"].progress_apply(ThermoProcessor.calc_deltaG)
         else:
-            df["Primer F dG"] = df["Primer F"].apply(NupackProcessor.calc_deltaG)
+            df["Primer F dG"] = df["Primer F"].apply(ThermoProcessor.calc_deltaG)
         logger.debug("Forward primer deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating forward primer deltaG: {str(e)}")
@@ -509,10 +519,10 @@ def calculate_thermodynamics(df):
     logger.debug("Calculating ΔG for reverse primers...")
     try:
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc="Processing reverse primers")
-            df["Primer R dG"] = df["Primer R"].progress_apply(NupackProcessor.calc_deltaG)
+            tqdm.pandas(desc=f"Processing reverse primers with {backend_name}")
+            df["Primer R dG"] = df["Primer R"].progress_apply(ThermoProcessor.calc_deltaG)
         else:
-            df["Primer R dG"] = df["Primer R"].apply(NupackProcessor.calc_deltaG)
+            df["Primer R dG"] = df["Primer R"].apply(ThermoProcessor.calc_deltaG)
         logger.debug("Reverse primer deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating reverse primer deltaG: {str(e)}")
@@ -524,13 +534,13 @@ def calculate_thermodynamics(df):
         logger.debug("Calculating ΔG for probes...")
         try:
             if Config.SHOW_PROGRESS:
-                tqdm.pandas(desc="Processing probes")
+                tqdm.pandas(desc=f"Processing probes with {backend_name}")
                 df["Probe dG"] = df["Probe"].progress_apply(lambda x: 
-                                            NupackProcessor.calc_deltaG(x) 
+                                            ThermoProcessor.calc_deltaG(x) 
                                             if pd.notnull(x) and x else None)
             else:
                 df["Probe dG"] = df["Probe"].apply(lambda x: 
-                                               NupackProcessor.calc_deltaG(x) 
+                                               ThermoProcessor.calc_deltaG(x) 
                                                if pd.notnull(x) and x else None)
             logger.debug("Probe deltaG calculation completed successfully")
         except Exception as e:
@@ -542,10 +552,10 @@ def calculate_thermodynamics(df):
     logger.debug("Calculating ΔG for amplicons...")
     try:
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc="Processing amplicons")
-            df["Amplicon dG"] = df["Amplicon"].progress_apply(NupackProcessor.calc_deltaG)
+            tqdm.pandas(desc=f"Processing amplicons with {backend_name}")
+            df["Amplicon dG"] = df["Amplicon"].progress_apply(ThermoProcessor.calc_deltaG)
         else:
-            df["Amplicon dG"] = df["Amplicon"].apply(NupackProcessor.calc_deltaG)
+            df["Amplicon dG"] = df["Amplicon"].apply(ThermoProcessor.calc_deltaG)
         logger.debug("Amplicon deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating amplicon deltaG: {str(e)}")

@@ -37,9 +37,9 @@ class NupackProcessor:
         try:
             model = nupack.Model(
                 material='dna',
-                celsius=Config.NUPACK_TEMPERATURE,
-                sodium=Config.NUPACK_SODIUM,
-                magnesium=Config.NUPACK_MAGNESIUM
+                celsius=Config.THERMO_TEMPERATURE,
+                sodium=Config.THERMO_SODIUM,
+                magnesium=Config.THERMO_MAGNESIUM
             )
             result = nupack.mfe(seq, model=model)
             if result:
@@ -55,13 +55,13 @@ class NupackProcessor:
         return None
         
     @classmethod
-    def calc_deltaG_batch(cls, seqs, description="Calculating ΔG"):
+    def calc_deltaG_batch(cls, seqs, description="Calculating ΔG with NUPACK"):
         """
         Calculate ΔG for a batch of sequences with progress bar.
         
         Args:
             seqs (list): List of DNA sequences
-            description (str, optional): Description for the progress bar. Defaults to "Calculating ΔG".
+            description (str, optional): Description for the progress bar. Defaults to "Calculating ΔG with NUPACK".
             
         Returns:
             list: List of ΔG values
@@ -84,13 +84,13 @@ class NupackProcessor:
         return results
         
     @classmethod
-    def process_deltaG(cls, series, description="Processing sequences"):
+    def process_deltaG(cls, series, description="Processing sequences with NUPACK"):
         """
         Helper method to use with pandas.apply() that handles progress tracking.
         
         Args:
             series (pandas.Series): Series of DNA sequences
-            description (str, optional): Description for the progress bar. Defaults to "Processing sequences".
+            description (str, optional): Description for the progress bar. Defaults to "Processing sequences with NUPACK".
             
         Returns:
             pandas.Series: Series of deltaG values

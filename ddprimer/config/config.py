@@ -77,10 +77,15 @@ class Config:
     BLAST_GAPEXTEND = 2
     BLAST_FILTER_FACTOR = 100  # E-value filtering factor
     
-    # NUPACK parameters
-    NUPACK_TEMPERATURE = 37  # Celsius
-    NUPACK_SODIUM = 0.05     # Molar
-    NUPACK_MAGNESIUM = 0.0   # Molar
+    #############################################################################
+    #                           Thermodynamic Calculation Settings
+    #############################################################################
+    THERMO_BACKEND = 'vienna'  # Default to 'nupack' or 'vienna'
+    THERMO_AUTO_FALLBACK = True
+
+    THERMO_TEMPERATURE = 37  # Celsius
+    THERMO_SODIUM = 0.05     # Molar
+    THERMO_MAGNESIUM = 0.0   # Molar
 
     #############################################################################
     #                           Alignment Parameters
