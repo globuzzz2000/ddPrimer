@@ -648,7 +648,12 @@ class FileIO:
     @staticmethod
     def load_sequences_from_table(file_path):
         """
-        Load sequences from a CSV or Excel file.
+        Load sequences from a CSV or Excel file with improved column detection.
+        
+        This method can handle various file formats:
+        - Files with explicit sequence name and sequence columns
+        - Files with only sequence data (auto-generated IDs)
+        - Files with multiple columns where sequence columns aren't adjacent to name columns
         
         Args:
             file_path (str): Path to CSV or Excel file
@@ -670,7 +675,17 @@ class FileIO:
         logger.debug(f"Loading sequences from table file: {file_path}")
         
         try:
-            # Determine file type
+            # Use SequenceAnalyzer to analyze the file structure
+            from ..helpers.sequence_analyzer import SequenceAnalyzer
+            analysis = SequenceAnalyzer.analyze_file(file_path)
+            
+            if "error" in analysis:
+                raise FileFormatError(f"Error analyzing file: {analysis['error']}")
+                
+            # Get recommended columns from analysis
+            name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
+            
+            # Determine file type and load with pandas
             if file_path.endswith('.csv'):
                 df = pd.read_csv(file_path)
             elif file_path.endswith(('.xlsx', '.xls')):
@@ -679,48 +694,56 @@ class FileIO:
                 logger.error(f"Unsupported file format: {file_path}")
                 raise FileFormatError(f"Unsupported file format: {file_path}. Must be CSV or Excel.")
             
-            # Remove any empty columns
+            # Remove any empty columns and rows
             df = df.dropna(axis=1, how='all')
-            
-            # If no headers, use the first two columns directly
-            if df.columns.tolist() == [0, 1] or df.columns.tolist() == ['0', '1'] or df.columns.tolist() == [0, 1, 2]:
-                seq_name_col = df.columns[0]
-                seq_col = df.columns[1]
-            else:
-                # Try to find appropriate column names if headers exist
-                columns = df.columns.tolist()
-                seq_name_col = next((col for col in columns if col.lower() in 
-                                ['sequence name', 'sequence_name', 'name', 'id', 'seq_id', 'sequence id']), None)
-                seq_col = next((col for col in columns if col.lower() in 
-                            ['sequence', 'seq', 'dna', 'dna_sequence', 'nucleotide']), None)
-                
-                # If we can't find matching columns by name, use first two non-empty columns
-                if not seq_name_col or not seq_col:
-                    non_empty_cols = [col for col in columns if not df[col].isna().all()]
-                    if len(non_empty_cols) >= 2:
-                        seq_name_col = non_empty_cols[0]
-                        seq_col = non_empty_cols[1]
-                    else:
-                        logger.error("Input file must have at least two columns with data")
-                        raise FileFormatError("Input file must have at least two columns with data")
+            df = df.dropna(axis=0, how='all')
             
             # Convert to dictionary
             sequences = {}
-            for _, row in df.iterrows():
-                seq_id = str(row[seq_name_col]).strip()
-                sequence = str(row[seq_col]).strip().upper()
+            
+            # If no sequence column was found, raise an error
+            if not seq_col:
+                logger.error("Could not identify a sequence column in the file")
+                raise FileFormatError("Could not identify a sequence column in the file")
                 
-                # Skip empty rows
-                if pd.isna(seq_id) or pd.isna(sequence) or not seq_id or not sequence:
-                    continue
+            # If no name column was found, generate sequential IDs
+            if not name_col:
+                logger.debug("No sequence name column found, generating sequential IDs")
+                for idx, row in df.iterrows():
+                    sequence = str(row[seq_col]).strip().upper()
                     
-                sequences[seq_id] = sequence
+                    # Skip empty sequences
+                    if pd.isna(sequence) or not sequence:
+                        continue
+                    
+                    # Generate a sequential ID
+                    seq_id = f"Seq_{idx+1}"
+                    sequences[seq_id] = sequence
+            else:
+                # Use the identified name and sequence columns
+                for idx, row in df.iterrows():
+                    seq_id = str(row[name_col]).strip()
+                    sequence = str(row[seq_col]).strip().upper()
+                    
+                    # Skip rows with empty names or sequences
+                    if pd.isna(seq_id) or pd.isna(sequence) or not seq_id or not sequence:
+                        continue
+                    
+                    # Handle duplicate IDs by appending a suffix
+                    if seq_id in sequences:
+                        suffix = 1
+                        while f"{seq_id}_{suffix}" in sequences:
+                            suffix += 1
+                        seq_id = f"{seq_id}_{suffix}"
+                        logger.debug(f"Renamed duplicate sequence ID to '{seq_id}'")
+                    
+                    sequences[seq_id] = sequence
             
             logger.debug(f"Loaded {len(sequences)} sequences from table file")
             return sequences
             
         except Exception as e:
-            if isinstance(e, FileFormatError):
+            if isinstance(e, FileFormatError) or isinstance(e, FileNotFoundError):
                 raise e
             logger.error(f"Error loading sequences from table file: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)

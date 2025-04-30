@@ -20,6 +20,7 @@ from ..utils.file_io import FileIO
 from ..core import SNPMaskingProcessor
 from . import common
 from ..helpers import DirectMasking
+from ..helpers.sequence_analyzer import SequenceAnalyzer  # Updated import for SequenceAnalyzer
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")
@@ -27,7 +28,7 @@ logger = logging.getLogger("ddPrimer")
 
 def run(args):
     """
-    Run the direct mode primer design workflow.
+    Run the direct mode primer design workflow with improved file handling.
     
     Args:
         args (argparse.Namespace): Command line arguments
@@ -55,6 +56,11 @@ def run(args):
         # Set up output directory
         output_dir = _setup_output_directory(args, sequence_file)
         
+        # Before loading, analyze the file structure to provide useful info to the user
+        logger.info(f"\nAnalyzing file structure: {sequence_file}")
+        analysis = SequenceAnalyzer.analyze_file(sequence_file)
+        SequenceAnalyzer.print_analysis(analysis)
+        
         # Dictionary to track reference matching status
         matching_status = {}
         masked_sequences = {}
@@ -76,17 +82,67 @@ def run(args):
             logger.info("\nLoading sequences from input file...")
             try:
                 sequences = FileIO.load_sequences_from_table(sequence_file)
-                logger.debug(f"Loaded {len(sequences)} sequences from {sequence_file}")
-                all_sequences = sequences.copy()  # Keep a copy of all sequences
-                masked_sequences = sequences.copy()  # No masking, so use original
                 
-                # Update matching status for all sequences
-                for seq_id in sequences:
-                    matching_status[seq_id] = "Not attempted"
+                if sequences:
+                    logger.debug(f"Loaded {len(sequences)} sequences from {sequence_file}")
+                    
+                    # Log sample of loaded sequences
+                    sample_size = min(3, len(sequences))
+                    sample_items = list(sequences.items())[:sample_size]
+                    logger.info(f"Successfully loaded {len(sequences)} sequences")
+                    logger.debug("Sample of loaded sequences:")
+                    for seq_id, sequence in sample_items:
+                        # Truncate sequence for display
+                        display_seq = f"{sequence[:30]}..." if len(sequence) > 30 else sequence
+                        logger.debug(f"  {seq_id}: {display_seq}")
+                    
+                    all_sequences = sequences.copy()  # Keep a copy of all sequences
+                    masked_sequences = sequences.copy()  # No masking, so use original
+                    
+                    # Update matching status for all sequences
+                    for seq_id in sequences:
+                        matching_status[seq_id] = "Not attempted"
+                else:
+                    logger.error("No valid sequences found in the input file")
+                    return False
             except Exception as e:
                 logger.error(f"Error loading sequences from file: {str(e)}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 return False
+        
+        # Check if we have any sequences to process
+        if not masked_sequences:
+            logger.warning("No sequences found in the input file. Exiting.")
+            return False
+        
+        # Debug logging for sequences
+        _log_sequence_info(masked_sequences, matching_status)
+        
+        # Use the common workflow function to handle the rest
+        success = common.run_primer_design_workflow(
+            masked_sequences=masked_sequences,
+            output_dir=output_dir,
+            reference_file=sequence_file,
+            mode='direct',
+            genes=None,
+            coordinate_map=None,
+            gff_file=None,
+            skip_annotation_filtering=args.noannotation,
+            matching_status=matching_status,  # Pass matching status
+            all_sequences=all_sequences,  # Pass all sequences including those that failed matching
+            add_rows_function=DirectMasking.add_missing_sequences  # Pass the static method
+        )
+        
+        return success
+            
+    except SequenceProcessingError as e:
+        logger.error(f"Sequence processing error: {str(e)}")
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"Error in direct mode workflow: {str(e)}")
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        return False
         
         # Check if we have any sequences to process
         if not masked_sequences:
@@ -196,9 +252,37 @@ def _process_snp_masking(args, sequence_file):
     logger.info("\nLoading sequences from input file...")
     
     try:
+        # First analyze the file to provide better feedback
+        from ..helpers.sequence_analyzer import SequenceAnalyzer
+        logger.info("Analyzing sequence file structure...")
+        analysis = SequenceAnalyzer.analyze_file(sequence_file)
+        SequenceAnalyzer.print_analysis(analysis)
+        
+        # Get recommended columns
+        name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
+        if name_col and seq_col:
+            logger.info(f"Using column '{name_col}' for sequence names and '{seq_col}' for sequences")
+        
+        # Load the sequences
         sequences = FileIO.load_sequences_from_table(sequence_file)
-        logger.debug(f"Loaded {len(sequences)} sequences from {sequence_file}")
-        all_sequences = sequences.copy()  # Keep a copy of all sequences
+        
+        if sequences:
+            # Log a sample of the loaded sequences for verification
+            sample_size = min(3, len(sequences))
+            sample_items = list(sequences.items())[:sample_size]
+            
+            logger.info(f"Successfully loaded {len(sequences)} sequences")
+            logger.debug("Sample of sequences loaded:")
+            for seq_id, sequence in sample_items:
+                # Truncate sequence for display
+                display_seq = f"{sequence[:50]}..." if len(sequence) > 50 else sequence
+                logger.debug(f"  {seq_id}: {display_seq}")
+            
+            all_sequences = sequences.copy()  # Keep a copy of all sequences
+        else:
+            logger.warning("No valid sequences found in the input file.")
+            return {}, {}, {}
+            
     except Exception as e:
         logger.error(f"Error loading sequences from file: {str(e)}")
         logger.debug(f"Error details: {str(e)}", exc_info=True)
@@ -216,7 +300,6 @@ def _process_snp_masking(args, sequence_file):
         masked_sequences = sequences
         matching_status = {seq_id: "Not attempted" for seq_id in sequences}
         return masked_sequences, matching_status, all_sequences
-
 
 def _mask_sequences_with_snps(sequences, ref_fasta, ref_vcf, all_sequences):
     """

@@ -17,11 +17,65 @@ A comprehensive pipeline for designing primers and probes specifically optimized
   - **Alignment Mode**: Design from genome alignments
 - **Comprehensive Results**: Detailed Excel output with key metrics and sequence information
 
+## Project Structure
+
+```
+ddPrimer/
+├── ddprimer/                      # Main package directory
+│   ├── __init__.py
+│   ├── pipeline.py                # Main entry point for the pipeline
+│   ├── modes/                     # Pipeline operation modes
+│   │   ├── __init__.py
+│   │   ├── alignment_mode.py      # Alignment-based design
+│   │   ├── common.py              # Shared workflow components
+│   │   ├── direct_mode.py         # Direct sequence design
+│   │   └── standard_mode.py       # Standard pipeline
+│   ├── core/                      # Core processing modules
+│   │   ├── __init__.py
+│   │   ├── SNP_masking_processor.py
+│   │   ├── annotation_processor.py
+│   │   ├── blast_processor.py
+│   │   ├── nupack_processor.py
+│   │   ├── primer3_processor.py
+│   │   ├── primer_processor.py
+│   │   └── sequence_processor.py
+│   ├── helpers/                   # Helper functions and classes
+│   │   ├── __init__.py
+│   │   ├── alignment_workflow.py
+│   │   ├── direct_masking.py
+│   │   ├── lastz_runner.py
+│   │   └── maf_parser.py
+│   ├── config/                    # Configuration and settings
+│   │   ├── __init__.py
+│   │   ├── config.py              # Core configuration settings
+│   │   ├── config_display.py      # Configuration display utilities
+│   │   ├── exceptions.py          # Custom exceptions
+│   │   ├── logging_config.py      # Logging setup
+│   │   └── template_generator.py  # Configuration template generation
+│   ├── tests/                     # Test data and fixtures
+│   │   ├── Alignment.maf
+│   │   ├── Annotations.gff
+│   │   ├── Sequences.xlsx
+│   │   ├── VCF1.vcf.gz
+│   │   ├── VCF2.vcf.gz
+│   │   ├── fasta1.fna
+│   │   └── fasta2.fna
+│   └── utils/                     # Utility functions
+│       ├── __init__.py
+│       ├── blast_db_creator.py
+│       ├── blast_verification.py
+│       ├── common_utils.py
+│       ├── file_io.py
+│       └── sequence_utils.py
+├── pyproject.toml                 # Package configuration and dependencies
+└── README.md                      # This file
+```
+
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ddPrimer.git
+git clone https://github.com/globuzzz2000/ddPrimer
 cd ddPrimer
 
 # Create and activate a conda environment
@@ -63,7 +117,7 @@ ddprimer --direct sequences.csv
 ddprimer --direct sequences.csv --snp --fasta genome.fasta --vcf variants.vcf
 ```
 
-The input file should contain:
+The input csv file should contain:
 - Column 1: Sequence IDs or names
 - Column 2: DNA sequences
 
@@ -75,11 +129,11 @@ ddprimer --fasta genome.fasta --vcf variants.vcf --gff annotations.gff
 ddprimer --noannotation --fasta genome.fasta --vcf variants.vcf
 
 # Alignment based design
-ddprimer --alignment --fasta species1.fasta --second-fasta species2.fasta --gff annotations.gff
+ddprimer --alignment --fasta genome1.fasta --second-fasta genome2.fasta --gff annotations.gff
 
 # Alignment based design with SNP filtering 
-ddprimer --alignment --snp --fasta species1.fasta --second-fasta species2.fasta \
-         --vcf species1.vcf --second-vcf species2.vcf
+ddprimer --alignment --snp --fasta genome1.fasta --second-fasta genome2.fasta \
+         --vcf genome1.vcf --second-vcf genome2.vcf
 ```
 
 ### Interactive Mode
@@ -90,7 +144,7 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 
 1. **Input Selection**: Choose genome FASTA, variant VCF, and annotation GFF files
 2. **Variant Masking**: Identify and mask all variant positions in the genome
-3. **Alignment** (Alignmnet mode only): Align genomes and identify conserved regions
+3. **Alignment** (Alignment mode only): Align genomes and identify conserved regions
 4. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
 5. **Primer Design**: Design primer and probe candidates using Primer3
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
@@ -133,7 +187,7 @@ ddprimer --createdb genome.fasta --dbname my_genome
 ### Running Only Alignment (without primer design)
 
 ```bash
-ddprimer --alignment --lastzonly --fasta species1.fasta --second-fasta species2.fasta
+ddprimer --alignment --lastzonly --fasta genome1.fasta --second-fasta genome2.fasta
 ```
 
 
@@ -146,7 +200,7 @@ The pipeline generates an Excel file with comprehensive information including:
 - **Amplicon Details**: Sequence, length, and GC content
 - **Location Data**: Genomic coordinates of primers
 - **Specificity Results**: Two best BLAST hits for all oligonucleotides
-- **Cross-Species Mapping**: Coordinates in both reference genomes (for alignment mode)
+- **Alignment Mapping**: Coordinates in both reference genomes (for alignment mode)
 
 ## Troubleshooting
 

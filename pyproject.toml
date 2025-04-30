@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A pipeline for designing primers optimized for droplet digital PCR with cross-species support"
 readme = "README.md"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Jakob Wimmer", email = "globuds133@gmail.com"}  # Update with your actual email
 ]
 requires-python = ">=3.7"
 license = {text = "MIT"}
@@ -20,6 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
     "biopython",
@@ -28,7 +30,8 @@ dependencies = [
     "tqdm",
     "primer3-py",
     "openpyxl>=3.0.5",
-    "wxpython",
+    "wxpython",  # For GUI file selection
+    "nupack",  # For thermodynamic calculations
 ]
 
 [project.optional-dependencies]
@@ -39,10 +42,19 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/ddPrimer"
+Homepage = "https://github.com/jakobmueller/ddPrimer"  # Update with your actual username
+Documentation = "https://github.com/jakobmueller/ddPrimer#readme"
+"Bug Tracker" = "https://github.com/jakobmueller/ddPrimer/issues"
 
 [project.scripts]
 ddprimer = "ddprimer.pipeline:main"
 
 [tool.setuptools]
 packages = ["ddprimer"]
+
+[tool.setuptools.package-data]
+ddprimer = ["config/*.json", "config/*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py37", "py38", "py39", "py310", "py312"]
