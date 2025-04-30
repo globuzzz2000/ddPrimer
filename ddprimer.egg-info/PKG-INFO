@@ -2,9 +2,11 @@ Metadata-Version: 2.4
 Name: ddprimer
 Version: 0.1.0
 Summary: A pipeline for designing primers optimized for droplet digital PCR with cross-species support
-Author-email: Your Name <your.email@example.com>
+Author-email: Jakob Wimmer <globuds133@gmail.com>
 License: MIT
-Project-URL: Homepage, https://github.com/yourusername/ddPrimer
+Project-URL: Homepage, https://github.com/jakobmueller/ddPrimer
+Project-URL: Documentation, https://github.com/jakobmueller/ddPrimer#readme
+Project-URL: Bug Tracker, https://github.com/jakobmueller/ddPrimer/issues
 Classifier: Development Status :: 4 - Beta
 Classifier: Intended Audience :: Science/Research
 Classifier: Topic :: Scientific/Engineering :: Bio-Informatics
@@ -12,19 +14,25 @@ Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3.7
 Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.12
 Requires-Python: >=3.7
 Description-Content-Type: text/markdown
-Requires-Dist: biopython
+Requires-Dist: biopython>=1.78
 Requires-Dist: pandas
 Requires-Dist: numpy
 Requires-Dist: tqdm
-Requires-Dist: primer3-py
+Requires-Dist: primer3-py>=2.0.0
 Requires-Dist: openpyxl>=3.0.5
 Requires-Dist: wxpython
+Requires-Dist: viennarna>=2.7.0
 Provides-Extra: dev
 Requires-Dist: pytest>=6.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=2.10.0; extra == "dev"
 Requires-Dist: black>=20.8b1; extra == "dev"
+Provides-Extra: thermo
+Requires-Dist: nupack>=4.0.0; extra == "thermo"
+Requires-Dist: viennarna>=2.7.0; extra == "thermo"
 
 # ddPrimer: Advanced Droplet Digital PCR Primer Design
 
@@ -45,19 +53,104 @@ A comprehensive pipeline for designing primers and probes specifically optimized
   - **Alignment Mode**: Design from genome alignments
 - **Comprehensive Results**: Detailed Excel output with key metrics and sequence information
 
+## Project Structure
+
+```
+ddPrimer/
+├── ddprimer/                      # Main package directory
+│   ├── __init__.py
+│   ├── pipeline.py                # Main entry point for the pipeline
+│   ├── modes/                     # Pipeline operation modes
+│   │   ├── __init__.py
+│   │   ├── alignment_mode.py      # Alignment-based design
+│   │   ├── common.py              # Shared workflow components
+│   │   ├── direct_mode.py         # Direct sequence design
+│   │   └── standard_mode.py       # Standard pipeline
+│   ├── core/                      # Core processing modules
+│   │   ├── __init__.py
+│   │   ├── SNP_masking_processor.py
+│   │   ├── annotation_processor.py
+│   │   ├── blast_processor.py
+│   │   ├── nupack_processor.py
+│   │   ├── vienna_processor.py    # ViennaRNA thermodynamic processor
+│   │   ├── thermo_processor.py    # Flexible thermodynamics processor
+│   │   ├── primer3_processor.py
+│   │   ├── primer_processor.py
+│   │   └── sequence_processor.py
+│   ├── helpers/                   # Helper functions and classes
+│   │   ├── __init__.py
+│   │   ├── alignment_workflow.py
+│   │   ├── direct_masking.py
+│   │   ├── lastz_runner.py
+│   │   └── maf_parser.py
+│   ├── config/                    # Configuration and settings
+│   │   ├── __init__.py
+│   │   ├── config.py              # Core configuration settings
+│   │   ├── config_display.py      # Configuration display utilities
+│   │   ├── exceptions.py          # Custom exceptions
+│   │   ├── logging_config.py      # Logging setup
+│   │   └── template_generator.py  # Configuration template generation
+│   ├── tests/                     # Test data and fixtures
+│   │   ├── Alignment.maf
+│   │   ├── Annotations.gff
+│   │   ├── Sequences.xlsx
+│   │   ├── VCF1.vcf.gz
+│   │   ├── VCF2.vcf.gz
+│   │   ├── fasta1.fna
+│   │   └── fasta2.fna
+│   └── utils/                     # Utility functions
+│       ├── __init__.py
+│       ├── blast_db_creator.py
+│       ├── blast_verification.py
+│       ├── common_utils.py
+│       ├── file_io.py
+│       └── sequence_utils.py
+├── pyproject.toml                 # Package configuration and dependencies
+└── README.md                      # This file
+```
+
 ## Installation
+
+### Using Conda (Recommended)
+
+The easiest way to install ddPrimer with all dependencies is using conda:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ddPrimer.git
+git clone https://github.com/globuzzz2000/ddPrimer
 cd ddPrimer
 
 # Create and activate a conda environment
 conda create -n ddprimer python=3.8
 conda activate ddprimer
 
-# Install the package and dependencies
+# Install external tools via conda
+conda install -c bioconda -c conda-forge blast lastz
+
+# Install GUI dependency (if needed separately)
+conda install -c conda-forge wxpython
+
+# Install the package with all Python dependencies
+pip install -e ".[thermo]"
+```
+
+### Manual Installation
+
+If you prefer not to use conda, you can install the package and dependencies manually:
+
+```bash
+# Clone the repository
+git clone https://github.com/globuzzz2000/ddPrimer
+cd ddPrimer
+
+# Install the package
 pip install -e .
+
+# Install BLAST and LastZ externally using a package manager
+# On macOS:
+brew install blast lastz primer3
+# On Linux:
+sudo apt-get install ncbi-blast+ lastz
 ```
 
 ### Dependencies
@@ -66,18 +159,42 @@ The following tools are required:
 
 - **Python 3.7+**: For core functionality
 - **Primer3**: For primer design (core engine)
-- **NUPACK 4.0+**: For thermodynamic calculations
 - **NCBI BLAST+**: For specificity checking
 - **LastZ**: For alignment-based mode
 
-Most dependencies can be installed through conda:
+For thermodynamic calculations (one of the following):
+- **ViennaRNA**: Default option for thermodynamic calculations
+- **NUPACK 4.0+**: Alternative option for thermodynamic calculations with advanced features
+
+### Installing Thermodynamics Engines
+
+ddPrimer supports two thermodynamics engines:
+
+#### ViennaRNA (Default)
+
+ViennaRNA is the default thermodynamics engine and can be installed via pip:
 
 ```bash
-conda install -c bioconda -c conda-forge python=3.8 biopython pandas primer3 blast tqdm
-conda install -c bioconda lastz
+pip install viennarna
 ```
 
-For NUPACK, follow installation instructions at [nupack.org](http://www.nupack.org/).
+#### NUPACK (Alternative)
+
+NUPACK is an alternative thermodynamics engine with more advanced features:
+
+```bash
+pip install nupack
+```
+
+If the pip installation of NUPACK fails, you may need to install it manually. Follow the installation instructions at [nupack.org](http://www.nupack.org/).
+
+
+To use NUPACK instead of ViennaRNA, set in your configuration:
+```json
+{
+  "THERMO_BACKEND": "nupack"
+}
+```
 
 ## Quick Start
 
@@ -91,7 +208,7 @@ ddprimer --direct sequences.csv
 ddprimer --direct sequences.csv --snp --fasta genome.fasta --vcf variants.vcf
 ```
 
-The input file should contain:
+The input csv file should contain:
 - Column 1: Sequence IDs or names
 - Column 2: DNA sequences
 
@@ -103,11 +220,11 @@ ddprimer --fasta genome.fasta --vcf variants.vcf --gff annotations.gff
 ddprimer --noannotation --fasta genome.fasta --vcf variants.vcf
 
 # Alignment based design
-ddprimer --alignment --fasta species1.fasta --second-fasta species2.fasta --gff annotations.gff
+ddprimer --alignment --fasta genome1.fasta --second-fasta genome2.fasta --gff annotations.gff
 
 # Alignment based design with SNP filtering 
-ddprimer --alignment --snp --fasta species1.fasta --second-fasta species2.fasta \
-         --vcf species1.vcf --second-vcf species2.vcf
+ddprimer --alignment --snp --fasta genome1.fasta --second-fasta genome2.fasta \
+         --vcf genome1.vcf --second-vcf genome2.vcf
 ```
 
 ### Interactive Mode
@@ -118,11 +235,11 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 
 1. **Input Selection**: Choose genome FASTA, variant VCF, and annotation GFF files
 2. **Variant Masking**: Identify and mask all variant positions in the genome
-3. **Alignment** (Alignmnet mode only): Align genomes and identify conserved regions
+3. **Alignment** (Alignment mode only): Align genomes and identify conserved regions
 4. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
 5. **Primer Design**: Design primer and probe candidates using Primer3
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
-7. **Thermodynamic Analysis**: Calculate secondary structure stability via NUPACK
+7. **Thermodynamic Analysis**: Calculate secondary structure stability via ViennaRNA or NUPACK
 8. **Specificity Checking**: Validate specificity using BLAST
 9. **Result Export**: Generate comprehensive Excel output with all design information
 
@@ -146,22 +263,30 @@ Example configuration:
   "PRIMER_MAX_SIZE": 25,
   "PRIMER_PRODUCT_SIZE_RANGE": [[90, 200]],
   "BLAST_WORD_SIZE": 7,
-  "RESTRICTION_SITE": "GGCC"
+  "RESTRICTION_SITE": "GGCC",
+  "THERMO_BACKEND": "vienna"
 }
 ```
 
 ## Additional Utilities
 
-### Creating a BLAST Database
+### Managing a BLAST Database
 
 ```bash
-ddprimer --createdb genome.fasta --dbname my_genome
+# Create a BLAST database from a genome file
+ddprimer --db genome.fasta
+
+# Create a BLAST database with a custom name
+ddprimer --db genome.fasta my_custom_name
+
+# Launch the model organism selection menu
+ddprimer --db
 ```
 
 ### Running Only Alignment (without primer design)
 
 ```bash
-ddprimer --alignment --lastzonly --fasta species1.fasta --second-fasta species2.fasta
+ddprimer --alignment --lastzonly --fasta genome1.fasta --second-fasta genome2.fasta
 ```
 
 
@@ -174,7 +299,7 @@ The pipeline generates an Excel file with comprehensive information including:
 - **Amplicon Details**: Sequence, length, and GC content
 - **Location Data**: Genomic coordinates of primers
 - **Specificity Results**: Two best BLAST hits for all oligonucleotides
-- **Cross-Species Mapping**: Coordinates in both reference genomes (for alignment mode)
+- **Alignment Mapping**: Coordinates in both reference genomes (for alignment mode)
 
 ## Troubleshooting
 
@@ -183,6 +308,7 @@ Common issues and solutions:
 - **Missing BLAST database**: Run with `--createdb` to create a new database
 - **Memory errors**: Try reducing `NUM_PROCESSES` in your configuration file
 - **GUI errors**: Use `--cli` to force command-line mode
+- **Thermodynamic calculation issues with NUPACK**: Use ViennaRNA instead by setting `THERMO_BACKEND: "vienna"` in your config file (this is now the default)
 
 For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
 
@@ -201,8 +327,12 @@ cd ddPrimer
 conda create -n ddprimer-dev python=3.8
 conda activate ddprimer-dev
 
-# Install in development mode with testing dependencies
-pip install -e ".[dev]"
+# Install external tools via conda
+conda install -c bioconda -c conda-forge blast lastz
+
+# Install the package in development mode with ALL dependencies
+# This will automatically install all Python dependencies defined in pyproject.toml
+pip install -e ".[dev,thermo]"
 ```
 
 ### Running Tests

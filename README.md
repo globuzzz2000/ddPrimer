@@ -36,6 +36,8 @@ ddPrimer/
 │   │   ├── annotation_processor.py
 │   │   ├── blast_processor.py
 │   │   ├── nupack_processor.py
+│   │   ├── vienna_processor.py    # ViennaRNA thermodynamic processor
+│   │   ├── thermo_processor.py    # Flexible thermodynamics processor
 │   │   ├── primer3_processor.py
 │   │   ├── primer_processor.py
 │   │   └── sequence_processor.py
@@ -73,6 +75,10 @@ ddPrimer/
 
 ## Installation
 
+### Using Conda (Recommended)
+
+The easiest way to install ddPrimer with all dependencies is using conda:
+
 ```bash
 # Clone the repository
 git clone https://github.com/globuzzz2000/ddPrimer
@@ -82,8 +88,33 @@ cd ddPrimer
 conda create -n ddprimer python=3.8
 conda activate ddprimer
 
-# Install the package and dependencies
+# Install external tools via conda
+conda install -c bioconda -c conda-forge blast lastz
+
+# Install GUI dependency (if needed separately)
+conda install -c conda-forge wxpython
+
+# Install the package with all Python dependencies
+pip install -e ".[thermo]"
+```
+
+### Manual Installation
+
+If you prefer not to use conda, you can install the package and dependencies manually:
+
+```bash
+# Clone the repository
+git clone https://github.com/globuzzz2000/ddPrimer
+cd ddPrimer
+
+# Install the package
 pip install -e .
+
+# Install BLAST and LastZ externally using a package manager
+# On macOS:
+brew install blast lastz primer3
+# On Linux:
+sudo apt-get install ncbi-blast+ lastz
 ```
 
 ### Dependencies
@@ -92,18 +123,42 @@ The following tools are required:
 
 - **Python 3.7+**: For core functionality
 - **Primer3**: For primer design (core engine)
-- **NUPACK 4.0+**: For thermodynamic calculations
 - **NCBI BLAST+**: For specificity checking
 - **LastZ**: For alignment-based mode
 
-Most dependencies can be installed through conda:
+For thermodynamic calculations (one of the following):
+- **ViennaRNA**: Default option for thermodynamic calculations
+- **NUPACK 4.0+**: Alternative option for thermodynamic calculations with advanced features
+
+### Installing Thermodynamics Engines
+
+ddPrimer supports two thermodynamics engines:
+
+#### ViennaRNA (Default)
+
+ViennaRNA is the default thermodynamics engine and can be installed via pip:
 
 ```bash
-conda install -c bioconda -c conda-forge python=3.8 biopython pandas primer3 blast tqdm
-conda install -c bioconda lastz
+pip install viennarna
 ```
 
-For NUPACK, follow installation instructions at [nupack.org](http://www.nupack.org/).
+#### NUPACK (Alternative)
+
+NUPACK is an alternative thermodynamics engine with more advanced features:
+
+```bash
+pip install nupack
+```
+
+If the pip installation of NUPACK fails, you may need to install it manually. Follow the installation instructions at [nupack.org](http://www.nupack.org/).
+
+
+To use NUPACK instead of ViennaRNA, set in your configuration:
+```json
+{
+  "THERMO_BACKEND": "nupack"
+}
+```
 
 ## Quick Start
 
@@ -148,7 +203,7 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 4. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
 5. **Primer Design**: Design primer and probe candidates using Primer3
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
-7. **Thermodynamic Analysis**: Calculate secondary structure stability via NUPACK
+7. **Thermodynamic Analysis**: Calculate secondary structure stability via ViennaRNA or NUPACK
 8. **Specificity Checking**: Validate specificity using BLAST
 9. **Result Export**: Generate comprehensive Excel output with all design information
 
@@ -172,7 +227,8 @@ Example configuration:
   "PRIMER_MAX_SIZE": 25,
   "PRIMER_PRODUCT_SIZE_RANGE": [[90, 200]],
   "BLAST_WORD_SIZE": 7,
-  "RESTRICTION_SITE": "GGCC"
+  "RESTRICTION_SITE": "GGCC",
+  "THERMO_BACKEND": "vienna"
 }
 ```
 
@@ -216,6 +272,7 @@ Common issues and solutions:
 - **Missing BLAST database**: Run with `--createdb` to create a new database
 - **Memory errors**: Try reducing `NUM_PROCESSES` in your configuration file
 - **GUI errors**: Use `--cli` to force command-line mode
+- **Thermodynamic calculation issues with NUPACK**: Use ViennaRNA instead by setting `THERMO_BACKEND: "vienna"` in your config file (this is now the default)
 
 For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
 
@@ -234,8 +291,12 @@ cd ddPrimer
 conda create -n ddprimer-dev python=3.8
 conda activate ddprimer-dev
 
-# Install in development mode with testing dependencies
-pip install -e ".[dev]"
+# Install external tools via conda
+conda install -c bioconda -c conda-forge blast lastz
+
+# Install the package in development mode with ALL dependencies
+# This will automatically install all Python dependencies defined in pyproject.toml
+pip install -e ".[dev,thermo]"
 ```
 
 ### Running Tests

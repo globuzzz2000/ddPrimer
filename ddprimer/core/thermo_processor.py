@@ -22,8 +22,6 @@ class ThermoProcessor:
     
     # Initialize backend preference
     _backend = None
-    _nupack_available = None
-    _vienna_available = None
     
     @classmethod
     def check_nupack_available(cls):
@@ -33,17 +31,13 @@ class ThermoProcessor:
         Returns:
             bool: True if NUPACK is available, False otherwise
         """
-        if cls._nupack_available is not None:
-            return cls._nupack_available
-            
+        # Use the is_available method from NupackProcessor
         try:
-            import nupack
-            cls._nupack_available = True
+            from ..core.nupack_processor import NupackProcessor
+            return NupackProcessor.is_available()
         except ImportError:
-            cls._nupack_available = False
-            logger.warning("NUPACK package not available. Install with: pip install nupack")
-            
-        return cls._nupack_available
+            logger.debug("Could not import NupackProcessor")
+            return False
     
     @classmethod
     def check_vienna_available(cls):
@@ -53,17 +47,13 @@ class ThermoProcessor:
         Returns:
             bool: True if ViennaRNA is available, False otherwise
         """
-        if cls._vienna_available is not None:
-            return cls._vienna_available
-            
+        # Use the is_available method from ViennaRNAProcessor
         try:
-            import RNA
-            cls._vienna_available = True
+            from ..core.vienna_processor import ViennaRNAProcessor
+            return ViennaRNAProcessor.is_available()
         except ImportError:
-            cls._vienna_available = False
-            logger.warning("ViennaRNA package not available. Install with: pip install ViennaRNA")
-            
-        return cls._vienna_available
+            logger.debug("Could not import ViennaRNAProcessor")
+            return False
     
     @classmethod
     def get_backend(cls):
@@ -83,10 +73,10 @@ class ThermoProcessor:
         
         if preferred_backend == 'nupack' and cls.check_nupack_available():
             cls._backend = 'nupack'
-            logger.debug("\nUsing NUPACK for thermodynamic calculations")
+            logger.info("Using NUPACK for thermodynamic calculations")
         elif preferred_backend == 'vienna' and cls.check_vienna_available():
             cls._backend = 'vienna'
-            logger.debug("\nUsing ViennaRNA for thermodynamic calculations")
+            logger.info("Using ViennaRNA for thermodynamic calculations")
         # Fall back to whatever is available if auto fallback is enabled
         elif auto_fallback and cls.check_nupack_available():
             cls._backend = 'nupack'
@@ -151,12 +141,16 @@ class ThermoProcessor:
             return None
             
         # Calculate using the selected backend
-        if backend == 'nupack':
-            from ..core.nupack_processor import NupackProcessor
-            return NupackProcessor.calc_deltaG(seq)
-        else:  # backend == 'vienna'
-            from ..core.vienna_processor import ViennaRNAProcessor
-            return ViennaRNAProcessor.calc_deltaG(seq)
+        try:
+            if backend == 'nupack':
+                from ..core.nupack_processor import NupackProcessor
+                return NupackProcessor.calc_deltaG(seq)
+            else:  # backend == 'vienna'
+                from ..core.vienna_processor import ViennaRNAProcessor
+                return ViennaRNAProcessor.calc_deltaG(seq)
+        except ImportError as e:
+            logger.warning(f"Could not import thermodynamic processor: {e}")
+            return None
     
     @classmethod
     def calc_deltaG_batch(cls, seqs, description=None):
@@ -183,12 +177,16 @@ class ThermoProcessor:
             description = f"Calculating ΔG with {backend_name}"
             
         # Calculate using the selected backend
-        if backend == 'nupack':
-            from ..core.nupack_processor import NupackProcessor
-            return NupackProcessor.calc_deltaG_batch(seqs, description)
-        else:  # backend == 'vienna'
-            from ..core.vienna_processor import ViennaRNAProcessor
-            return ViennaRNAProcessor.calc_deltaG_batch(seqs, description)
+        try:
+            if backend == 'nupack':
+                from ..core.nupack_processor import NupackProcessor
+                return NupackProcessor.calc_deltaG_batch(seqs, description)
+            else:  # backend == 'vienna'
+                from ..core.vienna_processor import ViennaRNAProcessor
+                return ViennaRNAProcessor.calc_deltaG_batch(seqs, description)
+        except ImportError as e:
+            logger.warning(f"Could not import thermodynamic processor: {e}")
+            return [None] * len(seqs)
     
     @classmethod
     def process_deltaG(cls, series, description=None):
@@ -215,9 +213,13 @@ class ThermoProcessor:
             description = f"Processing sequences with {backend_name}"
             
         # Calculate using the selected backend
-        if backend == 'nupack':
-            from ..core.nupack_processor import NupackProcessor
-            return NupackProcessor.process_deltaG(series, description)
-        else:  # backend == 'vienna'
-            from ..core.vienna_processor import ViennaRNAProcessor
-            return ViennaRNAProcessor.process_deltaG(series, description)
+        try:
+            if backend == 'nupack':
+                from ..core.nupack_processor import NupackProcessor
+                return NupackProcessor.process_deltaG(series, description)
+            else:  # backend == 'vienna'
+                from ..core.vienna_processor import ViennaRNAProcessor
+                return ViennaRNAProcessor.process_deltaG(series, description)
+        except ImportError as e:
+            logger.warning(f"Could not import thermodynamic processor: {e}")
+            return pd.Series([None] * len(series), index=series.index)

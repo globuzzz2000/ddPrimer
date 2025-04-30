@@ -251,7 +251,6 @@ class Config:
         "PRIMER_SEQUENCING_LEAD": 50, 
         "PRIMER_SEQUENCING_SPACING": 500, 
         "PRIMER_TASK": "generic",
-        "PRIMER_THERMODYNAMIC_PARAMETERS_PATH": "/opt/homebrew/Cellar/primer3/2.4.0/share/primer3/primer3_config/",
         "PRIMER_THERMODYNAMIC_OLIGO_ALIGNMENT": 1, 
         "PRIMER_THERMODYNAMIC_TEMPLATE_ALIGNMENT": 0, 
         "PRIMER_TM_FORMULA": 1,

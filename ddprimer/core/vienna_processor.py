@@ -13,6 +13,13 @@ from tqdm import tqdm
 from ..config import Config
 from ..config.exceptions import SequenceProcessingError
 
+# Try to import ViennaRNA, but don't fail if it's not available
+try:
+    import RNA
+    VIENNA_AVAILABLE = True
+except ImportError:
+    VIENNA_AVAILABLE = False
+
 class ViennaRNAProcessor:
     """Handles thermodynamic calculations using ViennaRNA for DNA oligos."""
 
@@ -20,19 +27,14 @@ class ViennaRNAProcessor:
     logger = logging.getLogger("ddPrimer.vienna_processor")
     
     @classmethod
-    def _check_vienna_available(cls):
+    def is_available(cls):
         """
         Check if ViennaRNA package is available.
         
         Returns:
             bool: True if ViennaRNA is available, False otherwise
         """
-        try:
-            import RNA
-            return True
-        except ImportError:
-            cls.logger.warning("ViennaRNA package not available. Install with pip install ViennaRNA")
-            return False
+        return VIENNA_AVAILABLE
 
     @staticmethod
     def _make_fold_compound(seq):
@@ -45,9 +47,11 @@ class ViennaRNAProcessor:
         Returns:
             RNA.fold_compound: Ready-to-use fold compound for MFE calculations
         """
-        try:
-            import RNA
+        if not VIENNA_AVAILABLE:
+            ViennaRNAProcessor.logger.warning("ViennaRNA package not available")
+            return None
             
+        try:
             # ViennaRNA expects U instead of T even when using DNA parameters
             rna_seq = seq.upper().replace("T", "U")
 
@@ -104,9 +108,6 @@ class ViennaRNAProcessor:
 
             return fc
             
-        except ImportError:
-            ViennaRNAProcessor.logger.error("ViennaRNA package not available")
-            return None
         except Exception as e:
             ViennaRNAProcessor.logger.error(f"Error creating fold compound: {e}")
             return None
@@ -122,7 +123,8 @@ class ViennaRNAProcessor:
         Returns:
             float: Minimum free energy, or None if calculation fails
         """
-        if not cls._check_vienna_available():
+        if not VIENNA_AVAILABLE:
+            cls.logger.debug("ViennaRNA package not available")
             return None
             
         if not isinstance(seq, str) or seq == "":
@@ -135,8 +137,6 @@ class ViennaRNAProcessor:
             return None
 
         try:
-            import RNA
-            
             # Create fold compound and calculate MFE
             fc = cls._make_fold_compound(seq)
             if fc is None:
@@ -145,9 +145,6 @@ class ViennaRNAProcessor:
             structure, energy = fc.mfe()
             return energy  # kcal/mol
             
-        except ImportError:
-            cls.logger.error("ViennaRNA package not available")
-            return None
         except Exception as e:
             if Config.SHOW_PROGRESS:
                 preview = seq[:50] + ("..." if len(seq) > 50 else "")
@@ -167,7 +164,8 @@ class ViennaRNAProcessor:
         Returns:
             list: List of ΔG values
         """
-        if not cls._check_vienna_available():
+        if not VIENNA_AVAILABLE:
+            cls.logger.warning("ViennaRNA package not available")
             return [None] * len(seqs)
             
         cls.logger.info(f"Processing batch of {len(seqs)} sequences for ΔG calculation")
@@ -200,7 +198,8 @@ class ViennaRNAProcessor:
         Returns:
             pandas.Series: Series of ΔG values
         """
-        if not cls._check_vienna_available():
+        if not VIENNA_AVAILABLE:
+            cls.logger.warning("ViennaRNA package not available")
             return pd.Series([None] * len(series), index=series.index)
             
         cls.logger.info(f"Processing {len(series)} sequences for ΔG with pandas")

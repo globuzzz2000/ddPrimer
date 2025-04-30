@@ -254,14 +254,14 @@ def _process_snp_masking(args, sequence_file):
     try:
         # First analyze the file to provide better feedback
         from ..helpers.sequence_analyzer import SequenceAnalyzer
-        logger.info("Analyzing sequence file structure...")
+        logger.debug("Analyzing sequence file structure...")
         analysis = SequenceAnalyzer.analyze_file(sequence_file)
         SequenceAnalyzer.print_analysis(analysis)
         
         # Get recommended columns
         name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
         if name_col and seq_col:
-            logger.info(f"Using column '{name_col}' for sequence names and '{seq_col}' for sequences")
+            logger.debug(f"Using column '{name_col}' for sequence names and '{seq_col}' for sequences")
         
         # Load the sequences
         sequences = FileIO.load_sequences_from_table(sequence_file)

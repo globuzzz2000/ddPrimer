@@ -1,16 +1,38 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Thermodynamic calculation module using NUPACK for DNA oligos.
+"""
+
 import re
 import logging
 import pandas as pd
-import nupack
 from tqdm import tqdm
 from ..config import Config
 from ..config.exceptions import SequenceProcessingError
+
+# Try to import NUPACK, but don't fail if it's not available
+try:
+    import nupack
+    NUPACK_AVAILABLE = True
+except ImportError:
+    NUPACK_AVAILABLE = False
 
 class NupackProcessor:
     """Handles thermodynamic calculations using NUPACK."""
     
     # Get module logger
     logger = logging.getLogger("ddPrimer.nupack_processor")
+    
+    @staticmethod
+    def is_available():
+        """
+        Check if NUPACK is available.
+        
+        Returns:
+            bool: True if NUPACK is available, False otherwise
+        """
+        return NUPACK_AVAILABLE
     
     @staticmethod
     def calc_deltaG(seq):
@@ -26,6 +48,10 @@ class NupackProcessor:
         Raises:
             SequenceProcessingError: When sequence format is invalid
         """
+        if not NUPACK_AVAILABLE:
+            NupackProcessor.logger.debug("NUPACK is not available")
+            return None
+            
         if not isinstance(seq, str) or seq == "":
             return None
             
@@ -66,6 +92,10 @@ class NupackProcessor:
         Returns:
             list: List of ΔG values
         """
+        if not NUPACK_AVAILABLE:
+            cls.logger.warning("NUPACK is not available")
+            return [None] * len(seqs)
+            
         cls.logger.info(f"Processing batch of {len(seqs)} sequences for ΔG calculation")
         results = []
         
@@ -95,6 +125,10 @@ class NupackProcessor:
         Returns:
             pandas.Series: Series of deltaG values
         """
+        if not NUPACK_AVAILABLE:
+            cls.logger.warning("NUPACK is not available")
+            return pd.Series([None] * len(series), index=series.index)
+            
         cls.logger.info(f"Processing {len(series)} sequences for ΔG with pandas")
         
         if Config.SHOW_PROGRESS:

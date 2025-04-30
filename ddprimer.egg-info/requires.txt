@@ -1,12 +1,17 @@
-biopython
+biopython>=1.78
 pandas
 numpy
 tqdm
-primer3-py
+primer3-py>=2.0.0
 openpyxl>=3.0.5
 wxpython
+viennarna>=2.7.0
 
 [dev]
 pytest>=6.0.0
 pytest-cov>=2.10.0
 black>=20.8b1
+
+[thermo]
+nupack>=4.0.0
+viennarna>=2.7.0

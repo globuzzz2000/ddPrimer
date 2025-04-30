@@ -154,22 +154,22 @@ class SequenceAnalyzer:
             logger.error(f"Analysis error: {analysis['error']}")
             return
         
-        logger.info(f"\nAnalysis of file: {analysis['file_path']}")
-        logger.info(f"Total columns: {analysis['total_columns']}, Total rows: {analysis['total_rows']}")
+        logger.debug(f"\nAnalysis of file: {analysis['file_path']}")
+        logger.debug(f"Total columns: {analysis['total_columns']}, Total rows: {analysis['total_rows']}")
         
         if analysis['likely_sequence_columns']:
-            logger.info("\nLikely sequence columns:")
+            logger.debug("\nLikely sequence columns:")
             for i, (col, stats) in enumerate(analysis['likely_sequence_columns'], 1):
-                logger.info(f"  {i}. '{col}': {stats['avg_length']:.1f} chars avg, {stats['dna_percentage']*100:.1f}% DNA-like")
+                logger.debug(f"  {i}. '{col}': {stats['avg_length']:.1f} chars avg, {stats['dna_percentage']*100:.1f}% DNA-like")
         else:
-            logger.info("\nNo likely sequence columns detected.")
+            logger.warning("\nNo likely sequence columns detected.")
         
         if analysis['likely_name_columns']:
-            logger.info("\nLikely name/ID columns:")
+            logger.debug("\nLikely name/ID columns:")
             for i, (col, stats) in enumerate(analysis['likely_name_columns'], 1):
-                logger.info(f"  {i}. '{col}': {stats['unique_percentage']*100:.1f}% unique values, {stats['avg_length']:.1f} chars avg")
+                logger.debug(f"  {i}. '{col}': {stats['unique_percentage']*100:.1f}% unique values, {stats['avg_length']:.1f} chars avg")
         else:
-            logger.info("\nNo likely name/ID columns detected.")
+            logger.debug("\nNo likely name/ID columns detected.")
     
     @staticmethod
     def get_recommended_columns(analysis):

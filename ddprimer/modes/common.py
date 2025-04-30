@@ -19,10 +19,10 @@ from ..config.exceptions import SequenceProcessingError, PrimerDesignError, File
 from ..utils.file_io import FileIO
 from ..core import (
     PrimerProcessor,
-    NupackProcessor,
     BlastProcessor,
     SequenceProcessor,
-    Primer3Processor
+    Primer3Processor,
+    ThermoProcessor  # Only import the ThermoProcessor, which will handle backend selection
 )
 
 # Set up logger
@@ -488,13 +488,18 @@ def calculate_thermodynamics(df):
     Raises:
         PrimerDesignError: If there's an error in thermodynamic calculations
     """
-    # Import the flexible ThermoProcessor
-    from ..core.thermo_processor import ThermoProcessor
-    
     # Get the backend name for logging
     backend = ThermoProcessor.get_backend()
     if backend is None:
         logger.warning("No thermodynamic calculation package available. Skipping thermodynamic analysis.")
+        
+        # Add empty columns to maintain DataFrame structure
+        df["Primer F dG"] = None
+        df["Primer R dG"] = None
+        if "Probe" in df.columns:
+            df["Probe dG"] = None
+        df["Amplicon dG"] = None
+        
         return df
         
     backend_name = "NUPACK" if backend == 'nupack' else "ViennaRNA"
