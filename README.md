@@ -89,7 +89,7 @@ conda create -n ddprimer python=3.8
 conda activate ddprimer
 
 # Install external tools via conda
-conda install -c bioconda -c conda-forge blast lastz
+conda install -c bioconda -c conda-forge blast lastz bcftools samtools
 
 # Install GUI dependency (if needed separately)
 conda install -c conda-forge wxpython
@@ -110,11 +110,11 @@ cd ddPrimer
 # Install the package
 pip install -e .
 
-# Install BLAST and LastZ externally using a package manager
+# Install external tools using a package manager
 # On macOS:
-brew install blast lastz primer3
+brew install blast lastz primer3 bcftools samtools
 # On Linux:
-sudo apt-get install ncbi-blast+ lastz
+sudo apt-get install ncbi-blast+ lastz bcftools samtools
 ```
 
 ### Dependencies
@@ -125,6 +125,19 @@ The following tools are required:
 - **Primer3**: For primer design (core engine)
 - **NCBI BLAST+**: For specificity checking
 - **LastZ**: For alignment-based mode
+- **bcftools**: For VCF file manipulation
+- **samtools**: For sequence file manipulation
+
+#### Python Dependencies
+
+- **Required packages**:
+  - biopython: For sequence handling
+  - pandas/numpy: For data manipulation
+  - primer3-py: Python interface for Primer3
+  - openpyxl: For Excel file generation
+  - wxpython: For GUI file selection
+  - colorama: For colored terminal output
+  - pyobjc-core and pyobjc-framework-Cocoa (macOS only): For GUI support on macOS
 
 For thermodynamic calculations (one of the following):
 - **ViennaRNA**: Default option for thermodynamic calculations
@@ -272,6 +285,8 @@ Common issues and solutions:
 - **Missing BLAST database**: Run with `--createdb` to create a new database
 - **Memory errors**: Try reducing `NUM_PROCESSES` in your configuration file
 - **GUI errors**: Use `--cli` to force command-line mode
+- **macOS GUI issues**: Ensure pyobjc-core and pyobjc-framework-Cocoa are installed
+- **VCF processing errors**: Verify bcftools is correctly installed
 - **Thermodynamic calculation issues with NUPACK**: Use ViennaRNA instead by setting `THERMO_BACKEND: "vienna"` in your config file (this is now the default)
 
 For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
@@ -292,7 +307,7 @@ conda create -n ddprimer-dev python=3.8
 conda activate ddprimer-dev
 
 # Install external tools via conda
-conda install -c bioconda -c conda-forge blast lastz
+conda install -c bioconda -c conda-forge blast lastz bcftools samtools
 
 # Install the package in development mode with ALL dependencies
 # This will automatically install all Python dependencies defined in pyproject.toml
