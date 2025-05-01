@@ -12,8 +12,10 @@ import pytest
 import tempfile
 import shutil
 import logging
+import pandas as pd
 from pathlib import Path
 import warnings
+from unittest import mock
 
 
 # Add the parent directory to the path so we can import the package
@@ -116,6 +118,8 @@ def redirect_output():
         sys.stderr = original_stderr
 
 
+# ============== Test data directories ===============
+
 @pytest.fixture(scope="session")
 def test_data_dir():
     """Return the path to the test data directory."""
@@ -152,6 +156,8 @@ def alignment_data_dir(test_data_dir):
     return os.path.join(test_data_dir, "alignment")
 
 
+# ============== Temporary files and directories ===============
+
 @pytest.fixture(scope="function")
 def temp_dir():
     """Create a temporary directory and clean it up after the test."""
@@ -159,6 +165,78 @@ def temp_dir():
     yield temp_dir
     shutil.rmtree(temp_dir)
 
+
+@pytest.fixture
+def test_fasta_file():
+    """
+    Fixture that creates a temporary FASTA file.
+    Returns the path to the file, which is automatically cleaned up.
+    """
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.fasta', delete=False) as tmp_file:
+        # Write some test sequences
+        tmp_file.write(">seq1\n")
+        tmp_file.write("ATCGATCGATCGTAGCTAGCTAGC\n")
+        tmp_file.write(">seq2\n")
+        tmp_file.write("GCTAGCTAGCTAGCTAGCTA\n")
+        tmp_file.write(">seq3\n")
+        tmp_file.write("ATGCATGCATGCATGCATGC\n")
+        tmp_file.flush()
+        tmp_path = tmp_file.name
+    
+    yield tmp_path
+    
+    # Clean up
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+
+@pytest.fixture
+def test_gff_file():
+    """
+    Fixture that creates a temporary GFF file.
+    Returns the path to the file, which is automatically cleaned up.
+    """
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.gff', delete=False) as tmp_file:
+        # Write some test GFF content
+        tmp_file.write("##gff-version 3\n")
+        tmp_file.write("seq1\tGenbankParser\tgene\t1\t100\t.\t+\t.\tID=gene1;Name=GENE1\n")
+        tmp_file.write("seq1\tGenbankParser\texon\t10\t90\t.\t+\t.\tID=exon1;Parent=gene1\n")
+        tmp_file.write("seq2\tGenbankParser\tgene\t1\t200\t.\t-\t.\tID=gene2;Name=GENE2\n")
+        tmp_file.write("seq3\tGenbankParser\tgene\t50\t150\t.\t+\t.\tID=gene3;Name=AT1G12345\n")
+        tmp_file.flush()
+        tmp_path = tmp_file.name
+    
+    yield tmp_path
+    
+    # Clean up
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+
+@pytest.fixture
+def test_vcf_file():
+    """
+    Fixture that creates a temporary VCF file.
+    Returns the path to the file, which is automatically cleaned up.
+    """
+    with tempfile.NamedTemporaryFile(mode='w+', suffix='.vcf', delete=False) as tmp_file:
+        # Write some test VCF content
+        tmp_file.write("##fileformat=VCFv4.2\n")
+        tmp_file.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+        tmp_file.write("seq1\t10\t.\tA\tG\t100\tPASS\t.\n")
+        tmp_file.write("seq1\t50\t.\tC\tT\t100\tPASS\t.\n")
+        tmp_file.write("seq2\t30\t.\tG\tA\t100\tPASS\t.\n")
+        tmp_file.flush()
+        tmp_path = tmp_file.name
+    
+    yield tmp_path
+    
+    # Clean up
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+
+# ============== Test data and mock objects ===============
 
 @pytest.fixture(scope="function")
 def config():
@@ -176,12 +254,61 @@ def config():
 
 
 @pytest.fixture(scope="function")
+def mock_config():
+    """
+    Fixture to mock the Config object with a more direct approach.
+    Resets any changes made during tests.
+    """
+    # Store original values
+    original_values = {}
+    for attr in dir(Config):
+        if not attr.startswith('__'):
+            original_values[attr] = getattr(Config, attr)
+    
+    # Set common test values
+    Config.SHOW_PROGRESS = False
+    Config.NUM_PROCESSES = 2
+    Config.RETAIN_TYPES = ['gene', 'exon', 'cds']
+    Config.FILTER_MEANINGFUL_NAMES = True
+    Config.RESTRICTION_SITE = "GGCC"
+    Config.MIN_SEGMENT_LENGTH = 20
+    Config.GENE_OVERLAP_MARGIN = 50
+    Config.THERMO_TEMPERATURE = 37
+    Config.THERMO_SODIUM = 0.05
+    Config.THERMO_MAGNESIUM = 0.002
+    Config.THERMO_BACKEND = 'vienna'
+    Config.THERMO_AUTO_FALLBACK = True
+    Config.BLAST_WORD_SIZE = 7
+    Config.BLAST_EVALUE = 1000
+    Config.BLAST_FILTER_FACTOR = 2
+    Config.DB_PATH = "test_blast_db"
+    
+    yield Config
+    
+    # Restore original values
+    for attr, value in original_values.items():
+        setattr(Config, attr, value)
+
+
+@pytest.fixture(scope="function")
 def simple_sequences():
     """Return a dictionary of simple test sequences."""
     return {
         "seq1": "ATGCATGCATGCGGCCATGCATGCATGC",
         "seq2": "GTACGTACGTACGGCCGTACGTACGTAC",
         "seq3": "GGCCTTTGGCCAAGGCCTTTGGCCAAA"
+    }
+
+
+@pytest.fixture
+def test_sequences():
+    """
+    Fixture that returns a dictionary of test sequences.
+    """
+    return {
+        "seq1": "ATCGATCGATCGTAGCTAGCTAGCGGCCATGCATGC",
+        "seq2": "GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAG",
+        "seq3": "ATGCATGCATGCGGCCATGCATGCATGCATGC"
     }
 
 
@@ -197,6 +324,30 @@ def mock_genes():
             {"gene": "geneC", "start": 200, "end": 600}
         ]
     }
+
+
+@pytest.fixture
+def test_genes():
+    """
+    Fixture that returns a list of test genes.
+    """
+    return [
+        {"id": "gene1", "chr": "seq1", "start": 10, "end": 25, "strand": "+"},
+        {"id": "gene2", "chr": "seq2", "start": 5, "end": 15, "strand": "-"},
+        {"id": "gene3", "chr": "seq4", "start": 1, "end": 10, "strand": "+"}
+    ]
+
+
+@pytest.fixture
+def test_fragments():
+    """
+    Fixture that returns a list of test sequence fragments.
+    """
+    return [
+        {"id": "seq1_frag0", "chr": "seq1", "start": 1, "end": 8, "sequence": "ATCGATCG"},
+        {"id": "seq1_frag1", "chr": "seq1", "start": 13, "end": 20, "sequence": "TAGCTAG"},
+        {"id": "seq2", "chr": "seq2", "start": 1, "end": 32, "sequence": "GCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAG"}
+    ]
 
 
 @pytest.fixture(scope="function")
@@ -239,3 +390,23 @@ def mock_blast_output():
             "identity": 90.0
         }
     ]
+
+
+@pytest.fixture
+def test_primers_df():
+    """
+    Fixture that returns a test DataFrame of primer candidates.
+    """
+    return pd.DataFrame({
+        'ID': ['primer1', 'primer2', 'primer3', 'primer4'],
+        'Forward Primer': ['ATCGATCGATCG', 'GCTAGCTAGCTA', 'ATGCATGCATGC', 'CGTAGCTAGCTA'],
+        'Forward Tm': [60.5, 58.2, 62.1, 59.8],
+        'Reverse Primer': ['GCTAGCTAGCTA', 'ATCGATCGATCG', 'GCATGCATGCAT', 'TAGCTAGCTACG'],
+        'Reverse Tm': [58.2, 60.5, 61.9, 59.8],
+        'Probe': ['CGATCGATCGTA', 'TAGCTAGCTAGC', 'CATGCATGCATG', 'TAGCTAGCTACG'],
+        'Probe Tm': [65.3, 63.8, 66.2, 64.5],
+        'Amplicon': ['ATCGATCGATCGTAGCTAGCTAGCTA', 'GCTAGCTAGCTATAGCTAGCTAGC', 
+                    'ATGCATGCATGCATGCATGCATGCAT', 'CGTAGCTAGCTATAGCTAGCTACG'],
+        'Amplicon Length': [26, 24, 27, 24],
+        'Penalty': [0.3, 0.5, 0.2, 0.6]
+    })
