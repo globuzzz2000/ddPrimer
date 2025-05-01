@@ -120,17 +120,23 @@ class DirectMasking:
             df (pandas.DataFrame): DataFrame with primer results
             masked_sequences (dict): Dictionary of masked sequences
             matching_status (dict, optional): Dictionary with reference matching status for sequences
-            
+                
         Returns:
             pandas.DataFrame: Updated DataFrame with rows for sequences without primers
         """
         logger.debug("Checking for sequences without primers and reference match failures...")
         
+        # If there's no Gene column, we can't properly identify which sequences have primers.
+        # This shouldn't happen in normal operation of direct mode, as the column is explicitly
+        # added in process_direct_mode_fragments, but we'll handle it defensively.
+        if "Gene" not in df.columns:
+            logger.debug("No 'Gene' column found in DataFrame, skipping missing sequences check")
+            return df
+        
         # 1) Which sequences actually got primers?
         sequences_with_primers = set()
-        if "Gene" in df.columns:
-            valid = df["Primer F"] != "No suitable primers found"
-            sequences_with_primers.update(df.loc[valid, "Gene"].astype(str).unique())
+        valid = df["Primer F"] != "No suitable primers found"
+        sequences_with_primers.update(df.loc[valid, "Gene"].astype(str).unique())
         
         # 2) All the input sequence IDs
         all_input = set(masked_sequences.keys())

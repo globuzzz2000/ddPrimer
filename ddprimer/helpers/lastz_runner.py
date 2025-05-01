@@ -301,6 +301,7 @@ class LastZRunner:
             
             raise AlignmentError(f"LastZ alignment failed: {str(e)}")
     
+
     def _clean_up_temp_files(self, temp_dir, fai_files):
         """
         Clean up temporary files created during alignment.
@@ -325,5 +326,5 @@ class LastZRunner:
                 try:
                     os.remove(fai_file)
                     self.logger.debug(f"Removed index file: {fai_file}")
-                except OSError as e:
+                except Exception as e:
                     self.logger.warning(f"Could not remove index file {fai_file}: {str(e)}")

@@ -121,8 +121,26 @@ class SequenceAnalyzer:
                 if stats["unique_percentage"] >= 0.8 and stats["avg_length"] < 50 and col not in [seq_col for seq_col, _ in likely_seq_cols]:
                     likely_name_cols.append((col, stats))
             
-            # Sort by uniqueness then alphabetically
-            likely_name_cols.sort(key=lambda x: (x[1]["unique_percentage"], str(x[0])), reverse=True)
+            # Custom sorting function to prioritize common ID column names
+            def name_col_sort_key(item):
+                col_name, stats = item
+                
+                # Priority score for common ID column names (lower is better)
+                name_priority = 10  # Default priority
+                common_id_names = {'id': 0, 'name': 1, 'sequence_id': 2, 'seq_id': 3, 'seqid': 4}
+                
+                # Check if column name (lowercase) is in common ID names
+                col_lower = str(col_name).lower()
+                for pattern, priority in common_id_names.items():
+                    if pattern == col_lower or col_lower.startswith(pattern + '_') or col_lower.endswith('_' + pattern):
+                        name_priority = priority
+                        break
+                
+                # Sort by: name priority first, then uniqueness, then column name
+                return (name_priority, -stats["unique_percentage"], str(col_name))
+            
+            # Sort by our custom key
+            likely_name_cols.sort(key=name_col_sort_key)
             
             return {
                 "file_path": file_path,

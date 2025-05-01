@@ -545,6 +545,15 @@ def _clean_up_intermediate_files(args, output_dir, temp_dir):
         output_dir (str): Output directory path
         temp_dir (str): Temporary directory path
     """
+    # Check debug mode from both args and Config (for backward compatibility)
+    is_debug_mode = args.debug if hasattr(args, 'debug') else False
+    is_debug_mode = is_debug_mode or Config.DEBUG_MODE
+    
+    # Skip cleanup if in debug mode
+    if is_debug_mode:
+        logger.debug("Debug mode enabled - skipping cleanup of intermediate files")
+        return
+        
     try:
         # List of files to clean up
         files_to_clean = [

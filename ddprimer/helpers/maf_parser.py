@@ -184,7 +184,8 @@ class MAFParser:
         if valid_positions == 0:
             return 0.0
             
-        return (matches / valid_positions) * 100
+        # Use exact multiplication before division to maintain precision
+        return (matches * 100.0) / valid_positions
     
     def identify_conserved_regions(self, min_identity=80, min_length=20):
         """
@@ -746,6 +747,7 @@ class MAFParser:
             self.logger.error(f"Error mapping second species variants: {str(e)}")
             self.logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to map second species variants: {str(e)}")
+    
     
     def _create_reverse_coordinate_map(self, coordinate_map):
         """
