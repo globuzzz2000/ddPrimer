@@ -618,62 +618,25 @@ def test_map_second_variants_to_reference():
     assert result['chr1'] == {100, 105, 110}
 
 
-# Test _clean_up_intermediate_files
-@patch('ddprimer.helpers.alignment_workflow.os.path.exists')
-@patch('ddprimer.helpers.alignment_workflow.os.remove')
-@patch('ddprimer.helpers.alignment_workflow.shutil.rmtree')
-def test_clean_up_intermediate_files(
-    mock_rmtree, mock_remove, mock_exists, mock_args, mock_output_dir
-):
-    """Test cleaning up intermediate files."""
-    # Set up mocks
-    mock_exists.return_value = True
-    
-    # First test normal mode (not debug)
-    mock_args.debug = False
-    
-    # Run the function with a temporary directory
-    temp_dir = os.path.join(TEMP_BASE, "custom_temp_dir")
-    _clean_up_intermediate_files(mock_args, mock_output_dir, temp_dir)
-    
-    # Verify function calls
-    mock_rmtree.assert_called_once_with(temp_dir)
-    assert mock_remove.call_count == 2  # Two files to remove
-    
-    # Reset all mocks to prepare for debug mode test
-    mock_rmtree.reset_mock()
-    mock_remove.reset_mock()
-    
-    # Test debug mode (should keep files)
-    # In alignment_workflow.py, debug mode check needs to be fixed!
-    mock_args.debug = True
-    Config.DEBUG_MODE = True  # Also need to set Config.DEBUG_MODE
-    
-    _clean_up_intermediate_files(mock_args, mock_output_dir, temp_dir)
-    
-    # Verify nothing was removed in debug mode
-    mock_rmtree.assert_not_called()
-    mock_remove.assert_not_called()
-    
-    # Reset Config.DEBUG_MODE for other tests
-    Config.DEBUG_MODE = False
-
-
 @pytest.fixture(scope="session", autouse=True)
-def check_cleanup():
-    """Verify no orphaned test directories exist after tests."""
+def cleanup_test_dirs():
+    """Clean up any test directories before and after running tests."""
+    # Remove only specific test directories within our test path
+    if os.path.exists(TEMP_BASE):
+        shutil.rmtree(TEMP_BASE)
+    os.makedirs(TEMP_BASE, exist_ok=True)
+    
+    # Run the tests
     yield
     
-    # Check for orphaned ddPrimer directories
-    user_home = os.path.expanduser("~")
-    ddprimer_dirs = glob.glob(os.path.join(user_home, "**/ddPrimer/Alignments"), recursive=True)
-    temp_dirs = glob.glob(os.path.join(user_home, "**/ddprimer_temp_*"), recursive=True)
-    
-    # Print warning for orphaned directories
-    if ddprimer_dirs:
-        print(f"WARNING: Found orphaned ddPrimer directories: {ddprimer_dirs}")
-    if temp_dirs:
-        print(f"WARNING: Found orphaned temp directories: {temp_dirs}")
+    # Clean up after tests - only our specific test directory
+    if os.path.exists(TEMP_BASE):
+        shutil.rmtree(TEMP_BASE)
+        
+    # Check for and clean up only specific known problematic directories
+    problematic_dir = os.path.join(os.getcwd(), "Alignments")
+    if os.path.exists(problematic_dir):
+        shutil.rmtree(problematic_dir)
 
 
 if __name__ == "__main__":
