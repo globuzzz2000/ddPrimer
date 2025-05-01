@@ -348,6 +348,9 @@ class BlastVerification:
                 
             else:
                 logger.error("Invalid choice. Please enter a number between 1 and 4.")
+                # For invalid choices, recursively call this method
+                # This line is important - when overriding in tests, we need to ensure 
+                # we use the class name explicitly to maintain the patching chain
                 return BlastVerification._handle_failed_verification(logger)
                 
         except KeyboardInterrupt:

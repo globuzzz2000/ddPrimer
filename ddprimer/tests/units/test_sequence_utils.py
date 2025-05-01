@@ -46,10 +46,10 @@ class TestSequenceUtils:
         
         # Real biological sequences
         promoter_seq = "TACAAAGGACGTGGGTTCGAATCCCACCTCTGCCG"
-        assert round(SequenceUtils.calculate_gc(promoter_seq), 1) == 58.8, "Promoter sequence should have ~58.8% GC"
+        assert round(SequenceUtils.calculate_gc(promoter_seq), 1) == 57.1, "Promoter sequence should have ~57.1% GC"
         
         enhancer_seq = "AGATTGCAGATCTGATTGCCAGCTAGCATGCAT"
-        assert round(SequenceUtils.calculate_gc(enhancer_seq), 1) == 44.1, "Enhancer sequence should have ~44.1% GC"
+        assert round(SequenceUtils.calculate_gc(enhancer_seq), 1) == 45.5, "Enhancer sequence should have ~45.5% GC"
         
         # Test case insensitivity
         assert SequenceUtils.calculate_gc("atgc") == 50.0, "Should handle lowercase"

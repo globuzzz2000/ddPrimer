@@ -73,7 +73,7 @@ ddprimer = ["config/*.json", "config/*.yaml"]
 # ---------------------------------------------------------------------------
 # Basic discovery                                                              
 # ---------------------------------------------------------------------------
-testpaths         = ["tests"]
+testpaths         = ["ddprimer/tests"]
 python_files      = "test_*.py"
 python_classes    = "Test*"
 python_functions  = "test_*"
@@ -84,7 +84,8 @@ python_functions  = "test_*"
 addopts = "-v"          # verbose; append coverage flags below if needed
 # addopts = "-v --cov=ddprimer --cov-report=term --cov-report=html"
 
-showlocals = true       # show local variables in tracebacks
+# Note: showlocals option not supported in pyproject.toml in current pytest
+# To show local variables in tracebacks use: pytest --showlocals
 
 # ---------------------------------------------------------------------------
 # Warnings                                                                     
@@ -93,6 +94,7 @@ filterwarnings = [
   "ignore::DeprecationWarning",
   "ignore::PendingDeprecationWarning",
   "ignore::ResourceWarning",
+  "ignore::pytest.PytestWarning",
 ]
 
 # ---------------------------------------------------------------------------

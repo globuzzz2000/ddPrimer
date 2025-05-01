@@ -42,13 +42,21 @@ class CommonUtils:
         
         Args:
             list_of_lists (list): List of lists
-            
+                
         Returns:
             list: Flattened list
+            
+        Raises:
+            TypeError: If any element in list_of_lists is not a list
         """
         if not isinstance(list_of_lists, list):
             logger = logging.getLogger("ddPrimer")
             logger.warning("Input to flatten_list must be a list")
             return []
             
+        # Check that each element is also a list
+        for element in list_of_lists:
+            if not isinstance(element, list):
+                raise TypeError(f"Expected list of lists, but found element of type {type(element).__name__}")
+                
         return [item for sublist in list_of_lists for item in sublist]
