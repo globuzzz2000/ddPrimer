@@ -52,9 +52,24 @@ venv.bak/
 *.swo
 .DS_Store
 
-# ddQuint specific
-*.csv
+# ddPrimer specific
+*.fasta
+*.fna
+*.vcf
+*.vcf.gz
+*.gff
+*.gff3
+*.maf
 *.xlsx
-Graphs/
-Raw Data/
-*.png
+*.csv
+*.json
+logs/
+output/
+results/
+~*
+# Keep test data
+!ddprimer/tests/*.fna
+!ddprimer/tests/*.vcf.gz
+!ddprimer/tests/*.gff
+!ddprimer/tests/*.maf
+!ddprimer/tests/*.xlsx
