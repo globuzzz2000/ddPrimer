@@ -15,12 +15,11 @@ import logging
 import tempfile
 
 # Import package modules
-from ..config import Config
-from ..config.exceptions import FileSelectionError, AlignmentError
-from ..utils.file_io import FileIO, TempDirectoryManager
+from ..config import Config, FileSelectionError, AlignmentError
+from ..utils import FileIO, TempDirectoryManager
 from ..core import AnnotationProcessor
 from ..helpers import run_alignment_workflow, LastZRunner
-from . import common  # Import common module functions
+from . import common
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")
@@ -319,14 +318,13 @@ def _setup_and_run_alignment_workflow(args, reference_file):
     elif reference_file:
         # Get the directory of the original input file
         if hasattr(args, 'maf') and args.maf:
-            # For MAF files, use the directory the MAF file is in
-            input_dir = os.path.dirname(os.path.abspath(args.maf))
+            # For MAF files, use the parent directory of the MAF file's directory
+            maf_dir = os.path.dirname(os.path.abspath(args.maf))
+            output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
         else:
             # For FASTA files, use the directory of the reference FASTA
             input_dir = os.path.dirname(os.path.abspath(reference_file))
-        
-        # Create Primers directory in the same location as input files
-        output_dir = os.path.join(input_dir, "Primers")
+            output_dir = os.path.join(input_dir, "Primers")
         logger.debug(f"Setting output directory to: {output_dir}")
     else:
         # Fallback to current directory if no reference file
