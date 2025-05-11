@@ -5,8 +5,8 @@ Standard mode for ddPrimer pipeline.
 
 This module contains the implementation of the standard mode workflow:
 1. Load FASTA, VCF and GFF files
-2. Extract variants from VCF and mask the FASTA file
-3. Pass masked sequences to the common primer design workflow
+2. Now with the option to either:
+   a. Design primers first, then filter based on SNP positions (new approach)
 """
 
 import os
@@ -18,7 +18,7 @@ from ..config import Config
 from ..config.exceptions import FileSelectionError, SequenceProcessingError
 from ..utils.file_io import FileIO
 from ..core import (
-    SNPMaskingProcessor,
+    SNPFilterProcessor,
     AnnotationProcessor
 )
 from . import common  # Import common module functions
@@ -50,8 +50,12 @@ def run(args):
                 logger.error(f"FASTA file selection failed: {str(e)}")
                 return False
         
-        # VCF file selection
-        if not args.vcf:
+        # VCF file selection - MUST HAPPEN BEFORE CHECKING args.snp_enabled
+        # Check if SNP filtering is enabled
+        snp_filtering_enabled = hasattr(args, 'snp_enabled') and args.snp_enabled
+        
+        # This fixed version explicitly checks for --snp without first checking if VCF exists
+        if snp_filtering_enabled and not args.vcf:
             logger.info("\n>>> Please select VCF variant file <<<")
             try:
                 args.vcf = FileIO.select_file(
@@ -61,7 +65,9 @@ def run(args):
                 logger.debug(f"Selected VCF file: {args.vcf}")
             except FileSelectionError as e:
                 logger.error(f"VCF file selection failed: {str(e)}")
-                return False
+                # If VCF selection fails, disable SNP filtering
+                args.snp_enabled = False
+                logger.warning("SNP filtering has been disabled due to missing VCF file")
         
         # GFF file selection
         if not args.noannotation and not args.gff:
@@ -95,22 +101,8 @@ def run(args):
         os.makedirs(output_dir, exist_ok=True)
         logger.debug(f"Created output directory: {output_dir}")
         
-        # Extract variants from VCF file
-        logger.info("\nExtracting variants from VCF file...")
-        try:
-            snp_processor = SNPMaskingProcessor()
-            variants = snp_processor.get_variant_positions(args.vcf)
-            logger.debug(f"Variants extracted successfully from {args.vcf}")
-            
-            total_variants = sum(len(positions) for positions in variants.values())
-            logger.debug(f"Extracted {total_variants} variants from {len(variants)} chromosomes")
-        except Exception as e:
-            logger.error(f"Error extracting variants: {str(e)}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(f"Failed to extract variants: {str(e)}")
-        
-        # Load sequences from FASTA file
-        logger.info("Loading sequences from FASTA file...")
+        # Load sequences from FASTA file (original unmasked sequences)
+        logger.debug("Loading sequences from FASTA file...")
         try:
             sequences = FileIO.load_fasta(args.fasta)
             logger.debug(f"Sequences loaded successfully from {args.fasta}")
@@ -119,33 +111,25 @@ def run(args):
             logger.error(f"Error loading FASTA: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
-        
-        # Mask variants in sequences
-        logger.debug("\nMasking variants in sequences...")
-        
-        masked_sequences = {}
-        seq_items = list(sequences.items())
-        if Config.SHOW_PROGRESS:
-            seq_iter = tqdm(seq_items, total=len(seq_items), desc="Masking sequences")
-        else:
-            seq_iter = seq_items
             
-        for seq_id, sequence in seq_iter:
-            # Get variants for this sequence/chromosome
-            seq_variants = variants.get(seq_id, set())
-            
-            if seq_variants:
-                logger.debug(f"Masking {len(seq_variants)} variants in {seq_id}...")
-                try:
-                    masked_seq = snp_processor.mask_variants(sequence, seq_variants)
-                    masked_sequences[seq_id] = masked_seq
-                except Exception as e:
-                    logger.error(f"Error masking variants in {seq_id}: {str(e)}")
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    raise SequenceProcessingError(f"Failed to mask variants in {seq_id}: {str(e)}")
-            else:
-                logger.debug(f"No variants to mask in {seq_id}")
-                masked_sequences[seq_id] = sequence
+        # Initialize variables for SNP processing
+        variants = None
+        masked_sequences = sequences.copy()  # Default to using unmasked sequences
+        
+        # Extract variants if SNP filtering is enabled
+        if snp_filtering_enabled and args.vcf:
+            logger.info("\nExtracting variants from VCF file...")
+            try:
+                snp_processor = SNPFilterProcessor()
+                variants = snp_processor.get_variant_positions(args.vcf)
+                logger.debug(f"Variants extracted successfully from {args.vcf}")
+                
+                total_variants = sum(len(positions) for positions in variants.values())
+                logger.debug(f"Extracted {total_variants} variants from {len(variants)} chromosomes")
+            except Exception as e:
+                logger.error(f"Error extracting variants: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise SequenceProcessingError(f"Failed to extract variants: {str(e)}")
         
         # Load gene annotations if needed
         if not args.noannotation:
@@ -171,7 +155,11 @@ def run(args):
             genes=genes,
             coordinate_map=None,
             gff_file=args.gff,
-            skip_annotation_filtering=args.noannotation
+            skip_annotation_filtering=args.noannotation,
+            # Pass SNP filtering parameters
+            variants=variants,
+            strict_mode=args.snp_strict if hasattr(args, 'snp_strict') else False,
+            amplicon_threshold=args.snp_threshold if hasattr(args, 'snp_threshold') else 0.05
         )
         
         return success

@@ -21,17 +21,18 @@ __all__ = [
     'SNPMaskingProcessor',
     'Primer3Processor',
     'BlastProcessor',
-    'ThermoProcessor'
+    'ThermoProcessor',
+    'SNPFilterProcessor'
 ]
 
 # Core processors that are always available
 from .sequence_processor import SequenceProcessor
 from .primer_processor import PrimerProcessor
 from .annotation_processor import AnnotationProcessor
-from .SNP_masking_processor import SNPMaskingProcessor
+from .SNP_filter_processor import SNPFilterProcessor
 from .primer3_processor import Primer3Processor
 from .blast_processor import BlastProcessor
-from .thermo_processor import ThermoProcessor  # This is always available
+from .thermo_processor import ThermoProcessor
 
 # Conditionally import NupackProcessor
 try:

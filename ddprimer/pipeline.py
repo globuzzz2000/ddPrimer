@@ -52,7 +52,7 @@ def parse_arguments():
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug] [--config [.json]] \n'
-            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
+            '                [--cli] [--nooligo] [--snp [strict [THRESHOLD]]] [--noannotation] [--lastzonly] \n'
             '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
             '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
             '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
@@ -76,7 +76,12 @@ def parse_arguments():
 
     option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
     option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
+    
+    # Modified SNP option with more flexible arguments
+    option_group.add_argument('--snp', nargs='*', metavar='[strict [THRESHOLD]]', 
+                       help='Filter primers based on SNP positions after design. Optional: add "strict" to check '
+                            'amplicons, followed by optional threshold value (default: 0.05)')
+    
     option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
     option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
     option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
@@ -102,11 +107,14 @@ def parse_arguments():
     if args.maf:
         args.alignment = True
     
-    # Handle --snp requirements
-    if args.snp and args.cli:
-        if not args.fasta or not args.vcf:
-            parser.error("SNP masking (--snp) requires --fasta and --vcf")
+    # Process the --snp argument with optional "strict" mode and threshold
+    _process_snp_argument(args)
     
+    # Handle SNP options validation
+    if args.snp_enabled and args.cli:
+        if not args.vcf:
+            parser.error("SNP filtering (--snp) requires --vcf")
+            
     # Extra validation for lastzonly mode
     if args.lastzonly:
         # Force alignment mode when lastzonly is specified
@@ -118,7 +126,7 @@ def parse_arguments():
         if args.cli and not args.second_fasta:
             parser.error("--lastzonly requires --second-fasta (second genome)")
         # These flags are incompatible with lastzonly
-        if args.snp:
+        if args.snp_enabled:
             parser.error("--lastzonly cannot be used with --snp")
         if args.direct:
             parser.error("--lastzonly cannot be used with --direct")
@@ -131,10 +139,10 @@ def parse_arguments():
             parser.error("Alignment mode requires either --maf or --second-fasta")
         if not args.maf and not args.fasta:
             parser.error("Reference genome FASTA (--fasta) is required for alignment")
-        if args.snp:
-            # Only require VCF files if SNP masking is enabled
+        if args.snp_enabled:
+            # Only require VCF files if SNP filtering is enabled
             if args.second_fasta and not args.second_vcf:
-                parser.error("Second species VCF file (--second-vcf) is required for SNP masking")
+                parser.error("Second species VCF file (--second-vcf) is required for SNP filtering")
     
     # Process --db arguments
     if args.db is not None:
@@ -162,6 +170,43 @@ def parse_arguments():
         args.db_name = None
     
     return args
+
+
+def _process_snp_argument(args):
+    """
+    Process the --snp argument with optional "strict" mode and threshold.
+    
+    Args:
+        args (argparse.Namespace): Command line arguments
+    """
+    # Initialize SNP filtering flags
+    args.snp_enabled = False
+    args.snp_strict = False
+    args.snp_threshold = 0.05  # Default threshold
+    
+    # If --snp was not used at all
+    if args.snp is None:
+        return
+    
+    # --snp was used (at least as a flag)
+    args.snp_enabled = True
+    
+    # Process optional arguments after --snp
+    if len(args.snp) >= 1:
+        # Check for "strict" mode
+        if args.snp[0].lower() == 'strict':
+            args.snp_strict = True
+            
+            # Check for custom threshold value
+            if len(args.snp) >= 2:
+                try:
+                    threshold = float(args.snp[1])
+                    if 0 <= threshold <= 1:
+                        args.snp_threshold = threshold
+                    else:
+                        logger.warning(f"Invalid SNP threshold: {threshold}. Must be between 0.0 and 1.0. Using default: 0.05")
+                except ValueError:
+                    logger.warning(f"Invalid SNP threshold value: {args.snp[1]}. Must be a number. Using default: 0.05")
 
 
 class WorkflowFactory:

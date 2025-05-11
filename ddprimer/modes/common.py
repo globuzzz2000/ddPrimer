@@ -22,7 +22,8 @@ from ..core import (
     BlastProcessor,
     SequenceProcessor,
     Primer3Processor,
-    ThermoProcessor  # Only import the ThermoProcessor, which will handle backend selection
+    ThermoProcessor,
+    SNPFilterProcessor 
 )
 
 # Set up logger
@@ -32,7 +33,9 @@ logger = logging.getLogger("ddPrimer")
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
                               genes=None, coordinate_map=None, gff_file=None, temp_dir=None,
                               second_fasta=None, skip_annotation_filtering=False, matching_status=None,
-                              all_sequences=None, add_rows_function=None):
+                              all_sequences=None, add_rows_function=None, 
+                              # Add SNP filtering parameters
+                              variants=None, strict_mode=False, amplicon_threshold=0.05):
     """
     Unified primer design workflow for all modes.
     
@@ -50,6 +53,9 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         matching_status (dict, optional): Dictionary with reference matching status for sequences
         all_sequences (dict, optional): Dictionary with all original sequences (for direct mode)
         add_rows_function (callable, optional): Function to add rows for sequences without primers
+        variants (dict, optional): Dictionary of variant positions for post-design filtering
+        strict_mode (bool, optional): Enable strict SNP filtering including amplicon check
+        amplicon_threshold (float, optional): Maximum allowed SNP density in amplicons (0.05 = 5%)
         
     Returns:
         bool: Success or failure
@@ -104,12 +110,21 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         if mode == 'alignment' and coordinate_map:
             df = map_alignment_coordinates(df, coordinate_map)
         
-        # Step 8: Add rows for sequences without primers (only in direct mode)
+        # Step 8: SNP filtering of primers if variants are provided
+        if variants:
+            snp_filter = SNPFilterProcessor(strict_mode=strict_mode, amplicon_threshold=amplicon_threshold)
+            df = snp_filter.filter_primers_by_snp(df, variants, masked_sequences)
+            
+            if df is None or len(df) == 0:
+                logger.warning("No primers passed SNP filtering. Exiting.")
+                return False
+        
+        # Step 9: Add rows for sequences without primers (only in direct mode)
         if mode == 'direct' and add_rows_function and all_sequences:
             logger.debug("Adding rows for sequences without primers and reference match failures")
             df = add_rows_function(df, all_sequences, matching_status)
         
-        # Step 9: Save results to Excel file
+        # Step 10: Save results to Excel file
         output_path = FileIO.save_results(
             df, 
             output_dir, 

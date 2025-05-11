@@ -6,8 +6,8 @@ Alignment workflow for ddPrimer pipeline.
 This module implements the cross-species alignment workflow:
 1. Run alignment first (or use pre-computed MAF)
 2. Identify conserved regions
-3. Apply SNP/indel masking from both genomes (if --snp is enabled)
-4. Design primers on fully masked sequences
+3. Design primers on alignment-masked sequences
+4. Optionally filter primers based on SNP/indel positions from both genomes (if --snp is enabled)
 """
 
 import os
@@ -18,7 +18,7 @@ import shutil
 from ..config import Config
 from ..config.exceptions import AlignmentError, FileFormatError
 from ..utils.file_io import FileIO
-from ..core import SNPMaskingProcessor
+from ..core import SNPFilterProcessor
 from .lastz_runner import LastZRunner
 from .maf_parser import MAFParser
 
@@ -28,25 +28,26 @@ logger = logging.getLogger("ddPrimer.helpers")
 
 def run_alignment_workflow(args, output_dir):
     """
-    Run the alignment primer design workflow with improved order of operations:
+    Run the alignment primer design workflow with improved approach:
     1. Run alignment first (or use pre-computed MAF)
     2. Identify conserved regions
-    3. Apply SNP/indel masking from both genomes (if --snp is enabled)
-    4. Design primers on fully masked sequences
+    3. Create alignment-masked sequences (without SNP masking)
+    4. Extract variants for later post-design filtering (if --snp is enabled)
     
     Args:
         args (argparse.Namespace): Command line arguments
         output_dir (str): Output directory path
     
     Returns:
-        tuple: (final_masked_sequences, coordinate_map) - Masked sequences and coordinate mapping
+        tuple: (alignment_masked_sequences, coordinate_map, variants) - Masked sequences, 
+               coordinate mapping, and variants for post-design filtering
         
     Raises:
         AlignmentError: If there's an error in the alignment workflow
     """
     # Initialize processors
     maf_parser = MAFParser()
-    snp_processor = SNPMaskingProcessor()
+    snp_processor = SNPFilterProcessor()
     
     try:
         # Step 1: Handle MAF file (pre-computed or generate new one)
@@ -55,28 +56,45 @@ def run_alignment_workflow(args, output_dir):
         # Step 2: Parse MAF file and identify conserved regions
         conserved_regions, coordinate_map = _process_maf_file(maf_file, maf_parser, args)
         
-        # Step 3: Prepare for masking by getting variants from both genomes (if SNP masking is enabled)
-        ref_variants, second_variants = _extract_variant_positions(
-            args, snp_processor, conserved_regions, coordinate_map
-        )
-        
-        # Step 4: Load reference sequences (either from FASTA or MAF)
+        # Step 3: Load reference sequences (either from FASTA or MAF)
         reference_sequences, temp_dir = _load_reference_sequences(
             args, maf_parser, ref_fasta_required, output_dir
         )
         
-        # Step 5: Apply masking to the reference sequences
-        final_masked_sequences = _create_masked_sequences(
-            args, snp_processor, maf_parser, reference_sequences, 
-            conserved_regions, ref_variants, second_variants, 
-            output_dir, coordinate_map
+        # Step 4: Create alignment-masked sequences (mask non-conserved regions only)
+        alignment_masked_sequences = _create_alignment_masked_sequences(
+            args, maf_parser, reference_sequences, conserved_regions, output_dir
         )
+        
+        # Step 5: Extract variant positions for post-design filtering if SNP filtering is enabled
+        variants = None
+        if args.snp:
+            # Extract variants from both genomes
+            ref_variants, second_variants = _extract_variant_positions(
+                args, snp_processor, conserved_regions, coordinate_map
+            )
+            
+            # Combine variants from both genomes into a single variant map for filtering
+            variants = ref_variants
+            
+            # Map variants from second genome to reference coordinates if available
+            if second_variants:
+                second_mapped_variants = _map_second_variants_to_reference(
+                    second_variants, coordinate_map
+                )
+                
+                # Merge with reference variants
+                for chrom, positions in second_mapped_variants.items():
+                    if chrom in variants:
+                        variants[chrom].update(positions)
+                    else:
+                        variants[chrom] = positions
         
         # Clean up intermediate files if not in debug mode
         if not Config.DEBUG_MODE:
             _clean_up_intermediate_files(args, output_dir, temp_dir)
         
-        return final_masked_sequences, coordinate_map
+        return alignment_masked_sequences, coordinate_map, variants
         
     except Exception as e:
         logger.error(f"Error in alignment workflow: {str(e)}")
@@ -228,7 +246,7 @@ def _extract_variant_positions(args, snp_processor, conserved_regions, coordinat
     ref_variants = {}
     second_variants = {}
     
-    # Get reference genome variants if VCF provided and SNP masking is enabled
+    # Get reference genome variants if VCF provided and SNP filtering is enabled
     if args.snp and args.vcf:
         logger.info("Extracting variants from reference genome VCF...")
         try:
@@ -243,7 +261,7 @@ def _extract_variant_positions(args, snp_processor, conserved_regions, coordinat
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.warning("Continuing without reference genome variants")
 
-    # Get second genome variants if VCF provided and SNP masking is enabled
+    # Get second genome variants if VCF provided and SNP filtering is enabled
     if args.snp and args.second_vcf:
         logger.info("Extracting variants from second genome VCF...")
         try:
@@ -348,33 +366,27 @@ def _load_reference_sequences(args, maf_parser, ref_fasta_required, output_dir):
     return reference_sequences, temp_dir
 
 
-def _create_masked_sequences(args, snp_processor, maf_parser, reference_sequences, 
-                            conserved_regions, ref_variants, second_variants, 
-                            output_dir, coordinate_map):
+def _create_alignment_masked_sequences(args, maf_parser, reference_sequences, conserved_regions, output_dir):
     """
-    Create masked sequences with conserved regions and SNP masking.
+    Create alignment-masked sequences (mask non-conserved regions only).
     
     Args:
         args (argparse.Namespace): Command line arguments
-        snp_processor (SNPMaskingProcessor): SNP masking processor instance
         maf_parser (MAFParser): MAF parser instance
         reference_sequences (dict): Dictionary of reference sequences
         conserved_regions (dict): Conserved regions with mapping information
-        ref_variants (dict): Reference genome variants
-        second_variants (dict): Second genome variants
         output_dir (str): Output directory path
-        coordinate_map (dict): Coordinate mapping between genomes
         
     Returns:
-        dict: Final masked sequences
+        dict: Alignment-masked sequences
         
     Raises:
-        AlignmentError: If creating masked sequences fails
+        AlignmentError: If creating alignment-masked sequences fails
     """
-    logger.debug("\n>>> Creating masked genome with conserved regions <<<")
+    logger.debug("\n>>> Creating alignment-masked genome (conserved regions only) <<<")
 
-    # First create a masked reference with only conserved regions
-    masked_fasta_path = os.path.join(output_dir, "masked_reference.fasta")
+    # Create a masked reference with only conserved regions
+    masked_fasta_path = os.path.join(output_dir, "alignment_masked_reference.fasta")
     try:
         maf_parser.mask_non_conserved_regions(
             reference_sequences,
@@ -392,110 +404,12 @@ def _create_masked_sequences(args, snp_processor, maf_parser, reference_sequence
     try:
         alignment_masked_sequences = FileIO.load_fasta(masked_fasta_path)
         logger.debug(f"Loaded {len(alignment_masked_sequences)} alignment-masked sequences")
+        logger.debug(f"Ready for primer design on {len(alignment_masked_sequences)} alignment-masked sequences")
+        return alignment_masked_sequences
     except Exception as e:
         logger.error(f"Error loading alignment-masked sequences: {str(e)}")
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise FileFormatError(f"Failed to load alignment-masked sequences: {str(e)}")
-
-    # Now mask variants from both genomes if SNP masking is enabled
-    if not args.snp:
-        logger.debug("\n>>> SNP masking is disabled <<<")
-        # Use alignment-masked sequences directly without SNP masking
-        final_masked_sequences = alignment_masked_sequences
-    else:
-        logger.info("\n>>> Applying SNP masking from VCF files <<<")
-        
-        # Apply SNP masking from reference and second genome
-        final_masked_sequences = _apply_snp_masking(
-            snp_processor, alignment_masked_sequences, 
-            ref_variants, second_variants, coordinate_map
-        )
-
-    # Write final masked sequences to file for debugging/verification
-    final_masked_path = os.path.join(output_dir, "final_masked.fasta")
-    try:
-        with open(final_masked_path, 'w') as f:
-            for seq_id, seq in final_masked_sequences.items():
-                f.write(f">{seq_id}\n{seq}\n")
-
-        if not args.snp:
-            logger.debug(f"Created alignment-masked reference genome (no SNP masking): {final_masked_path}")
-        else:
-            logger.debug(f"Created fully masked reference genome (with SNP masking): {final_masked_path}")
-        logger.debug(f"Ready for primer design on {len(final_masked_sequences)} masked sequences")
-    except Exception as e:
-        logger.error(f"Error writing final masked sequences: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
-        # Non-critical error, continue with the sequences in memory
-
-    return final_masked_sequences
-
-
-def _apply_snp_masking(snp_processor, alignment_masked_sequences, 
-                      ref_variants, second_variants, coordinate_map):
-    """
-    Apply SNP masking from both reference and second genome.
-    
-    Args:
-        snp_processor (SNPMaskingProcessor): SNP masking processor instance
-        alignment_masked_sequences (dict): Dictionary of alignment-masked sequences
-        ref_variants (dict): Reference genome variants
-        second_variants (dict): Second genome variants
-        coordinate_map (dict): Coordinate mapping between genomes
-        
-    Returns:
-        dict: Fully masked sequences
-        
-    Raises:
-        AlignmentError: If SNP masking fails
-    """
-    try:
-        # Initialize empty dictionaries for masked sequences from each genome
-        ref_masked_sequences = {}
-        second_masked_sequences = {}
-        
-        # Apply SNP masking from reference genome variants
-        if ref_variants:
-            logger.info(f"Masking {sum(len(positions) for positions in ref_variants.values())} variants from reference genome")
-            ref_masked_sequences = snp_processor.mask_sequences_for_primer_design(
-                alignment_masked_sequences, 
-                ref_variants
-            )
-        else:
-            ref_masked_sequences = alignment_masked_sequences
-        
-        # Map variants from second genome to reference coordinates
-        if second_variants:
-            logger.info("Mapping second genome variants to reference coordinates")
-            mapped_variants = _map_second_variants_to_reference(
-                second_variants, coordinate_map
-            )
-            
-            # Apply masking from second genome variants
-            if mapped_variants:
-                total_mapped = sum(len(positions) for positions in mapped_variants.values())
-                logger.info(f"Applying {total_mapped} mapped variants from second genome")
-                second_masked_sequences = snp_processor.mask_sequences_for_primer_design(
-                    alignment_masked_sequences,
-                    mapped_variants
-                )
-            else:
-                second_masked_sequences = alignment_masked_sequences
-        else:
-            second_masked_sequences = alignment_masked_sequences
-        
-        # Combine masking from both genomes
-        final_masked_sequences = snp_processor.combine_masked_sequences(
-            ref_masked_sequences, 
-            second_masked_sequences
-        )
-        
-        return final_masked_sequences
-        
-    except Exception as e:
-        logger.error(f"Error applying SNP masking: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise AlignmentError(f"Failed to apply SNP masking: {str(e)}")
 
 
 def _map_second_variants_to_reference(second_variants, coordinate_map):
@@ -557,8 +471,7 @@ def _clean_up_intermediate_files(args, output_dir, temp_dir):
     try:
         # List of files to clean up
         files_to_clean = [
-            os.path.join(output_dir, "masked_reference.fasta"),
-            os.path.join(output_dir, "final_masked.fasta")
+            os.path.join(output_dir, "alignment_masked_reference.fasta")
         ]
         
         # Clean up temp directory if it was created for ref_from_maf.fasta

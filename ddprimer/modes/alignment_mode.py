@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Alignment mode for ddPrimer pipeline.
+Alignment mode for ddPrimer pipeline with fixed VCF prompting.
 
 This module contains the implementation of the alignment mode workflow:
 1. Load FASTA, VCF, and GFF files for both species
 2. Run LastZ alignment or use pre-computed MAF
 3. Process alignment and identify conserved regions
-4. Hand over to common pipeline for primer design
+4. Design primers on alignment-masked sequences
+5. Optionally filter primers based on SNP positions if --snp is enabled
 """
 
 import os
@@ -41,13 +42,17 @@ def run(args):
         # For LastZ-only mode, we just need reference and second FASTA files
         if args.lastzonly:
             return _run_lastz_only_mode(args)
-            
+        
         # Standard alignment mode
-        # Check if SNP masking is enabled
-        if args.snp:
-            logger.debug("\n>>> SNP masking is enabled <<<")
+        # Check if SNP filtering is enabled
+        snp_filtering_enabled = hasattr(args, 'snp_enabled') and args.snp_enabled
+        
+        if snp_filtering_enabled:
+            logger.debug("\n>>> SNP filtering is enabled <<<")
+            if hasattr(args, 'snp_strict') and args.snp_strict:
+                logger.debug(f">>> Strict mode enabled with threshold: {args.snp_threshold} <<<")
         else:
-            logger.debug("\n>>> SNP masking is disabled <<<")
+            logger.debug("\n>>> SNP filtering is disabled <<<")
         
         # Check and get required input files
         # Modified check for maf to handle the case when the flag is used without a value
@@ -165,12 +170,15 @@ def _run_maf_workflow(args):
             logger.error(f"MAF file selection failed: {e}")
             return False
     
-    # Using pre-computed MAF, only need VCF and GFF files
+    # Using pre-computed MAF, only need VCF and GFF files if required
     logger.debug("\n>>> Using pre-computed MAF file <<<")
     reference_file = args.maf
     
-    if args.snp:
-        # Only require VCF files if SNP masking is enabled
+    # Check if SNP filtering is enabled
+    snp_filtering_enabled = hasattr(args, 'snp_enabled') and args.snp_enabled
+    
+    # Only get VCF files if SNP filtering is enabled
+    if snp_filtering_enabled:
         if not args.vcf:
             logger.info("\n>>> Please select REFERENCE VCF variant file <<<")
             try:
@@ -181,9 +189,11 @@ def _run_maf_workflow(args):
                 logger.debug(f"Selected reference VCF variant file: {args.vcf}")
             except FileSelectionError as e:
                 logger.error(f"Reference VCF file selection failed: {e}")
-                return False
+                # Disable SNP filtering if VCF selection fails
+                args.snp_enabled = False
+                logger.warning("SNP filtering has been disabled due to missing reference VCF file")
         
-        if not args.second_vcf:
+        if args.snp_enabled and not args.second_vcf:
             logger.info("\n>>> Please select SECOND VCF variant file <<<")
             try:
                 args.second_vcf = FileIO.select_file(
@@ -193,7 +203,9 @@ def _run_maf_workflow(args):
                 logger.debug(f"Selected second species VCF file: {args.second_vcf}")
             except FileSelectionError as e:
                 logger.error(f"Second species VCF file selection failed: {e}")
-                return False
+                # Disable SNP filtering if second VCF selection fails
+                args.snp_enabled = False
+                logger.warning("SNP filtering has been disabled due to missing second VCF file")
     
     # Only prompt for GFF if annotation filtering is not disabled
     if not args.noannotation and not args.gff:
@@ -229,6 +241,9 @@ def _run_direct_alignment_workflow(args):
     """
     logger.debug("\n>>> Using direct alignment workflow <<<")
     
+    # Check if SNP filtering is enabled
+    snp_filtering_enabled = hasattr(args, 'snp_enabled') and args.snp_enabled
+    
     # Need all files for alignment workflow
     if not args.fasta:
         logger.info("\n>>> Please select REFERENCE FASTA sequence file <<<")
@@ -242,8 +257,8 @@ def _run_direct_alignment_workflow(args):
     else:
         reference_file = args.fasta
     
-    if args.snp:
-        # Only require VCF files if SNP masking is enabled
+    # Only get VCF file if SNP filtering is enabled
+    if snp_filtering_enabled:
         if not args.vcf:
             logger.info("\n>>> Please select REFERENCE VCF variant file <<<")
             try:
@@ -254,7 +269,9 @@ def _run_direct_alignment_workflow(args):
                 logger.debug(f"Selected reference VCF file: {args.vcf}")
             except FileSelectionError as e:
                 logger.error(f"Reference VCF file selection failed: {e}")
-                return False
+                # Disable SNP filtering if VCF selection fails
+                args.snp_enabled = False
+                logger.warning("SNP filtering has been disabled due to missing reference VCF file")
     
     if not args.second_fasta:
         logger.info("\n>>> Please select SECOND FASTA sequence file <<<")
@@ -265,8 +282,8 @@ def _run_direct_alignment_workflow(args):
             logger.error(f"Second species FASTA file selection failed: {e}")
             return False
     
-    if args.snp:
-        # Only require VCF files if SNP masking is enabled
+    # Only get second VCF file if SNP filtering is enabled
+    if snp_filtering_enabled and args.snp_enabled:  # Check again in case it was disabled after VCF selection
         if not args.second_vcf:
             logger.info("\n>>> Please select SECOND VCF variant file <<<")
             try:
@@ -277,7 +294,9 @@ def _run_direct_alignment_workflow(args):
                 logger.debug(f"Selected second species VCF file: {args.second_vcf}")
             except FileSelectionError as e:
                 logger.error(f"Second species VCF file selection failed: {e}")
-                return False
+                # Disable SNP filtering if second VCF selection fails
+                args.snp_enabled = False
+                logger.warning("SNP filtering has been disabled due to missing second VCF file")
     
     # Only prompt for GFF if annotation filtering is not disabled
     if not args.noannotation and not args.gff:
@@ -337,15 +356,16 @@ def _setup_and_run_alignment_workflow(args, reference_file):
     
     # Use context manager for temporary directory
     with TempDirectoryManager(output_dir) as temp_dir:
-        # Call the AlignmentWorkflow function to handle the alignment and masking
+        # Call the AlignmentWorkflow function to handle the alignment
         logger.info("\n>>> Running Alignment Primer Design Workflow <<<")
         try:
             # Pass only needed arguments to run_alignment_workflow
-            masked_sequences, coordinate_map = run_alignment_workflow(args, output_dir)
-            logger.debug(f"Alignment workflow completed with {len(masked_sequences)} masked sequences")
+            # This will now return unmasked sequences, coordinate map, and variants for SNP filtering
+            alignment_masked_sequences, coordinate_map, variants = run_alignment_workflow(args, output_dir)
+            logger.debug(f"Alignment workflow completed with {len(alignment_masked_sequences)} sequences")
             
-            if not masked_sequences:
-                logger.warning("No masked sequences were generated. Exiting.")
+            if not alignment_masked_sequences:
+                logger.warning("No sequences were generated. Exiting.")
                 return False
             
             # Load gene annotations if needed
@@ -381,7 +401,7 @@ def _setup_and_run_alignment_workflow(args, reference_file):
             
             # Use the common workflow function to handle the rest of the pipeline
             success = common.run_primer_design_workflow(
-                masked_sequences=masked_sequences,
+                masked_sequences=alignment_masked_sequences,
                 output_dir=output_dir,
                 reference_file=reference_file,
                 mode='alignment',
@@ -390,7 +410,11 @@ def _setup_and_run_alignment_workflow(args, reference_file):
                 gff_file=args.gff,
                 temp_dir=temp_dir,
                 second_fasta=second_fasta_path,
-                skip_annotation_filtering=args.noannotation
+                skip_annotation_filtering=args.noannotation,
+                # Pass SNP filtering parameters
+                variants=variants,
+                strict_mode=args.snp_strict if hasattr(args, 'snp_strict') else False,
+                amplicon_threshold=args.snp_threshold if hasattr(args, 'snp_threshold') else 0.05
             )
             
             return success

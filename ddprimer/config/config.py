@@ -52,9 +52,9 @@ class Config:
     COUNT_AMBIGUOUS_AS_MISMATCH = False
     GENE_OVERLAP_MARGIN = 25
     RESTRICTION_SITE = "GGCC"
-    PENALTY_MAX = 5.0
+    PENALTY_MAX = 7.5
     MAX_PRIMER_PAIRS_PER_SEGMENT = 3
-    PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
+    PREFER_PROBE_MORE_C_THAN_G = True  
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
     
@@ -75,7 +75,7 @@ class Config:
     BLAST_PENALTY = -3
     BLAST_GAPOPEN = 5
     BLAST_GAPEXTEND = 2
-    BLAST_FILTER_FACTOR = 100  # E-value filtering factor
+    BLAST_FILTER_FACTOR = 50  # E-value filtering factor
     
     #############################################################################
     #                           Thermodynamic Calculation Settings
