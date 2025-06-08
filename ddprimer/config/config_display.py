@@ -49,8 +49,8 @@ def display_config(config_cls):
             "BLAST_REWARD", "BLAST_PENALTY", "BLAST_GAPOPEN", "BLAST_GAPEXTEND",
             "BLAST_FILTER_FACTOR"
         ],
-        "NUPACK Parameters": [
-            "NUPACK_TEMPERATURE", "NUPACK_SODIUM", "NUPACK_MAGNESIUM"
+        "ViennaRNA Parameters": [
+            "THERMO_TEMPERATURE", "THERMO_SODIUM", "THERMO_MAGNESIUM"
         ],
         "Alignment Parameters": [
             "MIN_IDENTITY", "MIN_LENGTH", "LASTZ_OPTIONS"

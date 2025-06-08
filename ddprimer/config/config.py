@@ -277,26 +277,6 @@ class Config:
         "PRIMER_WT_TM_LT": 1.0
     }
     
-    def __init__(self):
-        """Initialize Config instance with default values."""
-        # Implementation left empty as we're using class variables
-        pass
-    
-    @classmethod
-    def get_instance(cls) -> 'Config':
-        """
-        Get the singleton instance of Config.
-        
-        Returns:
-            Config: Singleton instance
-        """
-        if cls._instance is None:
-            cls._instance = cls()
-            # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
-            if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
-                cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
-        return cls._instance
-    
     @classmethod
     def get_primer3_global_args(cls) -> Dict[str, Any]:
         """

@@ -53,10 +53,6 @@ class BlastExecutionError(BlastError):
     pass
 
 
-class NupackError(SequenceProcessingError):
-    """Error during NUPACK thermodynamic calculations."""
-    pass
-
 
 class Primer3Error(SequenceProcessingError):
     """Error during Primer3 execution or parsing."""
@@ -89,7 +85,7 @@ class WorkflowError(DDPrimerError):
 
 
 class ExternalToolError(DDPrimerError):
-    """Error related to external tools like Primer3, NUPACK, etc."""
+    """Error related to external tools like Primer3, Vienna, etc."""
     
     def __init__(self, message, tool_name=None, command=None, return_code=None, stdout=None, stderr=None):
         """
