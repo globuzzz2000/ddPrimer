@@ -31,7 +31,7 @@ dependencies = [
     "primer3-py>=2.0.0",
     "openpyxl>=3.0.5",
     "wxpython",  # For GUI file selection
-    "viennarna>=2.7.0",  # Default thermodynamics engine
+    "viennarna>=2.7.0", 
     "colorama",  # For colored terminal output
     # Platform-specific dependencies for macOS
     "pyobjc-core;platform_system=='Darwin'",
@@ -44,10 +44,6 @@ dev = [
     "pytest-cov>=4.0.0", 
     "black>=20.8b1",
     "mock>=5.0.0",
-]
-thermo = [
-    "nupack>=4.0.0",  # Optional, can be installed manually if pip install fails
-    "viennarna>=2.7.0",  # Can be installed via pip
 ]
 test = [
     "pytest>=7.0.0",

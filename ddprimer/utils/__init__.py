@@ -9,7 +9,7 @@ This subpackage contains utility functions:
 """
 
 from .sequence_utils import SequenceUtils
-from .file_io import FileIO
+from .file_io import FileIO, TempDirectoryManager
 from .common_utils import CommonUtils
 from .blast_db_creator import BlastDBCreator
 from .blast_verification import BlastVerification

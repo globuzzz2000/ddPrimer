@@ -22,7 +22,7 @@ from ..core import (
     BlastProcessor,
     SequenceProcessor,
     Primer3Processor,
-    ThermoProcessor  # Only import the ThermoProcessor, which will handle backend selection
+    ViennaRNAProcessor  # Only import ViennaRNAProcessor
 )
 
 # Set up logger
@@ -477,7 +477,7 @@ def filter_primers(primer_results):
 
 def calculate_thermodynamics(df):
     """
-    Calculate thermodynamic properties using the available backend.
+    Calculate thermodynamic properties using ViennaRNA.
     
     Args:
         df (pandas.DataFrame): DataFrame with primer information
@@ -488,10 +488,9 @@ def calculate_thermodynamics(df):
     Raises:
         PrimerDesignError: If there's an error in thermodynamic calculations
     """
-    # Get the backend name for logging
-    backend = ThermoProcessor.get_backend()
-    if backend is None:
-        logger.warning("No thermodynamic calculation package available. Skipping thermodynamic analysis.")
+    # Check if ViennaRNA is available
+    if not ViennaRNAProcessor.is_available():
+        logger.warning("ViennaRNA is not available. Skipping thermodynamic analysis.")
         
         # Add empty columns to maintain DataFrame structure
         df["Primer F dG"] = None
@@ -502,18 +501,17 @@ def calculate_thermodynamics(df):
         
         return df
         
-    backend_name = "NUPACK" if backend == 'nupack' else "ViennaRNA"
-    logger.info(f"\nCalculating thermodynamic properties with {backend_name}...")
+    logger.info("\nCalculating thermodynamic properties with ViennaRNA...")
     
     # Calculate deltaG for forward primers
     logger.debug("Calculating ΔG for forward primers...")
     try:
         logger.debug(f"Thermodynamic settings: Temp={Config.THERMO_TEMPERATURE}°C, Na={Config.THERMO_SODIUM}M, Mg={Config.THERMO_MAGNESIUM}M")
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc=f"Processing forward primers with {backend_name}")
-            df["Primer F dG"] = df["Primer F"].progress_apply(ThermoProcessor.calc_deltaG)
+            tqdm.pandas(desc="Processing forward primers with ViennaRNA")
+            df["Primer F dG"] = df["Primer F"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
-            df["Primer F dG"] = df["Primer F"].apply(ThermoProcessor.calc_deltaG)
+            df["Primer F dG"] = df["Primer F"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Forward primer deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating forward primer deltaG: {str(e)}")
@@ -524,10 +522,10 @@ def calculate_thermodynamics(df):
     logger.debug("Calculating ΔG for reverse primers...")
     try:
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc=f"Processing reverse primers with {backend_name}")
-            df["Primer R dG"] = df["Primer R"].progress_apply(ThermoProcessor.calc_deltaG)
+            tqdm.pandas(desc="Processing reverse primers with ViennaRNA")
+            df["Primer R dG"] = df["Primer R"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
-            df["Primer R dG"] = df["Primer R"].apply(ThermoProcessor.calc_deltaG)
+            df["Primer R dG"] = df["Primer R"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Reverse primer deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating reverse primer deltaG: {str(e)}")
@@ -539,13 +537,13 @@ def calculate_thermodynamics(df):
         logger.debug("Calculating ΔG for probes...")
         try:
             if Config.SHOW_PROGRESS:
-                tqdm.pandas(desc=f"Processing probes with {backend_name}")
+                tqdm.pandas(desc="Processing probes with ViennaRNA")
                 df["Probe dG"] = df["Probe"].progress_apply(lambda x: 
-                                            ThermoProcessor.calc_deltaG(x) 
+                                            ViennaRNAProcessor.calc_deltaG(x) 
                                             if pd.notnull(x) and x else None)
             else:
                 df["Probe dG"] = df["Probe"].apply(lambda x: 
-                                               ThermoProcessor.calc_deltaG(x) 
+                                               ViennaRNAProcessor.calc_deltaG(x) 
                                                if pd.notnull(x) and x else None)
             logger.debug("Probe deltaG calculation completed successfully")
         except Exception as e:
@@ -557,10 +555,10 @@ def calculate_thermodynamics(df):
     logger.debug("Calculating ΔG for amplicons...")
     try:
         if Config.SHOW_PROGRESS:
-            tqdm.pandas(desc=f"Processing amplicons with {backend_name}")
-            df["Amplicon dG"] = df["Amplicon"].progress_apply(ThermoProcessor.calc_deltaG)
+            tqdm.pandas(desc="Processing amplicons with ViennaRNA")
+            df["Amplicon dG"] = df["Amplicon"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
-            df["Amplicon dG"] = df["Amplicon"].apply(ThermoProcessor.calc_deltaG)
+            df["Amplicon dG"] = df["Amplicon"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Amplicon deltaG calculation completed successfully")
     except Exception as e:
         logger.error(f"Error calculating amplicon deltaG: {str(e)}")

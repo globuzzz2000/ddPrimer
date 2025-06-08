@@ -9,7 +9,7 @@ A comprehensive pipeline for designing primers and probes specifically optimized
 
 - **Complete End-to-End Pipeline**: Design primers from genome sequences through a streamlined workflow using Primer3
 - **Smart SNP Masking**: Avoid designing primers across variant positions using VCF files
-- **Thermodynamic Optimization**: Calculate ΔG values to prevent unwanted secondary structures
+- **Thermodynamic Optimization**: Calculate ΔG values using ViennaRNA to prevent unwanted secondary structures
 - **Specificity Verification**: Integrated BLAST validation for both primers and probes
 - **Multiple Workflow Modes**:
   - **Standard Mode**: Design from genome, variant and annotation files
@@ -35,9 +35,7 @@ ddPrimer/
 │   │   ├── SNP_masking_processor.py
 │   │   ├── annotation_processor.py
 │   │   ├── blast_processor.py
-│   │   ├── nupack_processor.py
 │   │   ├── vienna_processor.py    # ViennaRNA thermodynamic processor
-│   │   ├── thermo_processor.py    # Flexible thermodynamics processor
 │   │   ├── primer3_processor.py
 │   │   ├── primer_processor.py
 │   │   └── sequence_processor.py
@@ -91,11 +89,14 @@ conda activate ddprimer
 # Install external tools via conda
 conda install -c bioconda -c conda-forge blast lastz bcftools samtools
 
+# Install ViennaRNA for thermodynamic calculations
+conda install -c bioconda viennarna
+
 # Install GUI dependency (if needed separately)
 conda install -c conda-forge wxpython
 
 # Install the package with all Python dependencies
-pip install -e ".[thermo]"
+pip install -e .
 ```
 
 ### Manual Installation
@@ -112,9 +113,12 @@ pip install -e .
 
 # Install external tools using a package manager
 # On macOS:
-brew install blast lastz primer3 bcftools samtools
+brew install blast lastz primer3 bcftools samtools viennarna
 # On Linux:
 sudo apt-get install ncbi-blast+ lastz bcftools samtools
+
+# Install ViennaRNA separately if not available through package manager
+pip install viennarna
 ```
 
 ### Dependencies
@@ -127,6 +131,7 @@ The following tools are required:
 - **LastZ**: For alignment-based mode
 - **bcftools**: For VCF file manipulation
 - **samtools**: For sequence file manipulation
+- **ViennaRNA**: For thermodynamic calculations
 
 #### Python Dependencies
 
@@ -138,40 +143,23 @@ The following tools are required:
   - wxpython: For GUI file selection
   - colorama: For colored terminal output
   - pyobjc-core and pyobjc-framework-Cocoa (macOS only): For GUI support on macOS
+  - viennarna: For thermodynamic calculations
 
-For thermodynamic calculations (one of the following):
-- **ViennaRNA**: Default option for thermodynamic calculations
-- **NUPACK 4.0+**: Alternative option for thermodynamic calculations with advanced features
+### Installing ViennaRNA
 
-### Installing Thermodynamics Engines
+ddPrimer uses ViennaRNA for thermodynamic calculations:
 
-ddPrimer supports two thermodynamics engines:
+#### Via Conda (Recommended)
+```bash
+conda install -c bioconda viennarna
+```
 
-#### ViennaRNA (Default)
-
-ViennaRNA is the default thermodynamics engine and can be installed via pip:
-
+#### Via pip
 ```bash
 pip install viennarna
 ```
 
-#### NUPACK (Alternative)
-
-NUPACK is an alternative thermodynamics engine with more advanced features:
-
-```bash
-pip install nupack
-```
-
-If the pip installation of NUPACK fails, you may need to install it manually. Follow the installation instructions at [nupack.org](http://www.nupack.org/).
-
-
-To use NUPACK instead of ViennaRNA, set in your configuration:
-```json
-{
-  "THERMO_BACKEND": "nupack"
-}
-```
+If the pip installation fails, you may need to install ViennaRNA from source. Follow the installation instructions at [ViennaRNA website](https://www.tbi.univie.ac.at/RNA/).
 
 ## Quick Start
 
@@ -216,10 +204,9 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 4. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
 5. **Primer Design**: Design primer and probe candidates using Primer3
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
-7. **Thermodynamic Analysis**: Calculate secondary structure stability via ViennaRNA or NUPACK
+7. **Thermodynamic Analysis**: Calculate secondary structure stability using ViennaRNA
 8. **Specificity Checking**: Validate specificity using BLAST
 9. **Result Export**: Generate comprehensive Excel output with all design information
-
 
 ## Configuration
 
@@ -241,7 +228,9 @@ Example configuration:
   "PRIMER_PRODUCT_SIZE_RANGE": [[90, 200]],
   "BLAST_WORD_SIZE": 7,
   "RESTRICTION_SITE": "GGCC",
-  "THERMO_BACKEND": "vienna"
+  "THERMO_TEMPERATURE": 37,
+  "THERMO_SODIUM": 0.05,
+  "THERMO_MAGNESIUM": 0.002
 }
 ```
 
@@ -266,13 +255,12 @@ ddprimer --db
 ddprimer --alignment --lastzonly --fasta genome1.fasta --second-fasta genome2.fasta
 ```
 
-
 ## Output Format
 
 The pipeline generates an Excel file with comprehensive information including:
 
 - **Primer Sequences**: Forward, reverse, and probe sequences
-- **Thermodynamic Properties**: Melting temperatures and ΔG values
+- **Thermodynamic Properties**: Melting temperatures and ΔG values calculated with ViennaRNA
 - **Amplicon Details**: Sequence, length, and GC content
 - **Location Data**: Genomic coordinates of primers
 - **Specificity Results**: Two best BLAST hits for all oligonucleotides
@@ -287,7 +275,10 @@ Common issues and solutions:
 - **GUI errors**: Use `--cli` to force command-line mode
 - **macOS GUI issues**: Ensure pyobjc-core and pyobjc-framework-Cocoa are installed
 - **VCF processing errors**: Verify bcftools is correctly installed
-- **Thermodynamic calculation issues with NUPACK**: Use ViennaRNA instead by setting `THERMO_BACKEND: "vienna"` in your config file (this is now the default)
+- **ViennaRNA installation issues**: 
+  - Try installing via conda: `conda install -c bioconda viennarna`
+  - If pip fails, install from source following ViennaRNA documentation
+  - Ensure ViennaRNA is properly linked to your Python environment
 
 For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
 
@@ -307,11 +298,10 @@ conda create -n ddprimer-dev python=3.8
 conda activate ddprimer-dev
 
 # Install external tools via conda
-conda install -c bioconda -c conda-forge blast lastz bcftools samtools
+conda install -c bioconda -c conda-forge blast lastz bcftools samtools viennarna
 
 # Install the package in development mode with ALL dependencies
-# This will automatically install all Python dependencies defined in pyproject.toml
-pip install -e ".[dev,thermo]"
+pip install -e ".[dev]"
 ```
 
 ### Running Tests

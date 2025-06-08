@@ -7,7 +7,7 @@ This module tests how the primer design components integrate with:
 1. Primer3 design
 2. Primer filtering based on various criteria
 3. BLAST specificity checking
-4. Thermodynamic calculations
+4. ViennaRNA thermodynamic calculations
 5. Result formatting
 
 These tests ensure different components of the primer design pipeline
@@ -27,7 +27,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from ...config import Config
-from ...core import Primer3Processor, PrimerProcessor, BlastProcessor, ThermoProcessor
+from ...core import Primer3Processor, PrimerProcessor, BlastProcessor, ViennaRNAProcessor
 
 
 class TestPrimerDesignWorkflow(unittest.TestCase):
@@ -277,10 +277,10 @@ PRIMER_INTERNAL_0_PENALTY=0.2
             # Restore original filter factor
             Config.BLAST_FILTER_FACTOR = original_filter_factor
     
-    @patch('ddprimer.core.thermo_processor.ThermoProcessor.calc_deltaG')
+    @patch('ddprimer.core.vienna_processor.ViennaRNAProcessor.calc_deltaG')
     def test_thermodynamics_integration(self, mock_calc_deltaG):
-        """Test integration of thermodynamics with primer workflow."""
-        # Mock calc_deltaG to return predictable values
+        """Test integration of ViennaRNA thermodynamics with primer workflow."""
+        # Mock calculate_free_energy to return predictable values
         mock_calc_deltaG.side_effect = [
             -3.5,  # Forward primer 1
             -4.0,  # Reverse primer 1
@@ -447,7 +447,7 @@ PRIMER_INTERNAL_0_PENALTY=0.2
             
             # Run complete workflow with mocks
             with patch('ddprimer.core.blast_processor.BlastProcessor.blast_short_seq') as mock_blast, \
-                    patch('ddprimer.core.thermo_processor.ThermoProcessor.calc_deltaG') as mock_thermo:
+                    patch('ddprimer.core.vienna_processor.ViennaRNAProcessor.calc_deltaG') as mock_thermo:
                 
                 # Mock BLAST results - all primers specific
                 mock_blast.return_value = (1e-10, 1e-5)

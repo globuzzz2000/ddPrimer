@@ -80,9 +80,7 @@ class Config:
     #############################################################################
     #                           Thermodynamic Calculation Settings
     #############################################################################
-    THERMO_BACKEND = 'vienna'  # Default to 'nupack' or 'vienna'
-    THERMO_AUTO_FALLBACK = True
-
+    # ViennaRNA thermodynamic calculation settings
     THERMO_TEMPERATURE = 37  # Celsius
     THERMO_SODIUM = 0.05     # Molar
     THERMO_MAGNESIUM = 0.0   # Molar

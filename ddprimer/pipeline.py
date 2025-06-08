@@ -9,7 +9,7 @@ A streamlined script that:
 3. Filters sequences based on restriction sites and gene overlap
 4. Runs Primer3 on masked and filtered sequences
 5. Filters primers and oligos 
-6. Runs NUPACK for thermodynamic properties
+6. Runs ViennaRNA for thermodynamic properties
 7. BLASTs primers and oligos for specificity
 8. Saves results to an Excel file
 
@@ -26,12 +26,8 @@ import tempfile
 import shutil
 
 # Import package modules
-from .config import Config, setup_logging, display_config, display_primer3_settings
-from .config.exceptions import DDPrimerError, BlastError, FileSelectionError
-from .utils.file_io import FileIO
-from .utils.blast_db_creator import BlastDBCreator
-from .utils.blast_verification import BlastVerification
-from .utils.model_organism_manager import ModelOrganismManager
+from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, BlastError, FileSelectionError
+from .utils import FileIO, TempDirectoryManager, BlastDBCreator, BlastVerification, ModelOrganismManager
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Define logger
@@ -249,8 +245,6 @@ def run_pipeline():
         
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
-        # Hide the NUPACK shutdown banner:
-        logging.getLogger("nupack.rebind.render").setLevel(logging.WARNING)
         
         logger = logging.getLogger("ddPrimer")
         logger.debug("Initializing Config settings")

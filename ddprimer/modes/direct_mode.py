@@ -20,7 +20,7 @@ from ..utils.file_io import FileIO
 from ..core import SNPMaskingProcessor
 from . import common
 from ..helpers import DirectMasking
-from ..helpers.sequence_analyzer import SequenceAnalyzer  # Updated import for SequenceAnalyzer
+from ..helpers.sequence_analyzer import SequenceAnalyzer
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")
@@ -143,40 +143,6 @@ def run(args):
         logger.error(f"Error in direct mode workflow: {str(e)}")
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
-        
-        # Check if we have any sequences to process
-        if not masked_sequences:
-            logger.warning("No sequences found in the input file. Exiting.")
-            return False
-        
-        # Debug logging for sequences
-        _log_sequence_info(masked_sequences, matching_status)
-        
-        # Use the common workflow function to handle the rest
-        success = common.run_primer_design_workflow(
-            masked_sequences=masked_sequences,
-            output_dir=output_dir,
-            reference_file=sequence_file,
-            mode='direct',
-            genes=None,
-            coordinate_map=None,
-            gff_file=None,
-            skip_annotation_filtering=args.noannotation,
-            matching_status=matching_status,  # Pass matching status
-            all_sequences=all_sequences,  # Pass all sequences including those that failed matching
-            add_rows_function=DirectMasking.add_missing_sequences  # Pass the static method
-        )
-        
-        return success
-            
-    except SequenceProcessingError as e:
-        logger.error(f"Sequence processing error: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
-        return False
-    except Exception as e:
-        logger.error(f"Error in direct mode workflow: {str(e)}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
-        return False
 
 
 def _setup_output_directory(args, sequence_file):
@@ -253,7 +219,6 @@ def _process_snp_masking(args, sequence_file):
     
     try:
         # First analyze the file to provide better feedback
-        from ..helpers.sequence_analyzer import SequenceAnalyzer
         logger.debug("Analyzing sequence file structure...")
         analysis = SequenceAnalyzer.analyze_file(sequence_file)
         SequenceAnalyzer.print_analysis(analysis)
@@ -300,6 +265,7 @@ def _process_snp_masking(args, sequence_file):
         masked_sequences = sequences
         matching_status = {seq_id: "Not attempted" for seq_id in sequences}
         return masked_sequences, matching_status, all_sequences
+
 
 def _mask_sequences_with_snps(sequences, ref_fasta, ref_vcf, all_sequences):
     """
