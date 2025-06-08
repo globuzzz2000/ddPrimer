@@ -672,7 +672,7 @@ def test_map_second_variants_to_reference_error(mock_create_map, maf_parser):
     mock_create_map.side_effect = Exception("Mapping creation failed")
     
     # Call the function and verify it raises the expected exception
-    with pytest.raises(AlignmentError, match="Failed to map second species variants"):
+    with pytest.raises(AlignmentError, match="Failed to map second genome variants"):
         maf_parser.map_second_variants_to_reference({}, {})
 
 

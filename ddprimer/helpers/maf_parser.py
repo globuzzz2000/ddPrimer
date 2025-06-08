@@ -6,7 +6,7 @@
 MAF Parser module for ddPrimer pipeline.
 
 This module provides functionality for parsing MAF files from LastZ alignments
-and masking sequences based on alignment data for cross-species primer design.
+and masking sequences based on alignment data for primer design.
 """
 
 import os
@@ -25,7 +25,7 @@ from ..config.exceptions import AlignmentError
 class MAFParser:
     """
     Parser for Multiple Alignment Format (MAF) files.
-    Handles parsing alignment data and sequence masking for cross-species primer design.
+    Handles parsing alignment data and sequence masking for primer design.
     """
     
     def __init__(self, config=None):
@@ -189,7 +189,7 @@ class MAFParser:
     
     def identify_conserved_regions(self, min_identity=80, min_length=20):
         """
-        Identify regions that are conserved between species.
+        Identify regions that are conserved between genomes.
         
         Args:
             min_identity (float): Minimum sequence identity percentage (default: 80)
@@ -689,11 +689,11 @@ class MAFParser:
     
     def map_second_variants_to_reference(self, second_variants, coordinate_map):
         """
-        Map variant positions from second species to reference genome coordinates.
+        Map variant positions from second genome to reference genome coordinates.
         
         Args:
-            second_variants (dict): Dictionary mapping second species chromosomes to sets of variant positions
-            coordinate_map (dict): Coordinate mapping from reference to second species
+            second_variants (dict): Dictionary mapping second genomme chromosomes to sets of variant positions
+            coordinate_map (dict): Coordinate mapping from reference to second genome
             
         Returns:
             dict: Dictionary mapping reference chromosomes to sets of mapped variant positions
@@ -701,23 +701,23 @@ class MAFParser:
         Raises:
             AlignmentError: If mapping fails
         """
-        self.logger.debug("Mapping second species variants to reference genome coordinates")
+        self.logger.debug("Mapping second genome variants to reference genome coordinates")
         
         try:
             # Dictionary to store mapped variants for each reference chromosome
             mapped_variants = {}
             
-            # Create reverse mapping (from second species to reference)
+            # Create reverse mapping (from second genome to reference)
             reverse_map = self._create_reverse_coordinate_map(coordinate_map)
             
             # Count statistics
             total_second_variants = sum(len(pos_set) for pos_set in second_variants.values())
             mapped_count = 0
             
-            # For each second species chromosome and its variants
+            # For each second genome chromosome and its variants
             for qry_chrom, positions in second_variants.items():
                 if qry_chrom not in reverse_map:
-                    self.logger.debug(f"No mapping found for second species chromosome: {qry_chrom}")
+                    self.logger.debug(f"No mapping found for second genome chromosome: {qry_chrom}")
                     continue
                     
                 # For each variant position
@@ -737,16 +737,16 @@ class MAFParser:
                         mapped_count += 1
             
             # Log mapping statistics
-            self.logger.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second species variants to reference genome")
+            self.logger.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second genome variants to reference genome")
             for ref_chrom, variants in mapped_variants.items():
                 self.logger.debug(f"Reference chromosome {ref_chrom}: {len(variants)} mapped variants")
             
             return mapped_variants
             
         except Exception as e:
-            self.logger.error(f"Error mapping second species variants: {str(e)}")
+            self.logger.error(f"Error mapping second genome variants: {str(e)}")
             self.logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise AlignmentError(f"Failed to map second species variants: {str(e)}")
+            raise AlignmentError(f"Failed to map second genome variants: {str(e)}")
     
     
     def _create_reverse_coordinate_map(self, coordinate_map):

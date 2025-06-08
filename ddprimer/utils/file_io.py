@@ -882,10 +882,10 @@ class FileIO:
                 "Chromosome", "Location"
             ]
             
-            # Add cross-species specific columns for alignment mode
+            # Add specific columns for alignment mode
             if mode == 'alignment':
-                cross_species_cols = ["Qry Chromosome", "Qry Location"]
-                for col in cross_species_cols:
+                alignment_cols = ["Qry Chromosome", "Qry Location"]
+                for col in alignment_cols:
                     if col in df.columns and not df[col].isna().all():
                         columns.append(col)
         

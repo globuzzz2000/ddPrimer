@@ -4,7 +4,7 @@
 Alignment mode for ddPrimer pipeline.
 
 This module contains the implementation of the alignment mode workflow:
-1. Load FASTA, VCF, and GFF files for both species
+1. Load FASTA, VCF, and GFF files for both genomes
 2. Run LastZ alignment or use pre-computed MAF
 3. Process alignment and identify conserved regions
 4. Hand over to common pipeline for primer design
@@ -190,9 +190,9 @@ def _run_maf_workflow(args):
                     "Select SECOND VCF variant file", 
                     [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*")]
                 )
-                logger.debug(f"Selected second species VCF file: {args.second_vcf}")
+                logger.debug(f"Selected second VCF file: {args.second_vcf}")
             except FileSelectionError as e:
-                logger.error(f"Second species VCF file selection failed: {e}")
+                logger.error(f"Second VCF file selection failed: {e}")
                 return False
     
     # Only prompt for GFF if annotation filtering is not disabled
@@ -260,9 +260,9 @@ def _run_direct_alignment_workflow(args):
         logger.info("\n>>> Please select SECOND FASTA sequence file <<<")
         try:
             args.second_fasta = FileIO.select_fasta_file("Select SECOND FASTA sequence file")
-            logger.debug(f"Selected second species FASTA file: {args.second_fasta}")
+            logger.debug(f"Selected second FASTA file: {args.second_fasta}")
         except FileSelectionError as e:
-            logger.error(f"Second species FASTA file selection failed: {e}")
+            logger.error(f"Second FASTA file selection failed: {e}")
             return False
     
     if args.snp:
@@ -274,9 +274,9 @@ def _run_direct_alignment_workflow(args):
                     "Select SECOND VCF variant file", 
                     [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*")]
                 )
-                logger.debug(f"Selected second species VCF file: {args.second_vcf}")
+                logger.debug(f"Selected second VCF file: {args.second_vcf}")
             except FileSelectionError as e:
-                logger.error(f"Second species VCF file selection failed: {e}")
+                logger.error(f"Second VCF file selection failed: {e}")
                 return False
     
     # Only prompt for GFF if annotation filtering is not disabled

@@ -99,7 +99,7 @@ class TestAlignmentWorkflow(unittest.TestCase):
             f.write(">chr1\nATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGC\n")
             f.write(">chr2\nGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTA\n")
         
-        second_fasta_path = cls.data_dir / "second_species.fasta"
+        second_fasta_path = cls.data_dir / "second.fasta"
         with open(second_fasta_path, "w") as f:
             f.write(">chr1\nATGCATGCATNGATGCATGCATGCATGCATGCNNGCATGCATGCATGT\n")
             f.write(">chr2\nGCTAGCTAGCTNGCTAGCTAGCTAGCTANCTAGCTAGCTAGCTAGCTG\n")
@@ -113,7 +113,7 @@ class TestAlignmentWorkflow(unittest.TestCase):
             f.write("chr1\t25\t.\tG\tC\t100\tPASS\t.\n")
             f.write("chr2\t15\t.\tG\tA\t100\tPASS\t.\n")
         
-        second_vcf_path = cls.data_dir / "second_species.vcf"
+        second_vcf_path = cls.data_dir / "second.vcf"
         with open(second_vcf_path, "w") as f:
             f.write("##fileformat=VCFv4.2\n")
             f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
@@ -267,9 +267,9 @@ class TestAlignmentWorkflow(unittest.TestCase):
         # Create mock args for alignment workflow
         class MockArgs:
             fasta = str(self.data_dir / "reference.fasta")
-            second_fasta = str(self.data_dir / "second_species.fasta")
+            second_fasta = str(self.data_dir / "second.fasta")
             vcf = str(self.data_dir / "reference.vcf")
-            second_vcf = str(self.data_dir / "second_species.vcf")
+            second_vcf = str(self.data_dir / "second.vcf")
             gff = str(self.data_dir / "annotation.gff")
             maf = str(self.data_dir / "test_alignment.maf")
             snp = True

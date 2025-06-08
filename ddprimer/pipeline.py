@@ -130,7 +130,7 @@ def parse_arguments():
         if args.snp:
             # Only require VCF files if SNP masking is enabled
             if args.second_fasta and not args.second_vcf:
-                parser.error("Second species VCF file (--second-vcf) is required for SNP masking")
+                parser.error("Second VCF file (--second-vcf) is required for SNP masking")
     
     # Process --db arguments
     if args.db is not None:

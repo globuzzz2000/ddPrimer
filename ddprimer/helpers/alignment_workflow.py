@@ -3,7 +3,7 @@
 """
 Alignment workflow for ddPrimer pipeline.
 
-This module implements the cross-species alignment workflow:
+This module implements the alignment workflow:
 1. Run alignment first (or use pre-computed MAF)
 2. Identify conserved regions
 3. Apply SNP/indel masking from both genomes (if --snp is enabled)

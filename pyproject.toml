@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ddprimer"
 version = "0.1.0"
-description = "A pipeline for designing primers optimized for droplet digital PCR with cross-species support"
+description = "A pipeline for designing primers optimized for droplet digital PCR"
 readme = "README.md"
 authors = [
     {name = "Jakob Wimmer", email = "globuds133@gmail.com"}

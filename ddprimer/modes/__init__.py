@@ -6,7 +6,7 @@ Pipeline mode modules for ddPrimer.
 This package contains the implementation of different operation modes:
 - Standard mode: Uses FASTA, VCF, and GFF files
 - Direct mode: Uses sequence data from CSV/Excel files
-- MAF mode: Cross-species primer design using MAF alignments
+- Alignment mode: Primer design using MAF alignments
 """
 
 from . import common

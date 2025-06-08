@@ -4,8 +4,7 @@
 ddPrimer: Droplet Digital PCR Primer Design Pipeline
 
 A comprehensive and streamlined pipeline for designing primers and probes
-specifically optimized for droplet digital PCR (ddPCR), with support for both
-single-species and cross-species primer design.
+specifically optimized for droplet digital PCR (ddPCR)
 """
 
 import os
