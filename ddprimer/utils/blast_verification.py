@@ -36,7 +36,9 @@ class BlastVerification:
         if logger is None:
             logger = logging.getLogger("ddPrimer")
         
-        db_path = Config.DB_PATH
+        # Initialize the Config singleton to ensure DB_PATH is properly set
+        config = Config.get_instance()
+        db_path = config.DB_PATH
         
         # If no database path is set, immediately offer to create one
         if db_path is None:
@@ -262,24 +264,27 @@ class BlastVerification:
                 
                 # If a database was successfully created
                 if db_path:
+                    # Get the config instance to update the database path
+                    config = Config.get_instance()
+                    
                     # Check if there's already a database path set that's not the default
-                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                    if config.DB_PATH and config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
                         # If there's already a non-default database, ask if we should use the new one
-                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        logger.info(f"Current BLAST database path: {config.DB_PATH}")
                         use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
                         
                         if use_new_db == "" or use_new_db.startswith("y"):
-                            Config.DB_PATH = db_path
-                            Config.USE_CUSTOM_DB = True
+                            config.DB_PATH = db_path
+                            config.USE_CUSTOM_DB = True
                             # Save the database path for future runs
                             Config.save_database_config(db_path)
                             logger.info(f"Now using new BLAST database: {db_path}")
                         else:
-                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                            logger.info(f"Keeping current BLAST database: {config.DB_PATH}")
                     else:
                         # If no database or default database, automatically use the new one
-                        Config.DB_PATH = db_path
-                        Config.USE_CUSTOM_DB = True
+                        config.DB_PATH = db_path
+                        config.USE_CUSTOM_DB = True
                         # Save the database path for future runs
                         Config.save_database_config(db_path)
                         logger.debug(f"BLAST database created and set as active: {db_path}")
@@ -308,24 +313,27 @@ class BlastVerification:
                 
                 # If a database was successfully created
                 if db_path:
+                    # Get the config instance to update the database path
+                    config = Config.get_instance()
+                    
                     # Check if there's already a database path set that's not the default
-                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                    if config.DB_PATH and config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
                         # If there's already a non-default database, ask if we should use the new one
-                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        logger.info(f"Current BLAST database path: {config.DB_PATH}")
                         use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
                         
                         if use_new_db == "" or use_new_db.startswith("y"):
-                            Config.DB_PATH = db_path
-                            Config.USE_CUSTOM_DB = True
+                            config.DB_PATH = db_path
+                            config.USE_CUSTOM_DB = True
                             # Save the database path for future runs
                             Config.save_database_config(db_path)
                             logger.info(f"Now using new BLAST database: {db_path}")
                         else:
-                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                            logger.info(f"Keeping current BLAST database: {config.DB_PATH}")
                     else:
                         # If no database or default database, automatically use the new one
-                        Config.DB_PATH = db_path
-                        Config.USE_CUSTOM_DB = True
+                        config.DB_PATH = db_path
+                        config.USE_CUSTOM_DB = True
                         # Save the database path for future runs
                         Config.save_database_config(db_path)
                         logger.info(f"BLAST database created and set as active: {db_path}")

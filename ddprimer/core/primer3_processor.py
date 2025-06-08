@@ -13,6 +13,7 @@ import logging
 import re
 import primer3
 import multiprocessing
+from typing import Dict, List, Optional
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
@@ -260,10 +261,11 @@ class Primer3Processor:
         
         return amplicon
     
-    def parse_primer3_batch(self, stdout_data, fragment_info=None):
+    def parse_primer3_batch(self, stdout_data: str, fragment_info: Optional[Dict] = None) -> List[Dict]:
         """
         Parse primer3 output for a batch.
-        Returns a list of records.
+        
+        DROP-IN REPLACEMENT for the existing method in Primer3Processor.
         
         Args:
             stdout_data (str): Primer3 stdout output
@@ -274,271 +276,432 @@ class Primer3Processor:
         """
         self.logger.debug("Parsing Primer3 batch output")
         
+        # Initialize parsing state
         records = []
-        current_id = None
-        sequence_template = ""
-        pairs = []
-        
-        # Add detailed logging for direct mode
+        fragment_info = fragment_info or {}
         debug_mode = hasattr(self.config, 'DEBUG_MODE') and self.config.DEBUG_MODE
         
-        # Create empty fragment_info if none provided
-        if fragment_info is None:
-            fragment_info = {}
+        # Parse all sequence blocks from the output
+        sequence_blocks = self._parse_sequence_blocks(stdout_data)
         
-        # Helper function: log all primer pairs for a sequence
-        def log_all_primer_pairs(record_id, sequence, pairs_data):
-            """Helper to log all primer pairs found for a sequence"""
-            if not debug_mode:
-                return
-                
-            self.logger.debug(f"===== ALL PRIMER PAIRS FOR {record_id} =====")
-            self.logger.debug(f"Sequence length: {len(sequence)} bp")
-            self.logger.debug(f"Total pairs found: {len(pairs_data)}")
-            
-            # Sort pairs by penalty
-            sorted_pairs = sorted(pairs_data, key=lambda p: p.get('pair_penalty', 999))
-            
-            # Log each pair's details
-            for i, pair in enumerate(sorted_pairs):
-                left_seq = pair.get('left_sequence', '')
-                right_seq = pair.get('right_sequence', '')
-                penalty = pair.get('pair_penalty', 'N/A')
-                product_size = pair.get('product_size', 'N/A')
-                
-                self.logger.debug(f"Pair #{i+1}: Penalty={penalty}")
-                self.logger.debug(f"  Forward: {left_seq}")
-                self.logger.debug(f"  Reverse: {right_seq}")
-                self.logger.debug(f"  Product size: {product_size}")
-
-        # Helper function: finalize the current record
-        def finalize_record():
-            """
-            Save all primer pairs regardless of penalty.
-            """
-            nonlocal current_id, pairs, sequence_template
-
-            if not current_id or not pairs:
-                return
-
-            # MODIFIED: Skip penalty filtering completely
-            acceptable = pairs
-                
-            # Take up to MAX_PRIMER_PAIRS_PER_SEGMENT, but only if we have limits
-            if hasattr(self.config, 'MAX_PRIMER_PAIRS_PER_SEGMENT') and self.config.MAX_PRIMER_PAIRS_PER_SEGMENT > 0:
-                acceptable = acceptable[:self.config.MAX_PRIMER_PAIRS_PER_SEGMENT]
-                
-            # Debug log amplicon creation
-            if debug_mode:
-                self.logger.debug(f"Creating amplicons for {current_id}...")
-            
-            for p in acceptable:
-                left_seq = p.get("left_sequence", "")
-                right_seq = p.get("right_sequence", "")
-                
-                # Only get probe sequence if internal oligos are enabled
-                probe_seq = ""
-                probe_reversed = False
-                if not self.config.DISABLE_INTERNAL_OLIGO:
-                    probe_seq = p.get("internal_sequence", "")
-                    
-                    # Check if we need to reverse complement the probe based on C/G content
-                    if self.config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
-                        probe_seq, probe_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
-                        
-                ls, ll = p.get("left_start"), p.get("left_len")
-                rs, rl = p.get("right_start"), p.get("right_len")
-                
-                # Only get internal positions if internal oligos are enabled
-                internal_start = None
-                internal_len = None
-                if not self.config.DISABLE_INTERNAL_OLIGO:
-                    internal_start = p.get("internal_start")
-                    internal_len = p.get("internal_len")
-
-                # Get amplicon and log details
-                ampseq = self.get_amplicon(sequence_template, ls, ll, rs, rl)
-                
-                if debug_mode:
-                    if not ampseq:
-                        self.logger.debug(f"WARNING: Could not create amplicon for pair {p['idx']} in {current_id}")
-                        self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
-                        self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
-                        self.logger.debug(f"  Template length: {len(sequence_template)}")
-                    else:
-                        self.logger.debug(f"Created amplicon for pair {p['idx']} in {current_id}: {len(ampseq)}bp")
-                        self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
-                        self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
-                        if len(ampseq) > 40:
-                            self.logger.debug(f"  Amplicon (excerpt): {ampseq[:20]}...{ampseq[-20:]}")
-                        else:
-                            self.logger.debug(f"  Amplicon: {ampseq}")
-                        
-                        # Verify that the amplicon actually contains the primers
-                        if left_seq and not ampseq.startswith(left_seq[:min(len(left_seq), 10)]):
-                            self.logger.debug(f"  WARNING: Amplicon does not start with forward primer")
-                        if right_seq and SequenceUtils.reverse_complement(right_seq)[:min(len(right_seq), 10)] not in ampseq[-len(right_seq):]:
-                            self.logger.debug(f"  WARNING: Amplicon does not end with reverse primer complement")
-                
-                # Get chromosome and location info from fragment_info
-                frag_info = fragment_info.get(current_id, {})
-                chromosome = frag_info.get("chr", "")
-                
-                # Calculate absolute positions based on fragment coordinates
-                fragment_start = frag_info.get("start", 1)
-                
-                # Adjust the primer positions to absolute coordinates
-                abs_left_start = None
-                if ls is not None:
-                    abs_left_start = fragment_start + ls - 1
-                    
-                # Format the location as a range
-                location = ""
-                if abs_left_start is not None:
-                    location = f"{abs_left_start}"
-                
-                # For debugging, check the amplicon - if it's empty, create it again
-                if debug_mode and not ampseq and sequence_template:
-                    self.logger.debug(f"Attempting to reconstruct missing amplicon for {current_id}")
-                    # Try with direct template extraction
-                    if ls is not None and rs is not None and ls <= rs and ls >= 1 and rs <= len(sequence_template):
-                        direct_amplicon = sequence_template[ls-1:rs]
-                        self.logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)}bp")
-                        if len(direct_amplicon) > 0:
-                            ampseq = direct_amplicon
-                            self.logger.debug(f"Successfully reconstructed amplicon")
-                
-                # Check for valid amplicon
-                if not ampseq:
-                    # Try calculating product size based on primer positions
-                    product_size = rs - ls + 1 if ls is not None and rs is not None else None
-                    
-                    # Try extracting the amplicon one more time
-                    ampseq = sequence_template[ls-1:rs] if (ls is not None and rs is not None and 
-                                                        1 <= ls <= len(sequence_template) and 
-                                                        1 <= rs <= len(sequence_template) and 
-                                                        ls <= rs) else ""
-                    
-                    if debug_mode:
-                        if ampseq:
-                            self.logger.debug(f"Recovered amplicon from sequence: {len(ampseq)} bp")
-                        else:
-                            self.logger.debug(f"Could not recover amplicon. ls={ls}, rs={rs}, seq_len={len(sequence_template)}")
-                else:
-                    # Use the reported product size if available
-                    product_size = p.get("product_size", None)
-                    
-                    # If not available, calculate from the amplicon
-                    if product_size is None and ampseq:
-                        product_size = len(ampseq)
-                
-                # Create the record
-                rec = {
-                    "Gene": frag_info.get("gene", current_id),
-                    "Index": p["idx"],
-                    "Template": sequence_template,
-                    "Primer F": left_seq,
-                    "Tm F": p.get("left_tm", None),
-                    "Penalty F": p.get("left_penalty", None),
-                    "Primer F Start": ls,
-                    "Primer F Len": ll,
-                    "Primer R": right_seq,
-                    "Tm R": p.get("right_tm", None),
-                    "Penalty R": p.get("right_penalty", None),
-                    "Primer R Start": rs,
-                    "Primer R Len": rl,
-                    "Pair Penalty": p.get("pair_penalty", None),
-                    "Amplicon": ampseq,
-                    "Length": product_size,
-                    "Chromosome": chromosome,
-                    "Location": location
-                }
-                
-                # Only add probe-related fields if internal oligos are enabled
-                if not self.config.DISABLE_INTERNAL_OLIGO:
-                    rec.update({
-                        "Probe": probe_seq,
-                        "Probe Tm": p.get("internal_tm", None),
-                        "Probe Penalty": p.get("internal_penalty", None),
-                        "Probe Start": internal_start,
-                        "Probe Len": internal_len,
-                        "Probe Reversed": probe_reversed
-                    })
-                    
-                records.append(rec)
-
-            current_id = None
-            sequence_template = ""
-            pairs = []
-
-        lines = stdout_data.splitlines()
-        for line in lines:
-            line = line.strip()
-            if line.startswith("SEQUENCE_ID="):
-                # finalize any existing record first
-                finalize_record()
-                current_id = line.split("=", 1)[1]
-                sequence_template = ""
-                pairs = []
-
-            elif line.startswith("SEQUENCE_TEMPLATE="):
-                sequence_template = line.split("=", 1)[1].upper()
-
-            elif re.match(r'^PRIMER_PAIR_(\d+)_PENALTY=', line):
-                match = re.match(r'^PRIMER_PAIR_(\d+)_PENALTY=(.*)', line)
-                idx, val = int(match.group(1)), float(match.group(2))
-                pair = next((p for p in pairs if p['idx'] == idx), None)
-                if not pair:
-                    pair = {"idx": idx}
-                    pairs.append(pair)
-                pair["pair_penalty"] = val
-
-            elif re.match(r'^PRIMER_PAIR_(\d+)_PRODUCT_SIZE=', line):
-                match = re.match(r'^PRIMER_PAIR_(\d+)_PRODUCT_SIZE=(.*)', line)
-                idx, val = int(match.group(1)), int(match.group(2))
-                pair = next((p for p in pairs if p['idx'] == idx), None)
-                if pair:
-                    pair["product_size"] = val
-
-            elif re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)_(SEQUENCE|TM|PENALTY)=', line):
-                match = re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)_(SEQUENCE|TM|PENALTY)=(.*)', line)
-                side, idx, attr, val = match.groups()
-                idx = int(idx)
-                pair = next((p for p in pairs if p['idx'] == idx), None)
-                if not pair:
-                    pair = {"idx": idx}
-                    pairs.append(pair)
-                attr_key = f"{side.lower()}_{attr.lower()}"
-                if attr in ["TM", "PENALTY"]:
-                    pair[attr_key] = float(val)
-                else:
-                    pair[attr_key] = val.upper()
-
-            elif re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)=(\d+),(\d+)', line):
-                match = re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)=(\d+),(\d+)', line)
-                side, idx, start, length = match.groups()
-                idx = int(idx)
-                start = int(start) + 1  # Convert to 0-based to 1-based for consistency
-                length = int(length)
-                pair = next((p for p in pairs if p['idx'] == idx), None)
-                if not pair:
-                    pair = {"idx": idx}
-                    pairs.append(pair)
-                pair[f"{side.lower()}_start"] = start
-                pair[f"{side.lower()}_len"] = length
-
-            elif line == "=":
-                # Before finalizing record, log all pairs found for this sequence
-                if debug_mode and current_id and pairs:
-                    log_all_primer_pairs(current_id, sequence_template, pairs)
-                
-                # end of current record
-                finalize_record()
-
-        # If the last record never ended with '='
-        if current_id and pairs and debug_mode:
-            log_all_primer_pairs(current_id, sequence_template, pairs)
-        finalize_record()
+        # Process each sequence block
+        for block in sequence_blocks:
+            block_records = self._process_sequence_block(block, fragment_info, debug_mode)
+            records.extend(block_records)
         
         self.logger.debug(f"Parsed {len(records)} primer records from Primer3 output")
         return records
+
+    def _parse_sequence_blocks(self, stdout_data: str) -> List[Dict]:
+        """
+        Parse the stdout data into individual sequence blocks.
+        
+        Args:
+            stdout_data (str): Raw Primer3 output
+            
+        Returns:
+            List[Dict]: List of parsed sequence blocks
+        """
+        blocks = []
+        current_block = {
+            'sequence_id': None,
+            'sequence_template': '',
+            'primer_pairs': []
+        }
+        
+        lines = stdout_data.splitlines()
+        for line in lines:
+            line = line.strip()
+            
+            if line.startswith("SEQUENCE_ID="):
+                # Start of new block - save previous if it exists
+                if current_block['sequence_id']:
+                    blocks.append(current_block)
+                current_block = {
+                    'sequence_id': line.split("=", 1)[1],
+                    'sequence_template': '',
+                    'primer_pairs': []
+                }
+                
+            elif line.startswith("SEQUENCE_TEMPLATE="):
+                current_block['sequence_template'] = line.split("=", 1)[1].upper()
+                
+            elif line == "=":
+                # End of current block
+                if current_block['sequence_id']:
+                    blocks.append(current_block)
+                current_block = {
+                    'sequence_id': None,
+                    'sequence_template': '',
+                    'primer_pairs': []
+                }
+                
+            else:
+                # Parse primer data lines
+                self._parse_primer_data_line(line, current_block)
+        
+        # Handle case where last block doesn't end with '='
+        if current_block['sequence_id']:
+            blocks.append(current_block)
+        
+        return blocks
+
+    def _parse_primer_data_line(self, line: str, block: Dict) -> None:
+        """
+        Parse a single line of primer data and add it to the sequence block.
+        
+        Args:
+            line (str): Line to parse
+            block (Dict): Block to add data to
+        """
+        # Primer pair penalty
+        if match := re.match(r'^PRIMER_PAIR_(\d+)_PENALTY=(.*)', line):
+            idx, val = int(match.group(1)), float(match.group(2))
+            pair = self._get_or_create_primer_pair(block, idx)
+            pair["pair_penalty"] = val
+            
+        # Primer pair product size
+        elif match := re.match(r'^PRIMER_PAIR_(\d+)_PRODUCT_SIZE=(.*)', line):
+            idx, val = int(match.group(1)), int(match.group(2))
+            pair = self._get_or_create_primer_pair(block, idx)
+            pair["product_size"] = val
+            
+        # Primer sequences, TM, and penalties
+        elif match := re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)_(SEQUENCE|TM|PENALTY)=(.*)', line):
+            side, idx, attr, val = match.groups()
+            idx = int(idx)
+            pair = self._get_or_create_primer_pair(block, idx)
+            
+            attr_key = f"{side.lower()}_{attr.lower()}"
+            if attr in ["TM", "PENALTY"]:
+                pair[attr_key] = float(val)
+            else:
+                pair[attr_key] = val.upper()
+                
+        # Primer positions
+        elif match := re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)=(\d+),(\d+)', line):
+            side, idx, start, length = match.groups()
+            idx = int(idx)
+            start = int(start) + 1  # Convert to 1-based coordinates
+            length = int(length)
+            pair = self._get_or_create_primer_pair(block, idx)
+            
+            pair[f"{side.lower()}_start"] = start
+            pair[f"{side.lower()}_len"] = length
+
+    def _get_or_create_primer_pair(self, block: Dict, idx: int) -> Dict:
+        """
+        Get or create a primer pair by index within a sequence block.
+        
+        Args:
+            block (Dict): Sequence block
+            idx (int): Primer pair index
+            
+        Returns:
+            Dict: Existing or new primer pair dictionary
+        """
+        # Look for existing pair with this index
+        for pair in block['primer_pairs']:
+            if pair.get('idx') == idx:
+                return pair
+        
+        # Create new pair if not found
+        new_pair = {"idx": idx}
+        block['primer_pairs'].append(new_pair)
+        return new_pair
+
+    def _process_sequence_block(self, block: Dict, fragment_info: Dict, debug_mode: bool) -> List[Dict]:
+        """
+        Process a single sequence block and generate primer records.
+        
+        Args:
+            block (Dict): Parsed sequence block
+            fragment_info (Dict): Fragment information mapping
+            debug_mode (bool): Whether debug logging is enabled
+            
+        Returns:
+            List[Dict]: List of primer record dictionaries
+        """
+        if not block['sequence_id'] or not block['primer_pairs']:
+            return []
+        
+        # Log all primer pairs in debug mode
+        if debug_mode:
+            self._log_all_primer_pairs(block)
+        
+        # Filter and limit primer pairs
+        acceptable_pairs = self._filter_primer_pairs(block['primer_pairs'])
+        
+        # Generate records for each acceptable pair
+        records = []
+        for pair in acceptable_pairs:
+            record = self._create_primer_record(block, pair, fragment_info, debug_mode)
+            if record:
+                records.append(record)
+        
+        return records
+
+    def _filter_primer_pairs(self, primer_pairs: List[Dict]) -> List[Dict]:
+        """
+        Filter and limit primer pairs based on configuration.
+        
+        Args:
+            primer_pairs (List[Dict]): List of primer pairs to filter
+            
+        Returns:
+            List[Dict]: Filtered and limited primer pairs
+        """
+        # MODIFIED: Skip penalty filtering completely (keep all pairs)
+        acceptable = primer_pairs
+        
+        # Take up to MAX_PRIMER_PAIRS_PER_SEGMENT if configured
+        if (hasattr(self.config, 'MAX_PRIMER_PAIRS_PER_SEGMENT') and 
+            self.config.MAX_PRIMER_PAIRS_PER_SEGMENT > 0):
+            acceptable = acceptable[:self.config.MAX_PRIMER_PAIRS_PER_SEGMENT]
+        
+        return acceptable
+
+    def _create_primer_record(self, block: Dict, pair: Dict, fragment_info: Dict, debug_mode: bool) -> Optional[Dict]:
+        """
+        Create a primer record dictionary from a sequence block and primer pair.
+        
+        Args:
+            block (Dict): Sequence block containing template
+            pair (Dict): Primer pair data
+            fragment_info (Dict): Fragment information
+            debug_mode (bool): Whether debug logging is enabled
+            
+        Returns:
+            Optional[Dict]: Primer record or None if creation fails
+        """
+        # Get basic sequences
+        left_seq = pair.get("left_sequence", "")
+        right_seq = pair.get("right_sequence", "")
+        
+        # Handle probe sequence based on configuration
+        probe_seq, probe_reversed = self._process_probe_sequence(pair)
+        
+        # Get position data
+        ls, ll = pair.get("left_start"), pair.get("left_len")
+        rs, rl = pair.get("right_start"), pair.get("right_len")
+        
+        # Create amplicon
+        amplicon = self._create_amplicon(block['sequence_template'], pair, debug_mode)
+        
+        # Get location information
+        location_info = self._get_location_info(block['sequence_id'], pair, fragment_info)
+        
+        # Calculate product size
+        product_size = pair.get("product_size")
+        if product_size is None and amplicon:
+            product_size = len(amplicon)
+        
+        # Build the record
+        record = {
+            "Gene": location_info["gene"],
+            "Index": pair["idx"],
+            "Template": block['sequence_template'],
+            "Primer F": left_seq,
+            "Tm F": pair.get("left_tm"),
+            "Penalty F": pair.get("left_penalty"),
+            "Primer F Start": ls,
+            "Primer F Len": ll,
+            "Primer R": right_seq,
+            "Tm R": pair.get("right_tm"),
+            "Penalty R": pair.get("right_penalty"),
+            "Primer R Start": rs,
+            "Primer R Len": rl,
+            "Pair Penalty": pair.get("pair_penalty"),
+            "Amplicon": amplicon,
+            "Length": product_size,
+            "Chromosome": location_info["chromosome"],
+            "Location": location_info["location"]
+        }
+        
+        # Add probe-related fields if internal oligos are enabled
+        if not self.config.DISABLE_INTERNAL_OLIGO:
+            internal_start = pair.get("internal_start") if not self.config.DISABLE_INTERNAL_OLIGO else None
+            internal_len = pair.get("internal_len") if not self.config.DISABLE_INTERNAL_OLIGO else None
+            
+            record.update({
+                "Probe": probe_seq,
+                "Probe Tm": pair.get("internal_tm"),
+                "Probe Penalty": pair.get("internal_penalty"),
+                "Probe Start": internal_start,
+                "Probe Len": internal_len,
+                "Probe Reversed": probe_reversed
+            })
+        
+        return record
+
+    def _process_probe_sequence(self, pair: Dict) -> tuple:
+        """
+        Process probe sequence with optional reverse complementation.
+        
+        Args:
+            pair (Dict): Primer pair containing probe data
+            
+        Returns:
+            tuple: (probe_sequence, was_reversed)
+        """
+        if self.config.DISABLE_INTERNAL_OLIGO:
+            return "", False
+        
+        probe_seq = pair.get("internal_sequence", "")
+        probe_reversed = False
+        
+        # Check if we need to reverse complement the probe
+        if self.config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
+            probe_seq, probe_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
+        
+        return probe_seq, probe_reversed
+
+    def _create_amplicon(self, template: str, pair: Dict, debug_mode: bool) -> str:
+        """
+        Create amplicon sequence from template and primer positions.
+        
+        Args:
+            template (str): Template sequence
+            pair (Dict): Primer pair with position information
+            debug_mode (bool): Whether debug logging is enabled
+            
+        Returns:
+            str: Amplicon sequence
+        """
+        ls, ll = pair.get("left_start"), pair.get("left_len")
+        rs, rl = pair.get("right_start"), pair.get("right_len")
+        
+        # Check if we have the required position data
+        if not all([ls, ll, rs, rl]):
+            if debug_mode:
+                self.logger.debug(f"Missing position data for amplicon creation in pair {pair['idx']}")
+            return ""
+        
+        # Use the existing get_amplicon method for consistency
+        amplicon = self.get_amplicon(template, ls, ll, rs, rl)
+        
+        # Debug logging for amplicon creation
+        if debug_mode:
+            current_id = pair.get('sequence_id', 'unknown')
+            if not amplicon:
+                self.logger.debug(f"WARNING: Could not create amplicon for pair {pair['idx']} in {current_id}")
+                self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
+                self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
+                self.logger.debug(f"  Template length: {len(template)}")
+                
+                # Try to reconstruct amplicon
+                amplicon = self._try_reconstruct_amplicon(template, ls, rs, debug_mode)
+            else:
+                self.logger.debug(f"Created amplicon for pair {pair['idx']}: {len(amplicon)}bp")
+                self.logger.debug(f"  Left start: {ls}, Left len: {ll}")
+                self.logger.debug(f"  Right start: {rs}, Right len: {rl}")
+                if len(amplicon) > 40:
+                    self.logger.debug(f"  Amplicon (excerpt): {amplicon[:20]}...{amplicon[-20:]}")
+                else:
+                    self.logger.debug(f"  Amplicon: {amplicon}")
+                
+                # Verify amplicon contains primers
+                left_seq = pair.get("left_sequence", "")
+                right_seq = pair.get("right_sequence", "")
+                if left_seq and not amplicon.startswith(left_seq[:min(len(left_seq), 10)]):
+                    self.logger.debug(f"  WARNING: Amplicon does not start with forward primer")
+                if right_seq and SequenceUtils.reverse_complement(right_seq)[:min(len(right_seq), 10)] not in amplicon[-len(right_seq):]:
+                    self.logger.debug(f"  WARNING: Amplicon does not end with reverse primer complement")
+        
+        return amplicon
+
+    def _try_reconstruct_amplicon(self, template: str, ls: int, rs: int, debug_mode: bool) -> str:
+        """
+        Try to reconstruct amplicon when normal extraction fails.
+        
+        Args:
+            template (str): Template sequence
+            ls (int): Left start position
+            rs (int): Right start position
+            debug_mode (bool): Whether debug logging is enabled
+            
+        Returns:
+            str: Reconstructed amplicon or empty string
+        """
+        if debug_mode:
+            self.logger.debug(f"Attempting to reconstruct missing amplicon")
+        
+        # Try with direct template extraction
+        if (ls is not None and rs is not None and ls <= rs and 
+            ls >= 1 and rs <= len(template)):
+            direct_amplicon = template[ls-1:rs]
+            if debug_mode:
+                self.logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)}bp")
+            if len(direct_amplicon) > 0:
+                if debug_mode:
+                    self.logger.debug(f"Successfully reconstructed amplicon")
+                return direct_amplicon
+        
+        if debug_mode:
+            self.logger.debug(f"Could not recover amplicon. ls={ls}, rs={rs}, seq_len={len(template)}")
+        
+        return ""
+
+    def _get_location_info(self, sequence_id: str, pair: Dict, fragment_info: Dict) -> Dict[str, str]:
+        """
+        Get location information for the primer record.
+        
+        Args:
+            sequence_id (str): Sequence identifier
+            pair (Dict): Primer pair data
+            fragment_info (Dict): Fragment information mapping
+            
+        Returns:
+            Dict[str, str]: Location information with keys: gene, chromosome, location
+        """
+        # Get fragment info
+        frag_info = fragment_info.get(sequence_id, {})
+        
+        # Determine gene name
+        gene = frag_info.get("gene", sequence_id)
+        
+        # Get chromosome
+        chromosome = frag_info.get("chr", "")
+        
+        # Calculate absolute position if we have fragment coordinates
+        location = ""
+        ls = pair.get("left_start")
+        if ls is not None and "start" in frag_info:
+            fragment_start = frag_info.get("start", 1)
+            abs_left_start = fragment_start + ls - 1
+            location = str(abs_left_start)
+        
+        return {
+            "gene": gene,
+            "chromosome": chromosome, 
+            "location": location
+        }
+
+    def _log_all_primer_pairs(self, block: Dict) -> None:
+        """
+        Log all primer pairs for debugging purposes.
+        
+        Args:
+            block (Dict): Sequence block to log
+        """
+        sequence_id = block['sequence_id']
+        sequence_template = block['sequence_template']
+        primer_pairs = block['primer_pairs']
+        
+        self.logger.debug(f"===== ALL PRIMER PAIRS FOR {sequence_id} =====")
+        self.logger.debug(f"Sequence length: {len(sequence_template)} bp")
+        self.logger.debug(f"Total pairs found: {len(primer_pairs)}")
+        
+        # Sort pairs by penalty for logging
+        sorted_pairs = sorted(primer_pairs, key=lambda p: p.get('pair_penalty', 999))
+        
+        for i, pair in enumerate(sorted_pairs):
+            left_seq = pair.get('left_sequence', '')
+            right_seq = pair.get('right_sequence', '')
+            penalty = pair.get('pair_penalty', 'N/A')
+            product_size = pair.get('product_size', 'N/A')
+            
+            self.logger.debug(f"Pair #{i+1}: Penalty={penalty}")
+            self.logger.debug(f"  Forward: {left_seq}")
+            self.logger.debug(f"  Reverse: {right_seq}")
+            self.logger.debug(f"  Product size: {product_size}")

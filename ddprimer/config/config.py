@@ -2,23 +2,32 @@
 # -*- coding: utf-8 -*-
 """
 Configuration module for the ddPrimer pipeline.
+Thread-safe singleton implementation.
 """
 
 import os
 import json
+import threading
 from multiprocessing import cpu_count
 from typing import Dict, List, Union, Any, Optional
 
 class Config:
-    """Central configuration settings for the ddPrimer pipeline with singleton pattern."""
+    """
+    Central configuration settings for the ddPrimer pipeline with thread-safe singleton pattern.
     
-    # Singleton instance
+    This class uses a thread-safe singleton pattern to ensure only one configuration
+    instance exists throughout the application lifecycle, even in multi-threaded environments.
+    """
+    
+    # Singleton instance and thread lock
     _instance = None
+    _lock = threading.Lock()
+    _initialized = False
     
     #############################################################################
     #                           Pipeline Mode Options
     #############################################################################
-    DEBUG_MODE = False                   # Debug logging mode (enable with --debug flag)
+    DEBUG_MODE = False                  # Debug logging mode (enable with --debug flag)
     DISABLE_INTERNAL_OLIGO = False      # Disable internal oligo design
     
     #############################################################################
@@ -32,7 +41,7 @@ class Config:
     #############################################################################
     #                           Design Parameters
     #############################################################################
-    # Basic primer design constraints
+    # Basic primer design constraints - these are the primary user interface
     PRIMER_MIN_SIZE = 18
     PRIMER_OPT_SIZE = 20
     PRIMER_MAX_SIZE = 23
@@ -57,6 +66,15 @@ class Config:
     PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
+
+    #############################################################################
+    #                           SNP Masking Parameters
+    #############################################################################
+    # SNP filtering and masking options
+    SNP_ALLELE_FREQUENCY_THRESHOLD = 0.05    # Minimum allele frequency to mask (e.g., 0.05 for 5%)
+    SNP_QUALITY_THRESHOLD = None             # Minimum QUAL score to include variants (e.g., 30.0)
+    SNP_FLANKING_MASK_SIZE = 0               # Number of bases to mask around each SNP (0 = just the SNP)
+    SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
     
     #############################################################################
     #                           BLAST Database Options
@@ -94,22 +112,13 @@ class Config:
 
     # LastZ alignment options
     LASTZ_OPTIONS = "--format=maf --chain --gapped --step=10 --ambiguous=iupac"
-    # Options commonly used:
-    # --format=maf      : Output in Multiple Alignment Format (required)
-    # --step=10         : Step size for search (smaller = more sensitive but slower)
-    # --hspthresh=3000  : Threshold for high-scoring segment pairs (lower = more alignments)
-    # --chain           : Enable chaining of HSPs
-    # --gapped          : Enable gapped extension of HSPs
-    # --inner=2000      : Inner radius for seeding alignments
-    # --ydrop=3400      : Y-drop parameter (controls extension termination)
-    # --gappedthresh=3000 : Threshold for gapped alignments
-
     
     #############################################################################
-    #                           Primer3 Settings
+    #                           Advanced Primer3 Settings
     #############################################################################
-    # Complete Primer3 settings dictionary
-    PRIMER3_SETTINGS = {
+    # Advanced Primer3 settings - only parameters WITHOUT simplified equivalents above
+    # Users rarely need to modify these, but they're available for fine-tuning
+    PRIMER3_ADVANCED_SETTINGS = {
         # General settings
         "P3_FILE_TYPE": "settings", 
         "P3_FILE_ID": "User settings", 
@@ -165,14 +174,13 @@ class Config:
         "PRIMER_INTERNAL_SALT_DIVALENT": 0.0, 
         "PRIMER_INTERNAL_SALT_MONOVALENT": 50.0, 
         
-        # General primer constraints
+        # Advanced primer constraints
         "PRIMER_LIBERAL_BASE": 1,
         "PRIMER_LIB_AMBIGUITY_CODES_CONSENSUS": 0, 
         "PRIMER_LOWERCASE_MASKING": 0, 
         "PRIMER_MAX_BOUND": 110.0,
         "PRIMER_MAX_END_GC": 3, 
         "PRIMER_MAX_END_STABILITY": 9.0, 
-        "PRIMER_MAX_GC": 60.0, 
         "PRIMER_MAX_HAIRPIN_TH": 47.0,
         "PRIMER_MAX_LIBRARY_MISPRIMING": 12.0, 
         "PRIMER_MAX_NS_ACCEPTED": 0, 
@@ -181,25 +189,17 @@ class Config:
         "PRIMER_MAX_SELF_ANY_TH": 47.0, 
         "PRIMER_MAX_SELF_END": 3.0, 
         "PRIMER_MAX_SELF_END_TH": 47.0, 
-        "PRIMER_MAX_SIZE": 23,
         "PRIMER_MAX_TEMPLATE_MISPRIMING": 12.0, 
         "PRIMER_MAX_TEMPLATE_MISPRIMING_TH": 47.0, 
-        "PRIMER_MAX_TM": 65.0,
         "PRIMER_MIN_3_PRIME_OVERLAP_OF_JUNCTION": 4, 
         "PRIMER_MIN_5_PRIME_OVERLAP_OF_JUNCTION": 7, 
         "PRIMER_MIN_BOUND": -10.0,
         "PRIMER_MIN_END_QUALITY": 0, 
-        "PRIMER_MIN_GC": 50.0, 
         "PRIMER_MIN_LEFT_THREE_PRIME_DISTANCE": 3,
         "PRIMER_MIN_QUALITY": 0, 
         "PRIMER_MIN_RIGHT_THREE_PRIME_DISTANCE": 3, 
-        "PRIMER_MIN_SIZE": 18, 
-        "PRIMER_MIN_TM": 50.0,
-        "PRIMER_NUM_RETURN": 10, 
         "PRIMER_OPT_BOUND": 97.0, 
         "PRIMER_OPT_GC_PERCENT": 52.5, 
-        "PRIMER_OPT_SIZE": 20,
-        "PRIMER_OPT_TM": 57.5, 
         "PRIMER_OUTSIDE_PENALTY": 0.0, 
         
         # Primer pair parameters
@@ -235,7 +235,6 @@ class Config:
         "PRIMER_PRODUCT_MIN_TM": -1000000.0, 
         "PRIMER_PRODUCT_OPT_SIZE": 0,
         "PRIMER_PRODUCT_OPT_TM": 0.0, 
-        "PRIMER_PRODUCT_SIZE_RANGE": "90-200", 
         "PRIMER_QUALITY_RANGE_MAX": 100,
         "PRIMER_QUALITY_RANGE_MIN": 0, 
         
@@ -277,19 +276,73 @@ class Config:
         "PRIMER_WT_TM_LT": 1.0
     }
     
+    def __new__(cls):
+        """
+        Thread-safe singleton implementation using double-checked locking pattern.
+        
+        Returns:
+            Config: The singleton instance
+        """
+        # First check without acquiring lock (optimization)
+        if cls._instance is None:
+            # Acquire lock and check again
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(Config, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        """
+        Initialize the Config instance.
+        Only runs once due to singleton pattern.
+        """
+        # Prevent re-initialization of the singleton
+        if Config._initialized:
+            return
+            
+        # Initialize instance variables here if needed
+        # (Currently using class variables, but this is where instance vars would go)
+        
+        # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
+        if self.PRIMER_PRODUCT_SIZE_RANGE and self.PRIMER_PRODUCT_SIZE_RANGE[0]:
+            self.MIN_SEGMENT_LENGTH = self.PRIMER_PRODUCT_SIZE_RANGE[0][0]
+        
+        # Initialize the BLAST database path if not already set
+        if self.DB_PATH is None:
+            self.DB_PATH = self._initialize_db_path()
+            
+        # Mark as initialized
+        Config._initialized = True
+    
+    @classmethod
+    def get_instance(cls) -> 'Config':
+        """
+        Get the singleton instance of Config.
+        
+        Returns:
+            Config: Singleton instance
+        """
+        return cls()  # __new__ handles the singleton logic
+    
     @classmethod
     def get_primer3_global_args(cls) -> Dict[str, Any]:
         """
-        Get global primer3 arguments as a dictionary.
-        This combines the simplified settings with the complete settings.
+        Get complete primer3 arguments as a dictionary.
+        
+        This method builds the complete Primer3 settings by:
+        1. Starting with advanced settings (rarely changed by users)
+        2. Overriding with simplified settings (commonly adjusted by users)
+        
+        The simplified parameters (PRIMER_MIN_SIZE, etc.) take precedence over
+        any corresponding parameters in PRIMER3_ADVANCED_SETTINGS.
         
         Returns:
-            dict: Dictionary of primer3 settings
+            dict: Complete dictionary of primer3 settings
         """
-        # Start with complete settings
-        settings = cls.PRIMER3_SETTINGS.copy()
+        # Start with advanced settings
+        settings = cls.PRIMER3_ADVANCED_SETTINGS.copy()
         
-        # Override with simplified settings for commonly adjusted parameters
+        # Override with simplified settings (these are the primary user interface)
         settings.update({
             "PRIMER_MIN_SIZE": cls.PRIMER_MIN_SIZE,
             "PRIMER_OPT_SIZE": cls.PRIMER_OPT_SIZE,
@@ -302,13 +355,79 @@ class Config:
             "PRIMER_NUM_RETURN": cls.MAX_PRIMER_PAIRS_PER_SEGMENT,
         })
         
-        # Convert the product size range from list to string format if needed
+        # Convert the product size range from list to string format
         if isinstance(cls.PRIMER_PRODUCT_SIZE_RANGE, list):
             # Convert [[min1, max1], [min2, max2], ...] to "min1-max1 min2-max2 ..."
             size_range_str = " ".join([f"{r[0]}-{r[1]}" for r in cls.PRIMER_PRODUCT_SIZE_RANGE])
             settings["PRIMER_PRODUCT_SIZE_RANGE"] = size_range_str
         
         return settings
+    
+    @classmethod
+    def _initialize_db_path(cls):
+        """Find a BLAST database path for use."""
+        from pathlib import Path
+        import logging
+        logger = logging.getLogger("ddPrimer")
+        
+        # First check for a saved database path in config file
+        config_dir = Path.home() / ".ddprimer"
+        config_file = config_dir / "db_config.txt"
+        
+        if config_file.exists():
+            try:
+                db_path = config_file.read_text().strip()
+                
+                # Verify this path still has database files
+                if db_path and Path(f"{db_path}.nhr").exists():
+                    logger.debug(f"Using configured BLAST database: {db_path}")
+                    return db_path
+                else:
+                    logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
+            except Exception as e:
+                logger.debug(f"Error reading database config: {str(e)}")
+        else:
+            logger.debug(f"No database config file found at {config_file}")
+        
+        # If no saved config or the saved path is invalid, 
+        # fall back to looking in standard directories
+        possible_locations = [
+            Path("/usr/local/share/ddprimer/blast_db"),  # System directory
+            Path.home() / ".ddprimer" / "blast_db"       # User directory
+        ]
+        
+        for location in possible_locations:
+            if location.exists():
+                logger.debug(f"Checking for BLAST databases in {location}")
+                # Look for any .nhr files which indicate BLAST databases
+                db_files = list(location.glob("*.nhr"))
+                if db_files:
+                    # Use the first database found, without the extension
+                    db_path = str(db_files[0].with_suffix(''))
+                    logger.debug(f"Found existing BLAST database: {db_path}")
+                    return db_path
+                else:
+                    logger.debug(f"No database files (.nhr) found in {location}")
+        
+        # If no database found, return None
+        logger.debug("No existing BLAST database found.")
+        return None
+
+    @classmethod
+    def save_database_config(cls, db_path):
+        """
+        Save the database path to a config file for future runs.
+        
+        Args:
+            db_path (str): Path to the BLAST database
+        """
+        from pathlib import Path
+        config_dir = Path.home() / ".ddprimer"
+        config_dir.mkdir(exist_ok=True)
+        
+        # Save the database path to a simple config file
+        config_file = config_dir / "db_config.txt"
+        config_file.write_text(db_path)
     
     @classmethod
     def format_settings_for_file(cls) -> str:
@@ -367,8 +486,8 @@ class Config:
             for key, value in settings.items():
                 if hasattr(cls, key):
                     setattr(cls, key, value)
-                elif key in cls.PRIMER3_SETTINGS:
-                    cls.PRIMER3_SETTINGS[key] = value
+                elif key in cls.PRIMER3_ADVANCED_SETTINGS:
+                    cls.PRIMER3_ADVANCED_SETTINGS[key] = value
             
             # Handle special case for PRIMER_PRODUCT_SIZE_RANGE
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
@@ -419,7 +538,7 @@ class Config:
                     settings[key] = value
             
             # Update settings
-            cls.PRIMER3_SETTINGS.update(settings)
+            cls.PRIMER3_ADVANCED_SETTINGS.update(settings)
             
             # Update simplified settings if corresponding keys exist
             simplified_settings_map = {
@@ -513,97 +632,6 @@ class Config:
             print(f"Error saving Primer3 settings to {filepath}: {e}")
             return False
 
-
-    @classmethod
-    def _initialize_db_path(cls):
-        """Find a BLAST database path for use."""
-        from pathlib import Path
-        import logging
-        logger = logging.getLogger("ddPrimer")
-        
-        # First check for a saved database path in config file
-        config_dir = os.path.join(Path.home(), ".ddprimer")
-        config_file = os.path.join(config_dir, "db_config.txt")
-        
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, "r") as f:
-                    db_path = f.read().strip()
-                    
-                # Verify this path still has database files
-                if db_path and os.path.exists(db_path + ".nhr"):
-                    logger.debug(f"Using configured BLAST database: {db_path}")
-                    return db_path
-                else:
-                    logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
-            except Exception as e:
-                logger.debug(f"Error reading database config: {str(e)}")
-        else:
-            logger.debug(f"No database config file found at {config_file}")
-        
-        # If no saved config or the saved path is invalid, 
-        # fall back to looking in standard directories
-        possible_locations = [
-            # System directory
-            "/usr/local/share/ddprimer/blast_db",
-            # User directory
-            os.path.join(Path.home(), ".ddprimer", "blast_db")
-        ]
-        
-        for location in possible_locations:
-            if os.path.exists(location):
-                logger.debug(f"Checking for BLAST databases in {location}")
-                # Look for any .nhr files which indicate BLAST databases
-                db_files = [f for f in os.listdir(location) if f.endswith(".nhr")]
-                if db_files:
-                    # Use the first database found, without the extension
-                    db_name = os.path.splitext(db_files[0])[0]
-                    db_path = os.path.join(location, db_name)
-                    logger.debug(f"Found existing BLAST database: {db_path}")
-                    return db_path
-                else:
-                    logger.debug(f"No database files (.nhr) found in {location}")
-        
-        # If no database found, return None
-        logger.debug("No existing BLAST database found.")
-        return None
-
-
-    @classmethod
-    def get_instance(cls) -> 'Config':
-        """
-        Get the singleton instance of Config.
-        
-        Returns:
-            Config: Singleton instance
-        """
-        if cls._instance is None:
-            cls._instance = cls()
-            # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
-            if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
-                cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
-            
-            # Initialize the BLAST database path if not already set
-            if cls.DB_PATH is None:
-                cls.DB_PATH = cls._initialize_db_path()
-        return cls._instance
-    
-    @classmethod
-    def save_database_config(cls, db_path):
-        """
-        Save the database path to a config file for future runs.
-        
-        Args:
-            db_path (str): Path to the BLAST database
-        """
-        from pathlib import Path
-        config_dir = os.path.join(Path.home(), ".ddprimer")
-        os.makedirs(config_dir, exist_ok=True)
-        
-        # Save the database path to a simple config file
-        config_file = os.path.join(config_dir, "db_config.txt")
-        with open(config_file, "w") as f:
-            f.write(db_path)
     
     @classmethod
     def _save_to_json(cls, filepath: str) -> bool:

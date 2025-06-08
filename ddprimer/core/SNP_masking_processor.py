@@ -84,6 +84,116 @@ class SNPMaskingProcessor:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise FileError(f"Failed to run bcftools: {e}")
     
+    def get_filtered_variants(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+        """
+        Extract variant positions from VCF file with allele frequency and quality filtering.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chromosome (str, optional): Specific chromosome to filter
+            min_af (float, optional): Minimum allele frequency threshold (0.0-1.0)
+            min_qual (float, optional): Minimum QUAL score threshold
+            
+        Returns:
+            dict: Dictionary mapping chromosomes to sets of variant positions
+            
+        Raises:
+            FileError: If VCF file cannot be processed
+        """
+        logger.debug(f"Fetching filtered variants from {vcf_file}")
+        logger.debug(f"Filters: min_af={min_af}, min_qual={min_qual}, chromosome={chromosome}")
+        
+        if not os.path.exists(vcf_file):
+            logger.error(f"VCF file not found: {vcf_file}")
+            raise FileError(f"VCF file not found: {vcf_file}")
+        
+        # Build bcftools query command with filters
+        filters = []
+        
+        # Quality filter
+        if min_qual is not None:
+            filters.append(f"QUAL>={min_qual}")
+        
+        # Allele frequency filter - use standard AF field
+        if min_af is not None:
+            filters.append(f"AF>={min_af}")
+        
+        # Build command
+        if filters:
+            filter_string = " && ".join(filters)
+            command = f'bcftools query -i "{filter_string}" -f "%CHROM\\t%POS\\t%QUAL\\t%INFO/AF\\n" "{vcf_file}"'
+        else:
+            command = f'bcftools query -f "%CHROM\\t%POS\\t%QUAL\\t%INFO/AF\\n" "{vcf_file}"'
+        
+        # Add chromosome filter if specified
+        if chromosome:
+            command += f' -r "{chromosome}"'
+            logger.debug(f"Filtering variants for chromosome: {chromosome}")
+        
+        logger.debug(f"Running command: {command}")
+        
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                logger.warning(f"bcftools query with filters failed: {result.stderr}")
+                logger.info("Falling back to basic variant extraction without AF/QUAL filtering")
+                return self.get_variant_positions(vcf_file, chromosome)
+            
+            # Parse results
+            variants = {}
+            total_variants = 0
+            filtered_variants = 0
+            
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                    
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    chrom = parts[0]
+                    try:
+                        pos = int(parts[1])
+                        qual = float(parts[2]) if len(parts) > 2 and parts[2] != "." else None
+                        af = float(parts[3]) if len(parts) > 3 and parts[3] != "." and parts[3] != "" else None
+                        
+                        total_variants += 1
+                        
+                        # Apply manual filters if bcftools filtering didn't work perfectly
+                        passes_filter = True
+                        
+                        if min_qual is not None and qual is not None:
+                            if qual < min_qual:
+                                passes_filter = False
+                        
+                        if min_af is not None and af is not None:
+                            if af < min_af:
+                                passes_filter = False
+                        
+                        if passes_filter:
+                            if chrom not in variants:
+                                variants[chrom] = set()
+                            variants[chrom].add(pos)
+                            filtered_variants += 1
+                        
+                    except ValueError:
+                        logger.warning(f"Invalid position value in VCF: {parts[1]}")
+                        continue
+            
+            logger.info(f"Processed {total_variants} total variants")
+            logger.info(f"Retained {filtered_variants} variants after filtering")
+            if min_af is not None:
+                logger.info(f"AF filter (>={min_af}): {filtered_variants}/{total_variants} variants retained")
+            if min_qual is not None:
+                logger.info(f"QUAL filter (>={min_qual}): {filtered_variants}/{total_variants} variants retained")
+            
+            return variants
+            
+        except subprocess.SubprocessError as e:
+            logger.warning(f"Failed to run bcftools with filters: {e}")
+            logger.info("Falling back to basic variant extraction")
+            return self.get_variant_positions(vcf_file, chromosome)
+    
     def prepare_vcf_file(self, vcf_file):
         """
         Prepare a VCF file for region queries by ensuring it's compressed with bgzip and indexed with tabix.
@@ -152,15 +262,17 @@ class SNPMaskingProcessor:
         
         return vcf_file
     
-    def get_region_variants(self, vcf_file, chromosome, start_pos, end_pos):
+    def get_region_variants(self, vcf_file, chromosome, start_pos, end_pos, min_af=None, min_qual=None):
         """
-        Extract variant positions from the VCF file for a specific genomic region.
+        Extract variant positions from the VCF file for a specific genomic region with filtering.
         
         Args:
             vcf_file (str): Path to VCF file
             chromosome (str): Chromosome name
             start_pos (int): Start position of the region
             end_pos (int): End position of the region
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
             
         Returns:
             set: Set of variant positions within the specified region
@@ -169,13 +281,25 @@ class SNPMaskingProcessor:
             SequenceProcessingError: If region variants cannot be extracted
         """
         logger.debug(f"Fetching variants for region {chromosome}:{start_pos}-{end_pos}")
+        logger.debug(f"Filters: min_af={min_af}, min_qual={min_qual}")
         
         # Prepare the VCF file (compress and index if needed)
         try:
             prepared_vcf = self.prepare_vcf_file(vcf_file)
             
-            # Use bcftools to query the region
-            command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
+            # Build filters for bcftools
+            filters = []
+            if min_qual is not None:
+                filters.append(f"QUAL>={min_qual}")
+            if min_af is not None:
+                filters.append(f"AF>={min_af}")
+            
+            # Build bcftools command
+            if filters:
+                filter_string = " && ".join(filters)
+                command = f'bcftools query -i "{filter_string}" -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
+            else:
+                command = f'bcftools query -f "%POS\\n" -r "{chromosome}:{start_pos}-{end_pos}" "{prepared_vcf}"'
             
             logger.debug(f"Running command: {command}")
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
@@ -204,9 +328,9 @@ class SNPMaskingProcessor:
         
         # Manual parsing approach for when bcftools fails
         logger.debug("Falling back to manual VCF parsing")
-        return self._extract_variants_manually(prepared_vcf, chromosome, start_pos, end_pos)
+        return self._extract_variants_manually(prepared_vcf, chromosome, start_pos, end_pos, min_af, min_qual)
     
-    def _extract_variants_manually(self, vcf_file, chrom, start, end):
+    def _extract_variants_manually(self, vcf_file, chrom, start, end, min_af=None, min_qual=None):
         """
         Extract variants from a VCF file for a specific region using manual parsing.
         This is a fallback method when bcftools fails.
@@ -216,6 +340,8 @@ class SNPMaskingProcessor:
             chrom (str): Chromosome name
             start (int): Start position
             end (int): End position
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
             
         Returns:
             set: Set of variant positions in the region
@@ -235,7 +361,7 @@ class SNPMaskingProcessor:
                     
                     # Parse VCF data line
                     fields = line.strip().split('\t')
-                    if len(fields) < 5:  # Minimum valid VCF line
+                    if len(fields) < 8:  # Minimum valid VCF line (CHROM, POS, ID, REF, ALT, QUAL, FILTER, INFO)
                         continue
                     
                     # Check chromosome match
@@ -246,8 +372,29 @@ class SNPMaskingProcessor:
                     # Check position is in our region
                     try:
                         pos = int(fields[1])
-                        if start <= pos <= end:
-                            variants.add(pos)
+                        if not (start <= pos <= end):
+                            continue
+                        
+                        # Apply quality filter
+                        if min_qual is not None:
+                            try:
+                                qual = float(fields[5])
+                                if qual < min_qual:
+                                    continue
+                            except (ValueError, IndexError):
+                                # Skip if QUAL cannot be parsed
+                                if min_qual is not None:
+                                    continue
+                        
+                        # Apply allele frequency filter
+                        if min_af is not None:
+                            info_field = fields[7] if len(fields) > 7 else ""
+                            af_value = self._parse_af_from_info(info_field)
+                            if af_value is None or af_value < min_af:
+                                continue
+                        
+                        variants.add(pos)
+                        
                     except ValueError:
                         logger.warning(f"Invalid position value in VCF: {fields[1]}")
                         continue
@@ -259,6 +406,29 @@ class SNPMaskingProcessor:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
         
         return variants
+    
+    def _parse_af_from_info(self, info_field):
+        """
+        Parse allele frequency from INFO field.
+        
+        Args:
+            info_field (str): INFO field from VCF line
+            
+        Returns:
+            float or None: Allele frequency if found, None otherwise
+        """
+        try:
+            # Look for AF= in the INFO field
+            for info_item in info_field.split(';'):
+                if info_item.startswith('AF='):
+                    af_str = info_item[3:]  # Remove 'AF=' prefix
+                    # Handle multiple values (take the first one)
+                    if ',' in af_str:
+                        af_str = af_str.split(',')[0]
+                    return float(af_str)
+        except (ValueError, AttributeError):
+            pass
+        
     
     def extract_reference_sequences(self, fasta_file):
         """
@@ -294,69 +464,110 @@ class SNPMaskingProcessor:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise FileError(f"Failed to read FASTA file: {e}")
     
-    def mask_variants(self, sequence, variant_positions):
+    def mask_variants(self, sequence, variant_positions, flanking_size=0, use_soft_masking=False):
         """
-        Simple variant masking - replace only the exact SNP positions with 'N'.
+        Mask variants in sequence with options for flanking regions and soft masking.
         
         Args:
             sequence (str): Input DNA sequence
             variant_positions (set): Set of variant positions (1-based)
+            flanking_size (int): Number of bases to mask around each variant (default: 0)
+            use_soft_masking (bool): Use lowercase letters instead of 'N' (default: False)
             
         Returns:
-            str: Masked sequence with SNPs replaced by 'N'
+            str: Masked sequence
         """
         if not variant_positions:
             logger.debug("No variant positions to mask")
             return sequence
             
         sequence_list = list(sequence)
-        masked_positions = 0
+        masked_positions = set()
         
-        # Mask only the exact variant positions
+        # Calculate all positions to mask (including flanking regions)
+        positions_to_mask = set()
+        
         variant_pos_list = list(variant_positions)
-        logger.debug(f"Processing {len(variant_pos_list)} variant positions")
+        logger.debug(f"Processing {len(variant_pos_list)} variant positions with flanking_size={flanking_size}")
         
         if Config.SHOW_PROGRESS and len(variant_pos_list) > 1000:  # Only show progress for large sets
-            variant_iter = tqdm(variant_pos_list, desc="Masking variants")
+            variant_iter = tqdm(variant_pos_list, desc="Calculating mask positions")
         else:
             variant_iter = variant_pos_list
             
         for pos in variant_iter:
             # Convert 1-based VCF position to 0-based sequence index
-            idx = pos - 1
+            center_idx = pos - 1
             
-            if idx < 0 or idx >= len(sequence_list):
-                continue
+            # Add flanking positions
+            for offset in range(-flanking_size, flanking_size + 1):
+                mask_idx = center_idx + offset
+                if 0 <= mask_idx < len(sequence_list):
+                    positions_to_mask.add(mask_idx)
+        
+        # Apply masking
+        if Config.SHOW_PROGRESS and len(positions_to_mask) > 10000:
+            mask_iter = tqdm(positions_to_mask, desc="Applying masks")
+        else:
+            mask_iter = positions_to_mask
             
-            # Mask only the exact position
-            if sequence_list[idx] != 'N':  # Only count newly masked positions
+        for idx in mask_iter:
+            original_base = sequence_list[idx]
+            
+            if use_soft_masking:
+                # Convert to lowercase for soft masking
+                sequence_list[idx] = original_base.lower()
+            else:
+                # Use 'N' for hard masking
                 sequence_list[idx] = 'N'
-                masked_positions += 1
+            
+            if original_base.upper() in 'ATCG':  # Only count actual nucleotides as masked
+                masked_positions.add(idx)
         
         masked_sequence = "".join(sequence_list)
         
         # Calculate masking statistics
-        masked_ratio = masked_positions / len(sequence) if len(sequence) > 0 else 0
-        logger.debug(f"Masked {masked_positions} positions ({masked_ratio:.2%} of sequence)")
+        masked_count = len(masked_positions)
+        masked_ratio = masked_count / len(sequence) if len(sequence) > 0 else 0
+        
+        mask_type = "soft" if use_soft_masking else "hard"
+        logger.debug(f"Applied {mask_type} masking to {masked_count} positions ({masked_ratio:.2%} of sequence)")
+        
+        if flanking_size > 0:
+            logger.debug(f"Flanking region size: {flanking_size} bases around each variant")
         
         return masked_sequence
     
-    def mask_sequences_for_primer_design(self, sequences, variants):
+    def mask_sequences_for_primer_design(self, sequences, variants, flanking_size=0, 
+                                       use_soft_masking=False, min_af=None, min_qual=None):
         """
-        Mask variants in sequences for primer design.
+        Mask variants in sequences for primer design with advanced filtering options.
         
         Args:
             sequences (dict): Dictionary of sequences
             variants (dict): Dictionary mapping chromosomes to sets of variant positions
+            flanking_size (int): Number of bases to mask around each variant (default: 0)
+            use_soft_masking (bool): Use lowercase letters instead of 'N' (default: False)
+            min_af (float, optional): Minimum allele frequency threshold for filtering
+            min_qual (float, optional): Minimum QUAL score threshold for filtering
             
         Returns:
             dict: Dictionary of masked sequences
         """
-        logger.info("Masking variants in sequences...")
+        mask_type = "soft" if use_soft_masking else "hard"
+        logger.info(f"Masking variants in sequences using {mask_type} masking...")
+        
+        if flanking_size > 0:
+            logger.info(f"Using flanking region size: {flanking_size} bases")
+        if min_af is not None:
+            logger.info(f"AF filter: variants with AF >= {min_af}")
+        if min_qual is not None:
+            logger.info(f"QUAL filter: variants with QUAL >= {min_qual}")
+        
         masked_sequences = {}
         
         if Config.SHOW_PROGRESS:
-            sequence_iter = tqdm(sequences.items(), desc="Masking sequences")
+            sequence_iter = tqdm(sequences.items(), desc=f"Masking sequences ({mask_type})")
         else:
             sequence_iter = sequences.items()
         
@@ -365,7 +576,12 @@ class SNPMaskingProcessor:
             # Assume sequence ID corresponds to chromosome name
             if seq_id in variants:
                 variant_positions = variants[seq_id]
-                masked_sequence = self.mask_variants(sequence, variant_positions)
+                masked_sequence = self.mask_variants(
+                    sequence, 
+                    variant_positions, 
+                    flanking_size=flanking_size,
+                    use_soft_masking=use_soft_masking
+                )
                 masked_sequences[seq_id] = masked_sequence
             else:
                 # No variants found for this sequence, use original
@@ -375,14 +591,16 @@ class SNPMaskingProcessor:
         logger.info(f"Completed variant masking for {len(masked_sequences)} sequences")
         return masked_sequences
     
-    def extract_variants_by_regions(self, vcf_file, conserved_regions):
+    def extract_variants_by_regions(self, vcf_file, conserved_regions, min_af=None, min_qual=None):
         """
-        Extract variants from VCF file only for specific conserved regions.
+        Extract variants from VCF file only for specific conserved regions with filtering.
         This optimizes memory usage by only loading variants in regions of interest.
         
         Args:
             vcf_file (str): Path to VCF file
             conserved_regions (dict): Dictionary mapping chromosome names to lists of conserved regions
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
             
         Returns:
             dict: Dictionary mapping chromosomes to sets of variant positions
@@ -391,6 +609,7 @@ class SNPMaskingProcessor:
             FileError: If VCF file cannot be processed
         """
         logger.debug(f"Extracting variants for specific regions from {vcf_file}")
+        logger.debug(f"Filters: min_af={min_af}, min_qual={min_qual}")
         
         if not os.path.exists(vcf_file):
             logger.error(f"VCF file not found: {vcf_file}")
@@ -425,8 +644,10 @@ class SNPMaskingProcessor:
                         logger.debug(f"Skipping small region {chrom}:{start}-{end} (< 10 bp)")
                         continue
                         
-                    # Extract variants for this specific region
-                    region_variants = self.get_region_variants(prepared_vcf, chrom, start, end)
+                    # Extract variants for this specific region with filtering
+                    region_variants = self.get_region_variants(
+                        prepared_vcf, chrom, start, end, min_af=min_af, min_qual=min_qual
+                    )
                     variants[chrom].update(region_variants)
             
             # Count total variants
@@ -478,18 +699,33 @@ class SNPMaskingProcessor:
                 combined_sequences[seq_id] = seq1
                 continue
             
-            # Combine masking - if either has an N, use N
+            # Combine masking - preserve masking from either sequence
             combined_seq = ""
             for i in range(len(seq1)):
-                if seq1[i] == 'N' or seq2[i] == 'N':
+                char1, char2 = seq1[i], seq2[i]
+                
+                # If either position is hard masked ('N'), use hard masking
+                if char1 == 'N' or char2 == 'N':
                     combined_seq += 'N'
+                # If either position is soft masked (lowercase), use soft masking
+                elif char1.islower() or char2.islower():
+                    # Use the lowercase version, preferring the original base if available
+                    if char1.islower():
+                        combined_seq += char1
+                    else:
+                        combined_seq += char2.lower()
+                # If neither is masked, use the original base (should be the same)
                 else:
-                    combined_seq += seq1[i]
+                    combined_seq += char1.upper()
             
             # Calculate masking statistics
             n_count = combined_seq.count('N')
-            n_ratio = n_count / len(combined_seq) if len(combined_seq) > 0 else 0
-            logger.debug(f"Combined sequence {seq_id}: {n_count}/{len(combined_seq)} bases masked ({n_ratio:.2%})")
+            lowercase_count = sum(1 for c in combined_seq if c.islower())
+            total_masked = n_count + lowercase_count
+            mask_ratio = total_masked / len(combined_seq) if len(combined_seq) > 0 else 0
+            
+            logger.debug(f"Combined sequence {seq_id}: {total_masked}/{len(combined_seq)} bases masked ({mask_ratio:.2%})")
+            logger.debug(f"  Hard masked (N): {n_count}, Soft masked (lowercase): {lowercase_count}")
             
             combined_sequences[seq_id] = combined_seq
         

@@ -22,16 +22,19 @@ import argparse
 import logging
 import traceback
 from datetime import datetime
-import tempfile
-import shutil
+from pathlib import Path
+from typing import Optional, Union
 
 # Import package modules
-from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, BlastError, FileSelectionError
+from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, BlastError, FileSelectionError, FileError, ExternalToolError
 from .utils import FileIO, TempDirectoryManager, BlastDBCreator, BlastVerification, ModelOrganismManager
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
+# Type alias for path inputs
+PathLike = Union[str, Path]
+
 # Define logger
-logger = logging.getLogger("ddPrimer")
+logger = logging.getLogger("ddPrimer.pipeline")
 
 
 def parse_arguments():
@@ -53,7 +56,6 @@ def parse_arguments():
             '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
             '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
     )
-
 
     # Create argument groups for better organization
     mode_group = parser.add_argument_group('modes')
@@ -161,7 +163,17 @@ def parse_arguments():
 
 
 class WorkflowFactory:
-    """Factory for creating the appropriate workflow based on command line arguments."""
+    """
+    Factory for creating the appropriate workflow based on command line arguments.
+    
+    This class provides a factory method to determine and return the correct
+    workflow function based on the command line arguments provided by the user.
+    
+    Example:
+        >>> args = parse_arguments()
+        >>> workflow = WorkflowFactory.create_workflow(args)
+        >>> success = workflow(args)
+    """
     
     @staticmethod
     def create_workflow(args):
@@ -187,18 +199,34 @@ class WorkflowFactory:
 
 
 class TempDirectoryManager:
-    """Context manager for temporary directory creation and cleanup."""
+    """
+    Context manager for temporary directory creation and cleanup.
     
-    def __init__(self, base_dir=None):
+    Provides a safe way to create and automatically clean up temporary
+    directories used during pipeline execution.
+    
+    Attributes:
+        temp_dir: Path to the created temporary directory
+        base_dir: Base directory for temporary directory creation
+        logger: Logger instance for this manager
+        
+    Example:
+        >>> with TempDirectoryManager() as temp_dir:
+        ...     # Use temp_dir for operations
+        ...     pass
+        # temp_dir is automatically cleaned up
+    """
+    
+    def __init__(self, base_dir: Optional[PathLike] = None):
         """
         Initialize the temporary directory manager.
         
         Args:
-            base_dir (str, optional): Base directory to create the temp directory in
+            base_dir: Base directory to create the temp directory in
         """
         self.temp_dir = None
-        self.base_dir = base_dir
-        self.logger = logging.getLogger("ddPrimer")
+        self.base_dir = str(base_dir) if base_dir else None
+        self.logger = logging.getLogger("ddPrimer.temp_manager")
         
     def __enter__(self):
         """
@@ -206,10 +234,22 @@ class TempDirectoryManager:
         
         Returns:
             str: Path to the temporary directory
+            
+        Raises:
+            FileError: If temporary directory creation fails
         """
-        self.temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=self.base_dir)
-        self.logger.debug(f"Created temporary directory: {self.temp_dir}")
-        return self.temp_dir
+        try:
+            import tempfile
+            self.temp_dir = tempfile.mkdtemp(
+                prefix=Config.BLAST_TEMP_FILE_PREFIX,
+                dir=self.base_dir
+            )
+            self.logger.debug(f"Created temporary directory: {self.temp_dir}")
+            return self.temp_dir
+        except OSError as e:
+            error_msg = f"Failed to create temporary directory: {str(e)}"
+            self.logger.error(error_msg)
+            raise FileError(error_msg) from e
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
@@ -220,21 +260,30 @@ class TempDirectoryManager:
             exc_val: Exception value if an exception was raised
             exc_tb: Exception traceback if an exception was raised
         """
-        try:
-            if self.temp_dir and os.path.exists(self.temp_dir):
+        if self.temp_dir and Path(self.temp_dir).exists():
+            try:
+                import shutil
                 self.logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
                 shutil.rmtree(self.temp_dir)
-        except Exception as e:
-            self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            except OSError as e:
+                self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
+                self.logger.debug(f"Error details: {str(e)}", exc_info=True)
 
 
 def run_pipeline():
     """
     Run the primer design pipeline.
     
+    Main entry point for pipeline execution. Handles argument parsing,
+    configuration loading, database verification, and workflow execution.
+    
     Returns:
         bool: True if the pipeline completed successfully, False otherwise
+        
+    Raises:
+        DDPrimerError: For application-specific errors
+        FileError: For file-related operations
+        ExternalToolError: For external tool failures
     """
     # Initialize logger first to handle any early errors
     logger = None
@@ -246,7 +295,7 @@ def run_pipeline():
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
         
-        logger = logging.getLogger("ddPrimer")
+        logger = logging.getLogger("ddPrimer.pipeline")
         logger.debug("Initializing Config settings")
         Config.get_instance()
         logger.debug(f"Initial DB_PATH: {Config.DB_PATH}")
@@ -278,7 +327,16 @@ def run_pipeline():
         # Load custom configuration if provided
         if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
             logger.debug(f"Loading custom configuration from {args.config}")
-            Config.load_from_file(args.config)
+            try:
+                Config.load_from_file(args.config)
+            except FileNotFoundError as e:
+                error_msg = f"Configuration file not found: {args.config}"
+                logger.error(error_msg)
+                raise FileError(error_msg) from e
+            except Exception as e:
+                error_msg = f"Error loading configuration file {args.config}: {str(e)}"
+                logger.error(error_msg)
+                raise FileError(error_msg) from e
             
         # Apply nooligo setting if specified
         if args.nooligo:
@@ -332,9 +390,10 @@ def run_pipeline():
                 # Handle direct file path
                 elif args.db_action == 'file':
                     fasta_file = args.db_fasta
-                    if not os.path.exists(fasta_file):
-                        logger.error(f"FASTA file not found: {fasta_file}")
-                        return False
+                    if not Path(fasta_file).exists():
+                        error_msg = f"FASTA file not found: {fasta_file}"
+                        logger.error(error_msg)
+                        raise FileError(error_msg)
                     organism_key = None  # Not a model organism
                     db_name = args.db_name
                     
@@ -380,23 +439,38 @@ def run_pipeline():
                     if not args.fasta:
                         return True
                         
+            except FileError:
+                # Re-raise FileError without modification
+                raise
+            except ExternalToolError:
+                # Re-raise ExternalToolError without modification
+                raise
             except Exception as e:
-                logger.error(f"Error during database operation: {str(e)}")
+                error_msg = f"Unexpected error during database operation: {str(e)}"
+                logger.error(error_msg)
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
-                return False
+                raise DDPrimerError(error_msg) from e
                 
         # Skip BLAST verification for lastzonly mode
         if not args.lastzonly:
             # Verify BLAST database
             logger.debug("Verifying BLAST database...")
             
-            if not BlastVerification.verify_blast_database(logger):
-                logger.error("BLAST database verification failed, and no new database created.")
+            try:
+                if not BlastVerification.verify_blast_database(logger):
+                    error_msg = "BLAST database verification failed, and no new database created."
+                    logger.error(error_msg)
+                    # Mark file selection as complete
+                    FileIO.mark_selection_complete()
+                    raise ExternalToolError(error_msg, tool_name="blastn")
+            except Exception as e:
+                error_msg = f"Error during BLAST verification: {str(e)}"
+                logger.error(error_msg)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
-                return False
+                raise ExternalToolError(error_msg, tool_name="blastn") from e
         
         logger.debug("=== Primer Design Pipeline ===")
         
