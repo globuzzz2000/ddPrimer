@@ -2,9 +2,7 @@
 """
 Sequence utility functions for ddPrimer pipeline.
 """
-import re
 import logging
-from ..config import Config
 
 class SequenceUtils:
     """Sequence-specific utility functions."""

@@ -14,7 +14,8 @@ import pandas as pd
 import tempfile
 import subprocess
 
-from ..config.exceptions import SequenceProcessingError
+# Import package modules
+from ..config import SequenceProcessingError
 
 # Set up logger
 logger = logging.getLogger("ddPrimer.helpers")

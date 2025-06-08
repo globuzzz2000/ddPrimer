@@ -7,12 +7,10 @@ These tests verify the functionality of the DatabaseSelector class,
 which is responsible for finding and selecting existing BLAST databases.
 """
 
-import os
-import sys
 import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
-# Import the module to test
+# Import package modules
 from ...utils import DatabaseSelector
 
 

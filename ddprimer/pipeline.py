@@ -16,18 +16,16 @@ A streamlined script that:
 Now with support for automatic model organism database creation!
 """
 
-import os
 import sys
 import argparse
 import logging
 import traceback
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
 # Import package modules
-from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, BlastError, FileSelectionError, FileError, ExternalToolError
-from .utils import FileIO, TempDirectoryManager, BlastDBCreator, BlastVerification, ModelOrganismManager
+from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, FileError, ExternalToolError
+from .utils import FileIO, BlastDBCreator, BlastVerification
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Type alias for path inputs
@@ -307,7 +305,7 @@ def run_pipeline():
         if args.config in ['DISPLAY', 'all', 'basic', 'template']:
             if args.config == 'template':
                 # Generate template configuration file
-                from .config.template_generator import generate_config_template
+                from .config import generate_config_template
                 # Use the output directory if provided
                 output_dir = args.output if hasattr(args, 'output') and args.output else None
                 generate_config_template(Config, output_dir=output_dir)
@@ -354,7 +352,7 @@ def run_pipeline():
                 # Handle model organism / existing db selection
                 if args.db_action == 'select':
                     logger.info("Database selection requested")
-                    from .utils.model_organism_manager import ModelOrganismManager as MOManager
+                    from .utils import ModelOrganismManager as MOManager
                     organism_key, organism_name, fasta_file = MOManager.select_model_organism(logger)
                     
                     if organism_key is None and fasta_file is None:
@@ -399,7 +397,6 @@ def run_pipeline():
                     
                 # If we have a file to create a database from
                 if fasta_file and organism_key != 'existing_db':
-                    logger.info(f"Creating BLAST database from {fasta_file}")
                     
                     # Use the output directory if provided, otherwise use default
                     output_dir = args.output if args.output else None
@@ -413,7 +410,7 @@ def run_pipeline():
                     
                     # Clean up genome file if it was from a model organism
                     if organism_key is not None and organism_key != 'existing_db':
-                        from .utils.model_organism_manager import ModelOrganismManager
+                        from .utils import ModelOrganismManager
                         ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
 
                     # Check if there's already a database path set

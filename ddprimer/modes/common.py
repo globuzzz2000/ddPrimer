@@ -14,16 +14,10 @@ import logging
 import pandas as pd
 from tqdm import tqdm
 
-from ..config import Config
-from ..config.exceptions import SequenceProcessingError, PrimerDesignError, FileFormatError
-from ..utils.file_io import FileIO
-from ..core import (
-    PrimerProcessor,
-    BlastProcessor,
-    SequenceProcessor,
-    Primer3Processor,
-    ViennaRNAProcessor  # Only import ViennaRNAProcessor
-)
+# Import package modules
+from ..config import Config, SequenceProcessingError, PrimerDesignError
+from ..utils import FileIO
+from ..core import PrimerProcessor, BlastProcessor, SequenceProcessor, Primer3Processor, ViennaRNAProcessor 
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")
@@ -488,18 +482,13 @@ def calculate_thermodynamics(df):
     Raises:
         PrimerDesignError: If there's an error in thermodynamic calculations
     """
-    # Check if ViennaRNA is available
-    if not ViennaRNAProcessor.is_available():
-        logger.warning("ViennaRNA is not available. Skipping thermodynamic analysis.")
         
-        # Add empty columns to maintain DataFrame structure
-        df["Primer F dG"] = None
-        df["Primer R dG"] = None
-        if "Probe" in df.columns:
-            df["Probe dG"] = None
-        df["Amplicon dG"] = None
-        
-        return df
+    # Add empty columns to maintain DataFrame structure
+    df["Primer F dG"] = None
+    df["Primer R dG"] = None
+    if "Probe" in df.columns:
+        df["Probe dG"] = None
+    df["Amplicon dG"] = None
         
     logger.info("\nCalculating thermodynamic properties with ViennaRNA...")
     

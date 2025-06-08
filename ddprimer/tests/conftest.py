@@ -18,14 +18,15 @@ import warnings
 from unittest import mock
 
 
+
+# Import package modules
+from ..config import Config
+
 # Add the parent directory to the path so we can import the package
 # This is needed when running tests from the tests directory
 parent_dir = str(Path(__file__).parent.parent)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-
-# Import package modules here
-from ..config import Config
 
 
 # ============== Suppress all logging completely ===============

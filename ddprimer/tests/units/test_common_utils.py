@@ -6,12 +6,9 @@ Unit tests for common utility functions in the ddPrimer pipeline.
 These tests verify the basic functionality of utility classes like CommonUtils.
 """
 
-import os
-import sys
 import pytest
-from pathlib import Path
 
-# Import the module to test
+# Import package modules
 from ...utils import CommonUtils
 
 

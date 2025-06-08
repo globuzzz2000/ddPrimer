@@ -13,8 +13,9 @@ import pytest
 import tempfile
 from unittest.mock import patch, MagicMock, mock_open, call
 
+# Import package modules
 from ...helpers import LastZRunner
-from ...config import Config, AlignmentError
+from ...config import AlignmentError
 
 
 # Fixtures

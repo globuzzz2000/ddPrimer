@@ -24,6 +24,7 @@ from unittest.mock import patch, MagicMock, mock_open
 # Ensure the package is in the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# Import package modules
 from ...config import Config
 from ...core import SNPMaskingProcessor, SequenceProcessor
 from ...utils import FileIO

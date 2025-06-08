@@ -18,8 +18,8 @@ import contextlib
 import tempfile
 import shutil
 
-from ..config import Config
-from ..config.exceptions import FileSelectionError, FileFormatError
+# Import package modules
+from ..config import FileSelectionError, FileFormatError
 
 
 # Optional import for Excel formatting
@@ -319,7 +319,7 @@ class FileIO:
                 return file_path
 
             except Exception as e:
-                logger.error(f"wxPython file selection failed: {e}")
+                logger.debug(f"wxPython file selection failed: {e}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Fall back to CLI mode if wxPython fails
                 cls.use_cli = True
@@ -676,7 +676,7 @@ class FileIO:
         
         try:
             # Use SequenceAnalyzer to analyze the file structure
-            from ..helpers.sequence_analyzer import SequenceAnalyzer
+            from ..helpers import SequenceAnalyzer
             analysis = SequenceAnalyzer.analyze_file(file_path)
             
             if "error" in analysis:

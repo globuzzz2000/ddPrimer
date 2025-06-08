@@ -17,9 +17,10 @@ from typing import Dict, List, Optional
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
+# Import package modules
 from ..config import Config
-from ..utils.sequence_utils import SequenceUtils
-from ..config.exceptions import SequenceProcessingError
+from ..utils import SequenceUtils
+from ..config import SequenceProcessingError
 
 class Primer3Processor:
     """Handles Primer3 operations for primer design using the primer3-py package."""

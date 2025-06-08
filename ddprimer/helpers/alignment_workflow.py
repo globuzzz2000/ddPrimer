@@ -15,9 +15,9 @@ import logging
 import tempfile
 import shutil
 
-from ..config import Config
-from ..config.exceptions import AlignmentError, FileFormatError
-from ..utils.file_io import FileIO
+# Import package modules
+from ..config import Config, AlignmentError, FileFormatError
+from ..utils import FileIO
 from ..core import SNPMaskingProcessor
 from .lastz_runner import LastZRunner
 from .maf_parser import MAFParser

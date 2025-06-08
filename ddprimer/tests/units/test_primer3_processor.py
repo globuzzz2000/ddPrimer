@@ -5,12 +5,10 @@ Unit tests for the Primer3Processor module.
 """
 
 import pytest
-import re
-import primer3
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
+# Import package modules
 from ...core import Primer3Processor
-from ...config import SequenceProcessingError
 
 
 class TestPrimer3Processor:

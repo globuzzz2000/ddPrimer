@@ -7,13 +7,8 @@ These tests verify the functionality of the SequenceUtils class,
 which provides sequence-specific operations for DNA sequences.
 """
 
-import os
-import sys
-import pytest
-
-# Import the module to test
+# Import package modules
 from ...utils import SequenceUtils
-from ...config import Config
 
 
 class TestSequenceUtils:

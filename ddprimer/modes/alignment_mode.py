@@ -12,7 +12,6 @@ This module contains the implementation of the alignment mode workflow:
 
 import os
 import logging
-import tempfile
 
 # Import package modules
 from ..config import Config, FileSelectionError, AlignmentError

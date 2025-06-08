@@ -6,15 +6,14 @@ Unit tests for the SNPMaskingProcessor module.
 
 import pytest
 import os
-import io
 import gzip
 from unittest.mock import patch, MagicMock, mock_open
-import subprocess
 import tempfile
-from Bio import SeqIO
 
+
+# Import package modules
 from ...core import SNPMaskingProcessor
-from ...config.exceptions import FileError, SequenceProcessingError
+from ...config import FileError, SequenceProcessingError
 
 
 class TestSNPMaskingProcessor:

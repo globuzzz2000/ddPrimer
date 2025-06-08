@@ -5,16 +5,12 @@ Unit tests for the blast processor module.
 Tests BLAST operations for primer specificity checking.
 """
 
-import os
-import tempfile
-import subprocess
 import pandas as pd
-import pytest
 from unittest import mock
 
-# Import the module to test
+# Import package modules
 from ...core.blast_processor import BlastProcessor
-from ...config import Config, SequenceProcessingError
+from ...config import Config
 
 
 class TestBlastProcessor:

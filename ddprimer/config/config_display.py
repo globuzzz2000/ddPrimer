@@ -7,7 +7,6 @@ Configuration display module for the ddPrimer pipeline.
 import textwrap
 import colorama
 from colorama import Fore, Style
-from typing import Dict, Any
 
 def display_config(config_cls):
     """

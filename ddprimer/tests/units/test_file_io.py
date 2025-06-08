@@ -25,9 +25,9 @@ parent_dir = str(Path(__file__).parent.parent)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-# Import the module to test
-from ddprimer.utils.file_io import FileIO, TempDirectoryManager
-from ddprimer.config.exceptions import FileSelectionError, FileFormatError
+# Import package modules
+from ...utils import FileIO, TempDirectoryManager
+from ...config import FileSelectionError
 
 
 class TestFileIO(unittest.TestCase):

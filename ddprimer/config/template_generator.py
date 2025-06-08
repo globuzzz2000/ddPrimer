@@ -6,7 +6,6 @@ Configuration template generator for the ddPrimer pipeline.
 
 import os
 import json
-import sys
 from datetime import datetime
 import colorama
 from colorama import Fore, Style

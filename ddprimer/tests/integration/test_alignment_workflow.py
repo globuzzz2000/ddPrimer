@@ -23,10 +23,10 @@ from unittest.mock import patch, MagicMock, mock_open
 # Ensure the package is in the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# Import package modules
 from ...config import Config
 from ...helpers import MAFParser, run_alignment_workflow
-from ...core import SNPMaskingProcessor, AnnotationProcessor 
-from ...utils import FileIO
+from ...core import SNPMaskingProcessor
 
 
 class TestAlignmentWorkflow(unittest.TestCase):

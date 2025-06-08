@@ -3,11 +3,10 @@ import logging
 import subprocess
 import gzip
 from Bio import SeqIO
-from concurrent.futures import ThreadPoolExecutor
-import multiprocessing
 from tqdm import tqdm
-from ..config import Config
-from ..config.exceptions import FileError, SequenceProcessingError
+
+# Import package modules
+from ..config import Config, FileError, SequenceProcessingError
 
 # Set up logging
 logger = logging.getLogger("ddPrimer.snp_masking_processor")
@@ -107,16 +106,43 @@ class SNPMaskingProcessor:
             logger.error(f"VCF file not found: {vcf_file}")
             raise FileError(f"VCF file not found: {vcf_file}")
         
-        # Build bcftools query command with filters
+        # If no filters specified, use basic extraction
+        if min_af is None and min_qual is None:
+            logger.debug("No filters specified, using basic variant extraction")
+            return self.get_variant_positions(vcf_file, chromosome)
+        
+        # First, try bcftools approach with filtering
+        try:
+            return self._extract_with_bcftools(vcf_file, chromosome, min_af, min_qual)
+        except Exception as e:
+            logger.warning(f"bcftools filtering failed: {str(e)}")
+            logger.info("Falling back to manual VCF parsing with filtering")
+            # Use manual parsing but with filtering applied
+            return self._extract_variants_manually_global(vcf_file, chromosome, min_af, min_qual)
+    
+    def _extract_with_bcftools(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+        """
+        Extract variants using bcftools with proper filtering.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chromosome (str, optional): Specific chromosome to filter
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
+            
+        Returns:
+            dict: Dictionary mapping chromosomes to sets of variant positions
+        """
+        # Build filters carefully
         filters = []
         
         # Quality filter
         if min_qual is not None:
             filters.append(f"QUAL>={min_qual}")
         
-        # Allele frequency filter - use standard AF field
+        # For AF filtering, we'll include it in the filter but handle errors gracefully
         if min_af is not None:
-            filters.append(f"AF>={min_af}")
+            filters.append(f"INFO/AF>={min_af}")
         
         # Build command
         if filters:
@@ -130,20 +156,23 @@ class SNPMaskingProcessor:
             command += f' -r "{chromosome}"'
             logger.debug(f"Filtering variants for chromosome: {chromosome}")
         
-        logger.debug(f"Running command: {command}")
+        logger.debug(f"Running bcftools command: {command}")
         
         try:
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             
             if result.returncode != 0:
-                logger.warning(f"bcftools query with filters failed: {result.stderr}")
-                logger.info("Falling back to basic variant extraction without AF/QUAL filtering")
-                return self.get_variant_positions(vcf_file, chromosome)
+                # If AF filtering fails, try without AF filter but with manual AF filtering
+                if min_af is not None and "INFO/AF" in result.stderr:
+                    logger.warning("AF field might not exist in VCF INFO, trying alternative approach")
+                    return self._extract_with_bcftools_fallback(vcf_file, chromosome, min_af, min_qual)
+                else:
+                    raise subprocess.SubprocessError(f"bcftools failed: {result.stderr}")
             
-            # Parse results
+            # Parse results and apply manual filtering as backup
             variants = {}
-            total_variants = 0
-            filtered_variants = 0
+            total_processed = 0
+            total_kept = 0
             
             for line in result.stdout.strip().split("\n"):
                 if not line:
@@ -155,44 +184,200 @@ class SNPMaskingProcessor:
                     try:
                         pos = int(parts[1])
                         qual = float(parts[2]) if len(parts) > 2 and parts[2] != "." else None
-                        af = float(parts[3]) if len(parts) > 3 and parts[3] != "." and parts[3] != "" else None
+                        af = None
+                        if len(parts) > 3 and parts[3] not in [".", ""]:
+                            try:
+                                af_values = [float(x.replace(",", ".")) for x in parts[3].split(",")]
+                                af = sum(af_values)
+                            except ValueError:
+                                logger.warning(f"Invalid AF value: {parts[3]}")
                         
-                        total_variants += 1
+                        total_processed += 1
                         
-                        # Apply manual filters if bcftools filtering didn't work perfectly
+                        # Apply manual filters as backup (bcftools should have done this, but double-check)
                         passes_filter = True
                         
-                        if min_qual is not None and qual is not None:
-                            if qual < min_qual:
-                                passes_filter = False
+                        if min_qual is not None and qual is not None and qual < min_qual:
+                            passes_filter = False
                         
-                        if min_af is not None and af is not None:
-                            if af < min_af:
-                                passes_filter = False
+                        if min_af is not None and af is not None and af < min_af:
+                            passes_filter = False
                         
                         if passes_filter:
                             if chrom not in variants:
                                 variants[chrom] = set()
                             variants[chrom].add(pos)
-                            filtered_variants += 1
-                        
+                            total_kept += 1
+                            
                     except ValueError:
-                        logger.warning(f"Invalid position value in VCF: {parts[1]}")
+                        logger.warning(f"BInvalid position value in VCF: {parts[1]}")
                         continue
             
-            logger.info(f"Processed {total_variants} total variants")
-            logger.info(f"Retained {filtered_variants} variants after filtering")
+            logger.info(f"bcftools processing: {total_processed} variants examined, {total_kept} kept after filtering")
             if min_af is not None:
-                logger.info(f"AF filter (>={min_af}): {filtered_variants}/{total_variants} variants retained")
+                logger.debug(f"AF threshold applied: >= {min_af}")
             if min_qual is not None:
-                logger.info(f"QUAL filter (>={min_qual}): {filtered_variants}/{total_variants} variants retained")
+                logger.debug(f"QUAL threshold applied: >= {min_qual}")
             
             return variants
             
-        except subprocess.SubprocessError as e:
-            logger.warning(f"Failed to run bcftools with filters: {e}")
-            logger.info("Falling back to basic variant extraction")
-            return self.get_variant_positions(vcf_file, chromosome)
+        except subprocess.SubprocessError:
+            # Re-raise subprocess errors
+            raise
+        except Exception as e:
+            logger.warning(f"Error in bcftools processing: {str(e)}")
+            raise
+    
+    def _extract_with_bcftools_fallback(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+        """
+        Fallback bcftools approach when AF field filtering fails.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chromosome (str, optional): Specific chromosome to filter
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
+            
+        Returns:
+            dict: Dictionary mapping chromosomes to sets of variant positions
+        """
+        # Try with only QUAL filter first, then manually filter AF
+        filters = []
+        if min_qual is not None:
+            filters.append(f"QUAL>={min_qual}")
+        
+        if filters:
+            filter_string = " && ".join(filters)
+            command = f'bcftools query -i "{filter_string}" -f "%CHROM\\t%POS\\t%QUAL\\t%INFO/AF\\n" "{vcf_file}"'
+        else:
+            command = f'bcftools query -f "%CHROM\\t%POS\\t%QUAL\\t%INFO/AF\\n" "{vcf_file}"'
+        
+        if chromosome:
+            command += f' -r "{chromosome}"'
+        
+        logger.debug(f"Fallback bcftools command: {command}")
+        
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise subprocess.SubprocessError(f"Fallback bcftools failed: {result.stderr}")
+        
+        # Parse and manually filter
+        variants = {}
+        total_processed = 0
+        total_kept = 0
+        
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+                
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                chrom = parts[0]
+                try:
+                    pos = int(parts[1])
+                    qual = float(parts[2]) if len(parts) > 2 and parts[2] != "." else None
+                    af_str = parts[3] if len(parts) > 3 else ""
+                    
+                    total_processed += 1
+                    
+                    # Parse AF from INFO field if needed
+                    if min_af is not None:
+                        af = self._parse_af_from_string(af_str)
+                        if af is None or af < min_af:
+                            continue
+                    
+                    # QUAL should already be filtered by bcftools, but double-check
+                    if min_qual is not None and qual is not None and qual < min_qual:
+                        continue
+                    
+                    if chrom not in variants:
+                        variants[chrom] = set()
+                    variants[chrom].add(pos)
+                    total_kept += 1
+                    
+                except ValueError:
+                    logger.warning(f"Invalid position value: {parts[1]}")
+                    continue
+        
+        logger.info(f"bcftools fallback: {total_processed} variants examined, {total_kept} kept after filtering")
+        return variants
+    
+    def _extract_variants_manually_global(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+        """
+        Extract variants using manual VCF parsing with filtering applied globally.
+        
+        Args:
+            vcf_file (str): Path to VCF file
+            chromosome (str, optional): Specific chromosome to filter
+            min_af (float, optional): Minimum allele frequency threshold
+            min_qual (float, optional): Minimum QUAL score threshold
+            
+        Returns:
+            dict: Dictionary mapping chromosomes to sets of variant positions
+        """
+        variants = {}
+        total_processed = 0
+        total_kept = 0
+        
+        try:
+            open_func = gzip.open if vcf_file.endswith('.gz') else open
+            mode = 'rt' if vcf_file.endswith('.gz') else 'r'
+            
+            with open_func(vcf_file, mode) as vcf:
+                for line in vcf:
+                    if line.startswith('#'):
+                        continue
+                    
+                    fields = line.strip().split('\t')
+                    if len(fields) < 8:
+                        continue
+                    
+                    vcf_chrom = fields[0]
+                    if chromosome and vcf_chrom != chromosome:
+                        continue
+                    
+                    try:
+                        pos = int(fields[1])
+                        total_processed += 1
+                        
+                        # Apply quality filter
+                        if min_qual is not None:
+                            try:
+                                qual = float(fields[5])
+                                if qual < min_qual:
+                                    continue
+                            except (ValueError, IndexError):
+                                # Skip if QUAL cannot be parsed and filter is required
+                                continue
+                        
+                        # Apply allele frequency filter
+                        if min_af is not None:
+                            info_field = fields[7] if len(fields) > 7 else ""
+                            af_value = self._parse_af_from_info(info_field)
+                            if af_value is None or af_value < min_af:
+                                continue
+                        
+                        if vcf_chrom not in variants:
+                            variants[vcf_chrom] = set()
+                        variants[vcf_chrom].add(pos)
+                        total_kept += 1
+                        
+                    except ValueError:
+                        logger.warning(f"Invalid position value: {fields[1]}")
+                        continue
+            
+            logger.info(f"Manual parsing: {total_processed} variants examined, {total_kept} kept after filtering")
+            if min_af is not None:
+                logger.info(f"Manual AF filtering applied: >= {min_af}")
+            if min_qual is not None:
+                logger.info(f"Manual QUAL filtering applied: >= {min_qual}")
+            
+        except Exception as e:
+            logger.error(f"Error in manual VCF parsing: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        
+        return variants
     
     def prepare_vcf_file(self, vcf_file):
         """
@@ -292,7 +477,7 @@ class SNPMaskingProcessor:
             if min_qual is not None:
                 filters.append(f"QUAL>={min_qual}")
             if min_af is not None:
-                filters.append(f"AF>={min_af}")
+                filters.append(f"INFO/AF>={min_af}")
             
             # Build bcftools command
             if filters:
@@ -429,6 +614,28 @@ class SNPMaskingProcessor:
         except (ValueError, AttributeError):
             pass
         
+        return None
+    
+    def _parse_af_from_string(self, af_str):
+        """
+        Parse allele frequency from a string that might be from INFO/AF field.
+        
+        Args:
+            af_str (str): String containing AF value
+            
+        Returns:
+            float or None: Allele frequency if found, None otherwise
+        """
+        try:
+            if af_str and af_str != "." and af_str != "":
+                # Handle comma-separated values (take first)
+                if ',' in af_str:
+                    af_str = af_str.split(',')[0]
+                return float(af_str)
+        except (ValueError, AttributeError):
+            pass
+        
+        return None
     
     def extract_reference_sequences(self, fasta_file):
         """

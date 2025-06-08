@@ -11,13 +11,13 @@ generating coordinate maps, and masking sequences.
 import os
 import pytest
 import tempfile
-from unittest.mock import patch, MagicMock, mock_open, call
-from io import StringIO
+from unittest.mock import patch, MagicMock, mock_open
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+# Import package modules
 from ...helpers import MAFParser
-from ...config import Config, AlignmentError
+from ...config import AlignmentError
 
 
 # Sample MAF data for testing

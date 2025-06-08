@@ -6,8 +6,9 @@ import concurrent.futures
 import logging
 import pandas as pd
 from tqdm import tqdm
-from ..config import Config
-from ..config.exceptions import SequenceProcessingError
+
+# Import package modules
+from ..config import Config, SequenceProcessingError
 
 class BlastProcessor:
     """Handles BLAST operations for primer specificity checking."""

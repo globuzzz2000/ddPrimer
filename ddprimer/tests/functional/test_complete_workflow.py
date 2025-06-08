@@ -23,10 +23,9 @@ from unittest.mock import patch, MagicMock
 # Ensure the package is in the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-# Import modules with correct paths
+# Import package modules
 from ...pipeline import run_pipeline 
 from ...config import Config
-from ...utils.blast_verification import BlastVerification
 
 
 class TestCompleteWorkflow(unittest.TestCase):

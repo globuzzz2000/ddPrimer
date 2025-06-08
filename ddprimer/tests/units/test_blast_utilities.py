@@ -8,14 +8,12 @@ classes, which are responsible for creating and verifying BLAST databases.
 """
 
 import os
-import sys
 import pytest
 import tempfile
 import shutil
-import subprocess
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
-# Import the modules to test
+# Import package modules
 from ...utils import BlastDBCreator
 from ...utils import BlastVerification
 from ...config import Config

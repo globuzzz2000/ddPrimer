@@ -23,5 +23,8 @@ __all__ = [
     'CommonUtils',
     'BlastVerification',
     'ModelOrganismManager',
-    'DatabaseSelector'
+    'DatabaseSelector',
+    'FileIO',
+    'TempDirectoryManager',
+    'SequenceUtils'
 ]

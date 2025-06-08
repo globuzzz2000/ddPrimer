@@ -26,8 +26,9 @@ from unittest.mock import patch, MagicMock
 # Ensure the package is in the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
+# Import package modules
 from ...config import Config
-from ...core import Primer3Processor, PrimerProcessor, BlastProcessor, ViennaRNAProcessor
+from ...core import Primer3Processor, PrimerProcessor, BlastProcessor
 
 
 class TestPrimerDesignWorkflow(unittest.TestCase):

@@ -14,14 +14,10 @@ import logging
 from tqdm import tqdm
 
 # Import package modules
-from ..config import Config
-from ..config.exceptions import FileSelectionError, SequenceProcessingError
-from ..utils.file_io import FileIO
-from ..core import (
-    SNPMaskingProcessor,
-    AnnotationProcessor
-)
-from . import common  # Import common module functions
+from ..config import Config, FileSelectionError, SequenceProcessingError
+from ..utils import FileIO
+from ..core import SNPMaskingProcessor, AnnotationProcessor
+from . import common
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")
@@ -99,11 +95,18 @@ def run(args):
         logger.info("\nExtracting variants from VCF file...")
         try:
             snp_processor = SNPMaskingProcessor()
-            variants = snp_processor.get_variant_positions(args.vcf)
-            logger.debug(f"Variants extracted successfully from {args.vcf}")
             
+            # Use the configured thresholds from Config
+            variants = snp_processor.get_filtered_variants(
+                args.vcf,
+                min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
+                min_qual=Config.SNP_QUALITY_THRESHOLD
+            )
+            
+            logger.debug(f"Variants extracted successfully from {args.vcf}")
             total_variants = sum(len(positions) for positions in variants.values())
             logger.debug(f"Extracted {total_variants} variants from {len(variants)} chromosomes")
+                
         except Exception as e:
             logger.error(f"Error extracting variants: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)

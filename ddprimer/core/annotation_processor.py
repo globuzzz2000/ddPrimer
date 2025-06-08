@@ -11,8 +11,10 @@ import re
 import concurrent.futures
 import logging
 from tqdm import tqdm
+
+# Import package modules
 from ..config import Config
-from ..utils.common_utils import CommonUtils
+from ..utils import CommonUtils
 
 
 class AnnotationProcessor:

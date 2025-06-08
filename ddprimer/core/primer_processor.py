@@ -14,8 +14,10 @@ Contains functionality for:
 
 import pandas as pd
 import logging
+
+# Import package modules
 from ..config import Config
-from ..utils.sequence_utils import SequenceUtils
+from ..utils import SequenceUtils
 
 
 class PrimerProcessor:
@@ -33,8 +35,6 @@ class PrimerProcessor:
         Returns:
             pandas.DataFrame: Filtered DataFrame
         """
-        from ..config import Config
-        import logging
         logger = logging.getLogger()
         
         if max_penalty is None:
@@ -127,7 +127,6 @@ class PrimerProcessor:
         Returns:
             list: Filtered primer dictionaries
         """
-        import logging
         logger = logging.getLogger()
         
         logger.debug(f"=== REPEAT FILTER DEBUG ===")
@@ -379,7 +378,6 @@ class PrimerProcessor:
         Returns:
             list: Filtered primer dictionaries
         """
-        import logging
         logger = logging.getLogger()
         
         logger.debug(f"=== BLAST FILTER DEBUG ===")

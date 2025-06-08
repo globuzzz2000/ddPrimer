@@ -8,14 +8,13 @@ which handles fetching, preprocessing, and managing model organism genomes.
 """
 
 import os
-import sys
 import pytest
 import tempfile
 import shutil
 import gzip
-from unittest.mock import patch, MagicMock, call, ANY
+from unittest.mock import patch, MagicMock
 
-# Import the module to test
+# Import package modules
 from ...utils import ModelOrganismManager
 
 

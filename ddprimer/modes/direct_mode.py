@@ -14,13 +14,11 @@ import logging
 import pandas as pd
 
 # Import package modules
-from ..config import Config
-from ..config.exceptions import FileSelectionError, SequenceProcessingError
-from ..utils.file_io import FileIO
+from ..config import Config, FileSelectionError, SequenceProcessingError
+from ..utils import FileIO
 from ..core import SNPMaskingProcessor
 from . import common
-from ..helpers import DirectMasking
-from ..helpers.sequence_analyzer import SequenceAnalyzer
+from ..helpers import DirectMasking, SequenceAnalyzer
 
 # Set up logger
 logger = logging.getLogger("ddPrimer")

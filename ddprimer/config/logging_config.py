@@ -7,9 +7,10 @@ Logging configuration module for the ddPrimer pipeline.
 import os
 import sys
 import logging
+from tqdm import tqdm
 from datetime import datetime
-from typing import Optional
 
+# Import package modules
 from .config import Config
 
 
@@ -122,7 +123,6 @@ class TqdmProgressReporter(ProgressReporter):
             total: Total number of items to process
             description: Description of the current task
         """
-        from tqdm import tqdm
         self.pbar = tqdm(total=total, desc=description)
     
     def update(self, amount: int = 1) -> None:
@@ -212,7 +212,6 @@ def get_progress_reporter() -> ProgressReporter:
     
     # Try to use tqdm if available
     try:
-        import tqdm
         return TqdmProgressReporter()
     except ImportError:
         # Fall back to logging-based reporter

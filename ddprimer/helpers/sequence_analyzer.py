@@ -11,6 +11,8 @@ This module provides utilities for analyzing sequence files and detecting:
 
 import logging
 import pandas as pd
+
+# Import package modules
 from ..config import Config
 
 

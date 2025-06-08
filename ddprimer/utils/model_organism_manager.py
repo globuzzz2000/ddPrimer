@@ -8,10 +8,7 @@ This module provides functionality to fetch genome files for common model organi
 
 import os
 import sys
-import subprocess
 import logging
-import tempfile
-import shutil
 import urllib.request
 import gzip
 import time
@@ -272,7 +269,7 @@ class ModelOrganismManager:
             
             # Process the selection
             if choice == 0:  # Custom file
-                from ..utils.file_io import FileIO
+                from ..utils import FileIO
                 try:
                     fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
                     return None, "Custom file", fasta_file
@@ -281,7 +278,7 @@ class ModelOrganismManager:
                     return None, None, None
             elif choice == len(ModelOrganismManager.MODEL_ORGANISMS) + 1:  # Select from existing databases
                 logger.info("Selecting from existing BLAST databases...")
-                from ..utils.db_selector import DatabaseSelector
+                from ..utils import DatabaseSelector
                 selected_db_path = DatabaseSelector.select_database(logger)
                 
                 if selected_db_path is None:

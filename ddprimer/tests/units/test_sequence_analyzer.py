@@ -11,10 +11,10 @@ import os
 import pytest
 import pandas as pd
 import tempfile
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
+# Import package modules
 from ...helpers import SequenceAnalyzer
-from ...config import Config
 
 
 # Test is_dna_sequence

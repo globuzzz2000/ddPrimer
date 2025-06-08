@@ -5,10 +5,9 @@ Unit tests for the AnnotationProcessor module.
 """
 
 import pytest
-import os
-import pandas as pd
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch
 
+# Import package modules
 from ...core import AnnotationProcessor
 
 

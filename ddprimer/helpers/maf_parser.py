@@ -18,8 +18,8 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from tqdm import tqdm
 
-from ..config import Config
-from ..config.exceptions import AlignmentError
+# Import package modules
+from ..config import Config, AlignmentError
 
 
 class MAFParser:

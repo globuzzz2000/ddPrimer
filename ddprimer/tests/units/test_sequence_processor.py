@@ -4,7 +4,7 @@
 Unit tests for the sequence processor module.
 """
 
-import pytest
+# Import package modules
 from ...config import Config
 from ...core import SequenceProcessor
 

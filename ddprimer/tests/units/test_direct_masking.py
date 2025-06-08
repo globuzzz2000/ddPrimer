@@ -7,12 +7,11 @@ These tests verify that the DirectMasking class functions correctly,
 including finding sequence locations and handling sequences without primers.
 """
 
-import os
 import pytest
 import pandas as pd
-import tempfile
-from unittest.mock import patch, MagicMock, mock_open, call
+from unittest.mock import patch, MagicMock
 
+# Import package modules
 from ...helpers import DirectMasking
 from ...config import SequenceProcessingError
 

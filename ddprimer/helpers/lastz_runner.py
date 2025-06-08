@@ -24,8 +24,8 @@ import logging
 from multiprocessing import Pool
 from Bio import SeqIO
 
-from ..config import Config
-from ..config.exceptions import AlignmentError
+# Import package modules
+from ..config import Config, AlignmentError
 
 
 class LastZRunner:

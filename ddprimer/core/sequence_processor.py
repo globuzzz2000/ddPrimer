@@ -16,9 +16,9 @@ import logging
 import pandas as pd
 from Bio import SeqIO
 from tqdm import tqdm
-from ..config import Config
-from ..utils.sequence_utils import SequenceUtils
-from ..config.exceptions import SequenceProcessingError
+
+# Import package modules
+from ..config import Config, SequenceProcessingError
 
 
 class SequenceProcessor:
