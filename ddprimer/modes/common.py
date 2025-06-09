@@ -9,7 +9,6 @@ This module contains functions shared between different pipeline modes:
 - Alignment mode
 """
 
-import os
 import logging
 import pandas as pd
 from tqdm import tqdm
@@ -53,6 +52,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
     try:
         # Step 1: Cut sequences at restriction sites
         restriction_fragments = process_restriction_sites(masked_sequences)
+        logger.debug(f"CHECKPOINT 1: {len(restriction_fragments)} restriction fragments")
         
         if not restriction_fragments:
             logger.warning("No valid fragments after restriction site filtering. Exiting.")
@@ -65,6 +65,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             genes, 
             skip_annotation_filtering
         )
+        logger.debug(f"CHECKPOINT 2: {len(filtered_fragments)} filtered fragments")
         
         if not filtered_fragments:
             logger.warning("No fragments passed filtering. Exiting.")
@@ -72,13 +73,26 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         
         # Step 3: Design primers with Primer3
         primer_results = design_primers_with_primer3(filtered_fragments, mode)
+        logger.debug(f"CHECKPOINT 3: {len(primer_results)} primer results from Primer3")
         
         if not primer_results:
             logger.warning("No primers were designed by Primer3. Exiting.")
             return False
         
+        # Create a temporary DataFrame to check what we have before filtering
+        temp_df = pd.DataFrame(primer_results)
+        logger.debug(f"CHECKPOINT 3b: {len(temp_df)} primer records, {len(temp_df['Gene'].unique())} unique genes")
+        
+        # Log penalty distribution
+        if 'Pair Penalty' in temp_df.columns:
+            penalty_stats = temp_df['Pair Penalty'].describe()
+            logger.debug(f"Penalty distribution: min={penalty_stats['min']:.2f}, mean={penalty_stats['mean']:.2f}, max={penalty_stats['max']:.2f}")
+            below_threshold = (temp_df['Pair Penalty'] <= Config.PENALTY_MAX).sum()
+            logger.debug(f"Primers with penalty <= {Config.PENALTY_MAX}: {below_threshold}/{len(temp_df)}")
+        
         # Step 4: Filter primers
         df = filter_primers(primer_results)
+        logger.debug(f"CHECKPOINT 4: {len(df)} primers after all filtering")
         
         if df is None or len(df) == 0:
             logger.warning("No primers passed filtering criteria. Exiting.")
@@ -158,22 +172,26 @@ def filter_fragments_by_mode(restriction_fragments, mode, genes, skip_annotation
         logger.debug(f"Prepared {len(filtered_fragments)} fragments for processing")
         return filtered_fragments
     else:
-        # Filter by gene overlap for standard/alignment modes
+        # Extract ALL gene overlaps for standard/alignment modes
         if not genes:
             logger.warning("Gene annotations not provided for standard/alignment mode. Exiting.")
             return None
                 
-        logger.info("Filtering sequences by gene overlap...")
+        logger.info("Extracting gene-overlapping regions...")
         try:
+            # Import AnnotationProcessor here to avoid circular imports
+            from ..core.annotation_processor import AnnotationProcessor
+            
             logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
-            filtered_fragments = SequenceProcessor.filter_by_gene_overlap(restriction_fragments, genes)
-            logger.debug("Gene overlap filtering completed successfully")
-            logger.info(f"Retained {len(filtered_fragments)} fragments after gene overlap filtering")
+            # Use the enhanced function that extracts ALL gene overlaps
+            filtered_fragments = AnnotationProcessor.filter_by_gene_overlap_enhanced(restriction_fragments, genes)
+            logger.debug("Gene overlap extraction completed successfully")
+            logger.info(f"Extracted {len(filtered_fragments)} gene fragments from {len(restriction_fragments)} restriction fragments")
             return filtered_fragments
         except Exception as e:
-            logger.error(f"Error in gene overlap filtering: {str(e)}")
+            logger.error(f"Error in gene overlap extraction: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(f"Gene overlap filtering failed: {str(e)}")
+            raise SequenceProcessingError(f"Gene overlap extraction failed: {str(e)}")
 
 
 def process_direct_mode_fragments(restriction_fragments):
@@ -345,6 +363,7 @@ def process_restriction_sites(masked_sequences):
 def prepare_primer3_inputs(fragments, mode='standard'):
     """
     Prepare input blocks for Primer3 from sequence fragments.
+    No target regions - let Primer3 freely choose amplicon locations based on product size range.
     
     Args:
         fragments (list): List of sequence fragments
@@ -377,15 +396,7 @@ def prepare_primer3_inputs(fragments, mode='standard'):
             "SEQUENCE_ID": fragment["id"],
             "SEQUENCE_TEMPLATE": fragment["sequence"],
         }
-        
-        # Add target region if sequence is long
-        if len(fragment["sequence"]) > 200:
-            target_start = len(fragment["sequence"]) // 4
-            target_len = len(fragment["sequence"]) // 2
-            primer3_input["SEQUENCE_TARGET"] = [target_start, target_len]
-            if Config.DEBUG_MODE:
-                logger.debug(f"Added target region [{target_start}, {target_len}] for {fragment['id']}")
-        
+
         primer3_inputs.append(primer3_input)
     
     return primer3_inputs, fragment_info

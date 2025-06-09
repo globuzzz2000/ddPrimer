@@ -15,6 +15,7 @@ from .blast_db_creator import BlastDBCreator
 from .blast_verification import BlastVerification
 from .model_organism_manager import ModelOrganismManager
 from .db_selector import DatabaseSelector
+from .chromosome_mapper import ChromosomeMapper
 
 __all__ = [
     'FileUtils',
@@ -26,5 +27,6 @@ __all__ = [
     'DatabaseSelector',
     'FileIO',
     'TempDirectoryManager',
-    'SequenceUtils'
+    'SequenceUtils',
+    'ChromosomeMapper'
 ]

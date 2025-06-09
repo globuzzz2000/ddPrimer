@@ -96,9 +96,10 @@ def run(args):
         try:
             snp_processor = SNPMaskingProcessor()
             
-            # Use the configured thresholds from Config
-            variants = snp_processor.get_filtered_variants(
+            # Use the new method that includes chromosome mapping
+            variants = snp_processor.process_vcf_with_chromosome_mapping(
                 args.vcf,
+                args.fasta,  # Add this parameter for chromosome mapping
                 min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
                 min_qual=Config.SNP_QUALITY_THRESHOLD
             )

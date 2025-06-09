@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SNP masking processor for ddPrimer pipeline.
+
+Handles masking of SNPs in sequences to prepare them for primer design.
+Provides functionality for:
+1. VCF file processing with chromosome mapping
+2. Variant extraction with quality and allele frequency filtering
+3. Sequence masking with configurable parameters
+4. Region-specific variant extraction for memory optimization
+
+This module integrates with the broader ddPrimer pipeline to provide
+robust SNP masking capabilities for primer design workflows.
+"""
+
 import os
 import logging
 import subprocess
@@ -8,35 +24,50 @@ from tqdm import tqdm
 # Import package modules
 from ..config import Config, FileError, SequenceProcessingError
 
-# Set up logging
-logger = logging.getLogger("ddPrimer.snp_masking_processor")
+# Set up module logger
+logger = logging.getLogger(__name__)
+
 
 class SNPMaskingProcessor:
-    """Handles masking of SNPs in sequences to prepare them for primer design."""
+    """
+    Handles masking of SNPs in sequences to prepare them for primer design.
+    
+    This class provides methods for processing VCF files, extracting variants
+    with quality filtering, and applying masking to sequences for primer design.
+    
+    Attributes:
+        None - stateless processor using module-level configuration
+        
+    Example:
+        >>> processor = SNPMaskingProcessor()
+        >>> variants = processor.get_filtered_variants("variants.vcf", min_af=0.1)
+        >>> masked_seq = processor.mask_variants(sequence, variant_positions)
+    """
     
     def __init__(self):
         """Initialize SNP masking processor."""
         logger.debug("Initialized SNPMaskingProcessor")
     
-    def get_variant_positions(self, vcf_file, chromosome=None):
+    def get_variant_positions(self, vcf_file: str, chromosome: str = None) -> dict:
         """
-        Extract variant positions from the VCF file using bcftools.
+        Extract variant positions from VCF file using bcftools.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str, optional): Specific chromosome to filter
+            vcf_file: Path to VCF file
+            chromosome: Specific chromosome to filter
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
             
         Raises:
             FileError: If VCF file cannot be processed
         """
-        logger.debug(f"\nFetching variant positions from {vcf_file}")
+        logger.debug(f"Fetching variant positions from {vcf_file}")
         
         if not os.path.exists(vcf_file):
-            logger.error(f"VCF file not found: {vcf_file}")
-            raise FileError(f"VCF file not found: {vcf_file}")
+            error_msg = f"VCF file not found: {vcf_file}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
         
         # Base command
         command = f'bcftools query -f "%CHROM\\t%POS\\n" "{vcf_file}"'
@@ -52,8 +83,9 @@ class SNPMaskingProcessor:
             result = subprocess.run(command, shell=True, capture_output=True, text=True)
             
             if result.returncode != 0:
-                logger.error(f"Error running bcftools: {result.stderr}")
-                raise FileError(f"bcftools query failed: {result.stderr}")
+                error_msg = f"bcftools query failed: {result.stderr}"
+                logger.error(error_msg)
+                raise FileError(error_msg)
             
             # Parse results
             variants = {}
@@ -79,22 +111,24 @@ class SNPMaskingProcessor:
             return variants
             
         except subprocess.SubprocessError as e:
-            logger.error(f"Failed to run bcftools: {e}")
+            error_msg = f"Failed to run bcftools: {e}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileError(f"Failed to run bcftools: {e}")
+            raise FileError(error_msg) from e
     
-    def get_filtered_variants(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+    def get_filtered_variants(self, vcf_file: str, chromosome: str = None, 
+                             min_af: float = None, min_qual: float = None) -> dict:
         """
         Extract variant positions from VCF file with allele frequency and quality filtering.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str, optional): Specific chromosome to filter
-            min_af (float, optional): Minimum allele frequency threshold (0.0-1.0)
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chromosome: Specific chromosome to filter
+            min_af: Minimum allele frequency threshold (0.0-1.0)
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
             
         Raises:
             FileError: If VCF file cannot be processed
@@ -103,8 +137,9 @@ class SNPMaskingProcessor:
         logger.debug(f"Filters: min_af={min_af}, min_qual={min_qual}, chromosome={chromosome}")
         
         if not os.path.exists(vcf_file):
-            logger.error(f"VCF file not found: {vcf_file}")
-            raise FileError(f"VCF file not found: {vcf_file}")
+            error_msg = f"VCF file not found: {vcf_file}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
         
         # If no filters specified, use basic extraction
         if min_af is None and min_qual is None:
@@ -120,18 +155,22 @@ class SNPMaskingProcessor:
             # Use manual parsing but with filtering applied
             return self._extract_variants_manually_global(vcf_file, chromosome, min_af, min_qual)
     
-    def _extract_with_bcftools(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+    def _extract_with_bcftools(self, vcf_file: str, chromosome: str = None, 
+                              min_af: float = None, min_qual: float = None) -> dict:
         """
         Extract variants using bcftools with proper filtering.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str, optional): Specific chromosome to filter
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chromosome: Specific chromosome to filter
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
+            
+        Raises:
+            subprocess.SubprocessError: If bcftools execution fails
         """
         # Build filters carefully
         filters = []
@@ -210,10 +249,10 @@ class SNPMaskingProcessor:
                             total_kept += 1
                             
                     except ValueError:
-                        logger.warning(f"BInvalid position value in VCF: {parts[1]}")
+                        logger.warning(f"Invalid position value in VCF: {parts[1]}")
                         continue
             
-            logger.info(f"bcftools processing: {total_processed} variants examined, {total_kept} kept after filtering")
+            logger.debug(f"bcftools processing: {total_processed} variants examined, {total_kept} kept after filtering")
             if min_af is not None:
                 logger.debug(f"AF threshold applied: >= {min_af}")
             if min_qual is not None:
@@ -225,21 +264,27 @@ class SNPMaskingProcessor:
             # Re-raise subprocess errors
             raise
         except Exception as e:
-            logger.warning(f"Error in bcftools processing: {str(e)}")
+            error_msg = f"Error in bcftools processing: {str(e)}"
+            logger.warning(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise
     
-    def _extract_with_bcftools_fallback(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+    def _extract_with_bcftools_fallback(self, vcf_file: str, chromosome: str = None, 
+                                       min_af: float = None, min_qual: float = None) -> dict:
         """
         Fallback bcftools approach when AF field filtering fails.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str, optional): Specific chromosome to filter
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chromosome: Specific chromosome to filter
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
+            
+        Raises:
+            subprocess.SubprocessError: If fallback bcftools execution fails
         """
         # Try with only QUAL filter first, then manually filter AF
         filters = []
@@ -303,18 +348,19 @@ class SNPMaskingProcessor:
         logger.info(f"bcftools fallback: {total_processed} variants examined, {total_kept} kept after filtering")
         return variants
     
-    def _extract_variants_manually_global(self, vcf_file, chromosome=None, min_af=None, min_qual=None):
+    def _extract_variants_manually_global(self, vcf_file: str, chromosome: str = None, 
+                                         min_af: float = None, min_qual: float = None) -> dict:
         """
         Extract variants using manual VCF parsing with filtering applied globally.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str, optional): Specific chromosome to filter
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chromosome: Specific chromosome to filter
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
         """
         variants = {}
         total_processed = 0
@@ -374,28 +420,29 @@ class SNPMaskingProcessor:
                 logger.info(f"Manual QUAL filtering applied: >= {min_qual}")
             
         except Exception as e:
-            logger.error(f"Error in manual VCF parsing: {str(e)}")
+            error_msg = f"Error in manual VCF parsing: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
         
         return variants
     
-    def prepare_vcf_file(self, vcf_file):
+    def prepare_vcf_file(self, vcf_file: str) -> str:
         """
-        Prepare a VCF file for region queries by ensuring it's compressed with bgzip and indexed with tabix.
+        Prepare VCF file for region queries by ensuring it's compressed and indexed.
         
         Args:
-            vcf_file (str): Path to VCF file (.vcf or .vcf.gz)
+            vcf_file: Path to VCF file (.vcf or .vcf.gz)
             
         Returns:
-            str: Path to the prepared VCF file
+            Path to the prepared VCF file
             
         Raises:
             FileError: If VCF file cannot be prepared
         """
-        
         if not os.path.exists(vcf_file):
-            logger.error(f"VCF file not found: {vcf_file}")
-            raise FileError(f"VCF file not found: {vcf_file}")
+            error_msg = f"VCF file not found: {vcf_file}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
         
         # Check if bgzip and tabix are available
         try:
@@ -447,20 +494,21 @@ class SNPMaskingProcessor:
         
         return vcf_file
     
-    def get_region_variants(self, vcf_file, chromosome, start_pos, end_pos, min_af=None, min_qual=None):
+    def get_region_variants(self, vcf_file: str, chromosome: str, start_pos: int, end_pos: int,
+                           min_af: float = None, min_qual: float = None) -> set:
         """
-        Extract variant positions from the VCF file for a specific genomic region with filtering.
+        Extract variant positions from VCF file for a specific genomic region with filtering.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chromosome (str): Chromosome name
-            start_pos (int): Start position of the region
-            end_pos (int): End position of the region
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chromosome: Chromosome name
+            start_pos: Start position of the region
+            end_pos: End position of the region
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            set: Set of variant positions within the specified region
+            Set of variant positions within the specified region
             
         Raises:
             SequenceProcessingError: If region variants cannot be extracted
@@ -515,21 +563,22 @@ class SNPMaskingProcessor:
         logger.debug("Falling back to manual VCF parsing")
         return self._extract_variants_manually(prepared_vcf, chromosome, start_pos, end_pos, min_af, min_qual)
     
-    def _extract_variants_manually(self, vcf_file, chrom, start, end, min_af=None, min_qual=None):
+    def _extract_variants_manually(self, vcf_file: str, chrom: str, start: int, end: int,
+                                  min_af: float = None, min_qual: float = None) -> set:
         """
-        Extract variants from a VCF file for a specific region using manual parsing.
+        Extract variants from VCF file for a specific region using manual parsing.
         This is a fallback method when bcftools fails.
         
         Args:
-            vcf_file (str): Path to VCF file
-            chrom (str): Chromosome name
-            start (int): Start position
-            end (int): End position
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            chrom: Chromosome name
+            start: Start position
+            end: End position
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            set: Set of variant positions in the region
+            Set of variant positions in the region
         """
         variants = set()
         
@@ -587,20 +636,21 @@ class SNPMaskingProcessor:
             logger.debug(f"Manually extracted {len(variants)} variants in region {chrom}:{start}-{end}")
             
         except Exception as e:
-            logger.error(f"Error in manual VCF parsing for region {chrom}:{start}-{end}: {str(e)}")
+            error_msg = f"Error in manual VCF parsing for region {chrom}:{start}-{end}: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
         
         return variants
     
-    def _parse_af_from_info(self, info_field):
+    def _parse_af_from_info(self, info_field: str) -> float:
         """
         Parse allele frequency from INFO field.
         
         Args:
-            info_field (str): INFO field from VCF line
+            info_field: INFO field from VCF line
             
         Returns:
-            float or None: Allele frequency if found, None otherwise
+            Allele frequency if found, None otherwise
         """
         try:
             # Look for AF= in the INFO field
@@ -616,15 +666,15 @@ class SNPMaskingProcessor:
         
         return None
     
-    def _parse_af_from_string(self, af_str):
+    def _parse_af_from_string(self, af_str: str) -> float:
         """
         Parse allele frequency from a string that might be from INFO/AF field.
         
         Args:
-            af_str (str): String containing AF value
+            af_str: String containing AF value
             
         Returns:
-            float or None: Allele frequency if found, None otherwise
+            Allele frequency if found, None otherwise
         """
         try:
             if af_str and af_str != "." and af_str != "":
@@ -637,15 +687,15 @@ class SNPMaskingProcessor:
         
         return None
     
-    def extract_reference_sequences(self, fasta_file):
+    def extract_reference_sequences(self, fasta_file: str) -> dict:
         """
         Retrieve all reference sequences from the FASTA file.
         
         Args:
-            fasta_file (str): Path to FASTA file
+            fasta_file: Path to FASTA file
             
         Returns:
-            dict: Dictionary mapping sequence IDs to sequences
+            Dictionary mapping sequence IDs to sequences
             
         Raises:
             FileError: If FASTA file cannot be read
@@ -653,8 +703,9 @@ class SNPMaskingProcessor:
         logger.info(f"Extracting sequences from {fasta_file}")
         
         if not os.path.exists(fasta_file):
-            logger.error(f"FASTA file not found: {fasta_file}")
-            raise FileError(f"FASTA file not found: {fasta_file}")
+            error_msg = f"FASTA file not found: {fasta_file}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
             
         sequences = {}
         
@@ -667,22 +718,24 @@ class SNPMaskingProcessor:
             return sequences
             
         except Exception as e:
-            logger.error(f"Failed to read FASTA file: {e}")
+            error_msg = f"Failed to read FASTA file: {e}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileError(f"Failed to read FASTA file: {e}")
+            raise FileError(error_msg) from e
     
-    def mask_variants(self, sequence, variant_positions, flanking_size=0, use_soft_masking=False):
+    def mask_variants(self, sequence: str, variant_positions: set, 
+                     flanking_size: int = 0, use_soft_masking: bool = False) -> str:
         """
         Mask variants in sequence with options for flanking regions and soft masking.
         
         Args:
-            sequence (str): Input DNA sequence
-            variant_positions (set): Set of variant positions (1-based)
-            flanking_size (int): Number of bases to mask around each variant (default: 0)
-            use_soft_masking (bool): Use lowercase letters instead of 'N' (default: False)
+            sequence: Input DNA sequence
+            variant_positions: Set of variant positions (1-based)
+            flanking_size: Number of bases to mask around each variant
+            use_soft_masking: Use lowercase letters instead of 'N'
             
         Returns:
-            str: Masked sequence
+            Masked sequence
         """
         if not variant_positions:
             logger.debug("No variant positions to mask")
@@ -745,21 +798,22 @@ class SNPMaskingProcessor:
         
         return masked_sequence
     
-    def mask_sequences_for_primer_design(self, sequences, variants, flanking_size=0, 
-                                       use_soft_masking=False, min_af=None, min_qual=None):
+    def mask_sequences_for_primer_design(self, sequences: dict, variants: dict, 
+                                        flanking_size: int = 0, use_soft_masking: bool = False,
+                                        min_af: float = None, min_qual: float = None) -> dict:
         """
         Mask variants in sequences for primer design with advanced filtering options.
         
         Args:
-            sequences (dict): Dictionary of sequences
-            variants (dict): Dictionary mapping chromosomes to sets of variant positions
-            flanking_size (int): Number of bases to mask around each variant (default: 0)
-            use_soft_masking (bool): Use lowercase letters instead of 'N' (default: False)
-            min_af (float, optional): Minimum allele frequency threshold for filtering
-            min_qual (float, optional): Minimum QUAL score threshold for filtering
+            sequences: Dictionary of sequences
+            variants: Dictionary mapping chromosomes to sets of variant positions
+            flanking_size: Number of bases to mask around each variant
+            use_soft_masking: Use lowercase letters instead of 'N'
+            min_af: Minimum allele frequency threshold for filtering
+            min_qual: Minimum QUAL score threshold for filtering
             
         Returns:
-            dict: Dictionary of masked sequences
+            Dictionary of masked sequences
         """
         mask_type = "soft" if use_soft_masking else "hard"
         logger.info(f"Masking variants in sequences using {mask_type} masking...")
@@ -798,19 +852,20 @@ class SNPMaskingProcessor:
         logger.info(f"Completed variant masking for {len(masked_sequences)} sequences")
         return masked_sequences
     
-    def extract_variants_by_regions(self, vcf_file, conserved_regions, min_af=None, min_qual=None):
+    def extract_variants_by_regions(self, vcf_file: str, conserved_regions: dict,
+                                   min_af: float = None, min_qual: float = None) -> dict:
         """
         Extract variants from VCF file only for specific conserved regions with filtering.
         This optimizes memory usage by only loading variants in regions of interest.
         
         Args:
-            vcf_file (str): Path to VCF file
-            conserved_regions (dict): Dictionary mapping chromosome names to lists of conserved regions
-            min_af (float, optional): Minimum allele frequency threshold
-            min_qual (float, optional): Minimum QUAL score threshold
+            vcf_file: Path to VCF file
+            conserved_regions: Dictionary mapping chromosome names to lists of conserved regions
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
             
         Returns:
-            dict: Dictionary mapping chromosomes to sets of variant positions
+            Dictionary mapping chromosomes to sets of variant positions
             
         Raises:
             FileError: If VCF file cannot be processed
@@ -819,8 +874,9 @@ class SNPMaskingProcessor:
         logger.debug(f"Filters: min_af={min_af}, min_qual={min_qual}")
         
         if not os.path.exists(vcf_file):
-            logger.error(f"VCF file not found: {vcf_file}")
-            raise FileError(f"VCF file not found: {vcf_file}")
+            error_msg = f"VCF file not found: {vcf_file}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
             
         if not conserved_regions:
             logger.warning("No conserved regions provided")
@@ -864,20 +920,21 @@ class SNPMaskingProcessor:
             return variants
             
         except Exception as e:
-            logger.error(f"Failed to extract variants by regions: {e}")
+            error_msg = f"Failed to extract variants by regions: {e}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(f"Failed to extract variants by regions: {e}")
+            raise SequenceProcessingError(error_msg) from e
     
-    def combine_masked_sequences(self, masked_sequences1, masked_sequences2):
+    def combine_masked_sequences(self, masked_sequences1: dict, masked_sequences2: dict) -> dict:
         """
         Combine two sets of masked sequences, masking a position if it's masked in either set.
         
         Args:
-            masked_sequences1 (dict): First set of masked sequences
-            masked_sequences2 (dict): Second set of masked sequences
+            masked_sequences1: First set of masked sequences
+            masked_sequences2: Second set of masked sequences
             
         Returns:
-            dict: Combined masked sequences
+            Combined masked sequences
         """
         combined_sequences = {}
         
@@ -931,9 +988,131 @@ class SNPMaskingProcessor:
             total_masked = n_count + lowercase_count
             mask_ratio = total_masked / len(combined_seq) if len(combined_seq) > 0 else 0
             
+            logger.debug(f"Masked {total_masked} bases ({mask_ratio:.2%})")
             logger.debug(f"Combined sequence {seq_id}: {total_masked}/{len(combined_seq)} bases masked ({mask_ratio:.2%})")
             logger.debug(f"  Hard masked (N): {n_count}, Soft masked (lowercase): {lowercase_count}")
             
             combined_sequences[seq_id] = combined_seq
         
         return combined_sequences
+    
+    def process_vcf_with_chromosome_mapping(self, vcf_file: str, fasta_file: str, 
+                                           chromosome: str = None, min_af: float = None, 
+                                           min_qual: float = None) -> dict:
+        """
+        Process VCF file with automatic chromosome name mapping to match FASTA file.
+        
+        Args:
+            vcf_file: Path to VCF file
+            fasta_file: Path to FASTA file for chromosome name reference
+            chromosome: Specific chromosome to filter
+            min_af: Minimum allele frequency threshold
+            min_qual: Minimum QUAL score threshold
+            
+        Returns:
+            Dictionary mapping FASTA chromosome names to sets of variant positions
+            
+        Raises:
+            SequenceProcessingError: If VCF processing fails
+        """
+        logger.debug("Processing VCF file with automatic chromosome mapping")
+        
+        try:
+            # Import here to avoid circular imports
+            from ..utils import ChromosomeMapper
+            
+            # Initialize chromosome mapper
+            mapper = ChromosomeMapper()
+            
+            # Check compatibility and get analysis
+            try:
+                logger.debug("Checking chromosome compatibility")
+                analysis = mapper.check_chromosome_compatibility(vcf_file, fasta_file)
+                
+                if not analysis['needs_mapping']:
+                    # Files are compatible - use direct processing
+                    logger.debug("Chromosome names are compatible - processing directly")
+                    return self.get_filtered_variants(vcf_file, chromosome=chromosome, 
+                                                    min_af=min_af, min_qual=min_qual)
+                
+                # Files need mapping - get the suggested mapping
+                mapping = analysis.get('suggested_mapping')
+                if not mapping:
+                    logger.warning("Could not generate automatic chromosome mapping")
+                    logger.debug("Falling back to direct VCF processing")
+                    return self.get_filtered_variants(vcf_file, chromosome=chromosome, 
+                                                    min_af=min_af, min_qual=min_qual)
+                
+                # Mapping was generated - files need chromosome name conversion
+                logger.debug("Chromosome name mismatch detected - applying dynamic mapping")
+                logger.info(f"Generated chromosome mapping for {len(mapping)} chromosomes")
+                for vcf_chrom, fasta_chrom in mapping.items():
+                    logger.debug(f"  '{vcf_chrom}' -> '{fasta_chrom}'")
+                
+                # Handle chromosome filtering with mapping
+                target_vcf_chromosome = None
+                if chromosome:
+                    # User specified a FASTA chromosome name, find corresponding VCF name
+                    reverse_mapping = {v: k for k, v in mapping.items()}
+                    if chromosome in reverse_mapping:
+                        target_vcf_chromosome = reverse_mapping[chromosome]
+                        logger.debug(f"Filtering for FASTA chromosome '{chromosome}' "
+                            f"(VCF chromosome '{target_vcf_chromosome}')")
+                    elif chromosome in mapping:
+                        # User provided VCF chromosome name
+                        target_vcf_chromosome = chromosome
+                        logger.debug(f"Filtering for VCF chromosome '{chromosome}'")
+                    else:
+                        logger.warning(f"Chromosome '{chromosome}' not found in mapping. "
+                                    f"Available: {list(mapping.values())}")
+                        return {}
+                
+                # Extract variants using original VCF chromosome names
+                logger.debug("Extracting variants from VCF with original chromosome names")
+                original_variants = self.get_filtered_variants(
+                    vcf_file, 
+                    chromosome=target_vcf_chromosome, 
+                    min_af=min_af, 
+                    min_qual=min_qual
+                )
+                
+                # Apply dynamic mapping to convert chromosome names
+                logger.debug("Applying chromosome name mapping to variants")
+                mapped_variants = {}
+                total_variants = 0
+                mapped_chromosomes = 0
+                
+                for vcf_chrom, positions in original_variants.items():
+                    if vcf_chrom in mapping:
+                        fasta_chrom = mapping[vcf_chrom]
+                        mapped_variants[fasta_chrom] = positions
+                        total_variants += len(positions)
+                        mapped_chromosomes += 1
+                        logger.debug(f"Mapped {len(positions)} variants from "
+                            f"'{vcf_chrom}' to '{fasta_chrom}'")
+                    else:
+                        logger.warning(f"No mapping found for VCF chromosome '{vcf_chrom}' "
+                                    f"- skipping {len(positions)} variants")
+                
+                logger.info(f"Successfully mapped {total_variants} variants across "
+                        f"{mapped_chromosomes} chromosomes")
+                
+                # Validate that we have variants for requested chromosome
+                if chromosome and chromosome not in mapped_variants:
+                    logger.warning(f"No variants found for requested chromosome '{chromosome}'")
+                
+                return mapped_variants
+                    
+            except Exception as mapping_error:
+                logger.warning(f"Chromosome mapping failed: {mapping_error}")
+                logger.debug("Falling back to direct VCF processing")
+                
+                # Fall back to direct processing (might fail if chromosome names don't match)
+                return self.get_filtered_variants(vcf_file, chromosome=chromosome, 
+                                                min_af=min_af, min_qual=min_qual)
+                
+        except Exception as e:
+            error_msg = f"Error in VCF processing with chromosome mapping: {e}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise SequenceProcessingError(error_msg) from e

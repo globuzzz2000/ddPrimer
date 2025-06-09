@@ -48,14 +48,14 @@ class Config:
     PRIMER_PRODUCT_SIZE_RANGE = [[90, 200]]
     
     # Pipeline parameters
-    MIN_SEGMENT_LENGTH = 90  # Match first entry in PRIMER_PRODUCT_SIZE_RANGE
+    MIN_SEGMENT_LENGTH = 90
     RETAIN_TYPES = "gene"  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
     FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
     COUNT_AMBIGUOUS_AS_MISMATCH = False
     GENE_OVERLAP_MARGIN = 25
     RESTRICTION_SITE = None
     PENALTY_MAX = 5.0
-    MAX_PRIMER_PAIRS_PER_SEGMENT = 3
+    MAX_PRIMER_PAIRS_PER_SEGMENT = 5
     PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
@@ -64,10 +64,18 @@ class Config:
     #                           SNP Masking Parameters
     #############################################################################
     SNP_ALLELE_FREQUENCY_THRESHOLD = 0.05    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
-    SNP_QUALITY_THRESHOLD = 20               # Minimum QUAL score to include variants (e.g., None, 30.0)
+    SNP_QUALITY_THRESHOLD = 25               # Minimum QUAL score to include variants (e.g., None, 30.0)
     SNP_FLANKING_MASK_SIZE = 0               # Number of bases to mask around each SNP (0 = just the SNP)
     SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
     
+    #############################################################################
+    #                           Thermodynamic Calculation Settings
+    #############################################################################
+    DNA_PARAM_FILE_PATH = "/opt/miniconda3/envs/ddpcr/share/ViennaRNA/dna_mathews2004.par"
+    THERMO_TEMPERATURE = 37  # Celsius
+    THERMO_SODIUM = 0.05     # Molar
+    THERMO_MAGNESIUM = 0.0   # Molar
+
     #############################################################################
     #                           BLAST Database Options
     #############################################################################
@@ -86,14 +94,6 @@ class Config:
     BLAST_GAPOPEN = 5
     BLAST_GAPEXTEND = 2
     BLAST_FILTER_FACTOR = 100  # E-value filtering factor
-    
-    #############################################################################
-    #                           Thermodynamic Calculation Settings
-    #############################################################################
-    # ViennaRNA thermodynamic calculation settings
-    THERMO_TEMPERATURE = 37  # Celsius
-    THERMO_SODIUM = 0.05     # Molar
-    THERMO_MAGNESIUM = 0.0   # Molar
 
     #############################################################################
     #                           Alignment Parameters

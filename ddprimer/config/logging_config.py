@@ -14,6 +14,52 @@ from datetime import datetime
 from .config import Config
 
 
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter that adds ANSI color codes for different log levels in debug mode."""
+    
+    # ANSI color codes
+    COLORS = {
+        'DEBUG': '\033[37m',     # White
+        'INFO': '\033[36m',      # Cyan
+        'WARNING': '\033[33m',   # Yellow
+        'ERROR': '\033[31m',     # Red
+        'CRITICAL': '\033[35m',  # Magenta
+    }
+    RESET = '\033[0m'  # Reset to normal
+    
+    def __init__(self, fmt=None, datefmt=None, use_colors=False):
+        """
+        Initialize the colored formatter.
+        
+        Args:
+            fmt: Log format string
+            datefmt: Date format string
+            use_colors: Whether to use ANSI color codes
+        """
+        super().__init__(fmt, datefmt)
+        self.use_colors = use_colors
+    
+    def format(self, record):
+        """
+        Format the log record with colors if enabled.
+        
+        Args:
+            record: LogRecord instance
+            
+        Returns:
+            str: Formatted log message
+        """
+        if self.use_colors and record.levelname in self.COLORS:
+            # Get the original formatted message
+            original_format = super().format(record)
+            
+            # Add color codes
+            color_code = self.COLORS[record.levelname]
+            return f"{color_code}{original_format}{self.RESET}"
+        else:
+            return super().format(record)
+
+
 def setup_logging(debug: bool = False) -> str:
     """
     Configure logging for the application.
@@ -32,25 +78,30 @@ def setup_logging(debug: bool = False) -> str:
     # Different log formats based on debug mode
     if debug_enabled:
         log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+        use_colors = True  # Enable colors in debug mode
     else:
         log_format = '%(message)s'  # Simpler format for regular use
+        use_colors = False
     
     # Set up logging to file
     log_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer", "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"ddPrimer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     
-    # Create file handler (always uses detailed format)
+    # Create file handler (always uses detailed format without colors)
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
     file_handler.setFormatter(logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
     ))
     
-    # Create console handler with appropriate format
+    # Create console handler with appropriate format and colors
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
-    console_handler.setFormatter(logging.Formatter(log_format))
+    
+    # Use ColoredFormatter for console output
+    console_formatter = ColoredFormatter(log_format, use_colors=use_colors)
+    console_handler.setFormatter(console_formatter)
     
     # Configure root logger
     root_logger = logging.getLogger()
@@ -72,6 +123,7 @@ def setup_logging(debug: bool = False) -> str:
         logger.debug(f"Log file: {log_file}")
         logger.debug(f"Python version: {sys.version}")
         logger.debug(f"Platform: {sys.platform}")
+        logger.info("INFO messages will appear in bold in debug mode")
     else:
         logger.debug(f"Log file: {log_file}")
     
