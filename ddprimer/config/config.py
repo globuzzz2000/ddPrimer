@@ -125,6 +125,12 @@ class Config:
     BLAST_FILTER_FACTOR = 100  # E-value filtering factor
 
     #############################################################################
+    #                           K-mer generation parameters
+    #############################################################################
+    KMER_SIZES = [11, 16]  # Standard k-mer sizes for primer design
+    KMER_MIN_FREQUENCY = 2  # Minimum frequency threshold for k-mer inclusion
+
+    #############################################################################
     #                           Alignment Parameters
     #############################################################################
     # Sequence identity settings for alignment mode

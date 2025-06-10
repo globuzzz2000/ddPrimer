@@ -22,6 +22,7 @@ Contains functionality for:
 4. Workflow factory pattern for mode selection
 5. Temporary directory management
 6. Main pipeline orchestration and error handling
+7. K-mer generation and selection utilities
 
 This module serves as the main entry point for the ddPrimer pipeline,
 coordinating all components to provide a complete primer design solution.
@@ -36,7 +37,7 @@ from typing import Optional, Union
 
 # Import package modules
 from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, FileError, ExternalToolError
-from .utils import FileIO, BlastDBCreator, BlastVerification
+from .utils import FileIO, BlastDBCreator, BlastVerification, Selector, run_kmer_generation
 from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Type alias for path inputs
@@ -63,7 +64,7 @@ def parse_arguments():
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug [MODULE...]] [--config [.json]] \n'
-            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
+            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] [--kmer [.fasta]] \n'
             '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
             '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
             '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
@@ -96,6 +97,9 @@ def parse_arguments():
     option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
     option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
     option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    option_group.add_argument('--kmer', nargs='*', metavar=('[.fasta]', '[.fna, .fa]'),
+                             help='Generate or select k-mer frequency lists. With no arguments, shows k-mer selection menu. '
+                                  'With one argument, generates k-mer lists from the specified FASTA file.')
     option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
                     help='Create or select a BLAST database. With no arguments, shows model organism selection menu. '
                         'With one argument, creates database from the specified FASTA file. '
@@ -123,9 +127,35 @@ def parse_arguments():
         # --debug not specified
         args.debug = False
 
-    # Check for conflicting options
-    if args.direct and args.alignment:
-        parser.error("--direct cannot be used with --alignment")
+    # Check for conflicting modes (only check actual modes, not utility flags)
+    mode_count = sum([bool(args.direct), bool(args.alignment)])
+    if mode_count > 1:
+        parser.error("Only one mode can be specified: --direct or --alignment")
+    
+    # If --kmer flag is specified, it's a utility operation - incompatible with modes and other options
+    if args.kmer is not None:
+        # K-mer mode is standalone - incompatible with other options
+        incompatible_options = [
+            'snp', 'noannotation', 'lastzonly', 'nooligo', 'second_fasta', 
+            'vcf', 'second_vcf', 'gff', 'maf'
+        ]
+        for option in incompatible_options:
+            if getattr(args, option, False):
+                parser.error(f"--kmer mode cannot be used with --{option.replace('_', '-')}")
+        
+        # Process --kmer arguments (similar to --db)
+    if args.kmer is not None:
+        if len(args.kmer) == 0:
+            # User ran "--kmer" without any arguments, show the selection menu
+            args.kmer_action = 'select'
+            args.kmer_fasta = None
+        elif len(args.kmer) >= 1:
+            # User provided a specific file path: "--kmer path/to/file.fasta"
+            args.kmer_action = 'generate'
+            args.kmer_fasta = args.kmer[0]
+    else:
+        args.kmer_action = None
+        args.kmer_fasta = None
     
     # If --maf is used, automatically activate alignment mode
     if args.maf:
@@ -347,6 +377,125 @@ def run_pipeline():
                 if args.config == 'all':
                     display_primer3_settings(Config)
             return True
+        
+        # Handle k-mer generation/selection mode
+        if args.kmer is not None:
+            logger.info("K-mer operation requested")
+            try:
+                if args.kmer_action == 'select':
+                    # K-mer selection menu (similar to database selection)
+                    logger.info("K-mer selection menu")
+                    
+                    # Get existing k-mer lists
+                    kmer_lists_by_organism = Selector.find_kmer_lists()
+                    
+                    if kmer_lists_by_organism:
+                        # Display menu with existing k-mer lists + option to create new
+                        logger.info("\nAvailable k-mer lists by organism:")
+                        organisms = list(kmer_lists_by_organism.keys())
+                        
+                        for i, organism in enumerate(organisms, 1):
+                            sizes = [item['size'] for item in kmer_lists_by_organism[organism]]
+                            sizes_str = ', '.join(f"{size}-mer" for size in sizes)
+                            logger.info(f"{i}. {organism.title()} ({sizes_str})")
+                        
+                        logger.info(f"{len(organisms) + 1}. Create new k-mer lists from FASTA file")
+                        logger.info(f"{len(organisms) + 2}. Cancel")
+                        
+                        try:
+                            choice = input(f"Enter your choice [1-{len(organisms) + 2}]: ")
+                            choice = int(choice)
+                            
+                            if 1 <= choice <= len(organisms):
+                                # Select existing k-mer lists
+                                selected_organism = organisms[choice - 1]
+                                selected_files = [item['path'] for item in kmer_lists_by_organism[selected_organism]]
+                                
+                                sizes_str = ', '.join(f"{item['size']}-mer" for item in kmer_lists_by_organism[selected_organism])
+                                logger.info(f"Selected {selected_organism.title()} k-mer lists: {sizes_str}")
+                                
+                                for path in selected_files:
+                                    logger.info(f"  - {Path(path).name}")
+                                return True
+                                
+                            elif choice == len(organisms) + 1:
+                                # Create new k-mer lists - prompt for FASTA file
+                                logger.info("Please select a FASTA file for k-mer generation")
+                                fasta_file = FileIO.select_fasta_file("Select FASTA file for k-mer generation")
+                                
+                                # Generate k-mer lists
+                                output_dir = args.output if args.output else None
+                                success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
+                                
+                                if success:
+                                    logger.info("K-mer generation completed successfully!")
+                                    return True
+                                else:
+                                    logger.error("K-mer generation failed")
+                                    return False
+                                    
+                            elif choice == len(organisms) + 2:
+                                # Cancel
+                                logger.info("K-mer operation canceled")
+                                return False
+                            else:
+                                logger.error("Invalid choice")
+                                return False
+                                
+                        except (ValueError, KeyboardInterrupt):
+                            logger.info("K-mer operation canceled")
+                            return False
+                    else:
+                        # No existing k-mer lists found - offer to create new ones
+                        logger.info("No existing k-mer lists found.")
+                        create_new = input("Would you like to create new k-mer lists from a FASTA file? [Y/n]: ").strip().lower()
+                        
+                        if create_new == "" or create_new.startswith("y"):
+                            logger.info("Please select a FASTA file for k-mer generation")
+                            fasta_file = FileIO.select_fasta_file("Select FASTA file for k-mer generation")
+                            
+                            output_dir = args.output if args.output else None
+                            success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
+                            
+                            if success:
+                                logger.info("K-mer generation completed successfully!")
+                                return True
+                            else:
+                                logger.error("K-mer generation failed")
+                                return False
+                        else:
+                            logger.info("K-mer operation canceled")
+                            return False
+                            
+                elif args.kmer_action == 'generate':
+                    # Direct file path provided for generation
+                    fasta_file = args.kmer_fasta
+                    if not Path(fasta_file).exists():
+                        error_msg = f"FASTA file not found: {fasta_file}"
+                        logger.error(error_msg)
+                        raise FileError(error_msg)
+                    
+                    logger.info("K-mer generation mode")
+                    output_dir = args.output if args.output else None
+                    success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
+                    
+                    if success:
+                        logger.info("K-mer generation completed successfully!")
+                        return True
+                    else:
+                        logger.error("K-mer generation failed")
+                        return False
+                        
+            except FileError as e:
+                error_msg = f"File error during k-mer operation: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                return False
+            except Exception as e:
+                error_msg = f"Unexpected error during k-mer operation: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                return False
             
         # Force CLI mode if specified
         if args.cli:

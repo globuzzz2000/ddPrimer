@@ -14,8 +14,9 @@ from .common_utils import CommonUtils
 from .blast_db_creator import BlastDBCreator
 from .blast_verification import BlastVerification
 from .model_organism_manager import ModelOrganismManager
-from .db_selector import DatabaseSelector
+from .selector import Selector
 from .chromosome_mapper import ChromosomeMapper
+from .kmer_generator import KmerGenerator, run_kmer_generation
 
 __all__ = [
     'FileUtils',
@@ -24,9 +25,11 @@ __all__ = [
     'CommonUtils',
     'BlastVerification',
     'ModelOrganismManager',
-    'DatabaseSelector',
+    'Selector',
     'FileIO',
     'TempDirectoryManager',
     'SequenceUtils',
-    'ChromosomeMapper'
+    'ChromosomeMapper',
+    'KmerGenerator',
+    'run_kmer_generation'
 ]
