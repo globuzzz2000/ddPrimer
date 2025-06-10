@@ -3,10 +3,16 @@
 """
 File I/O module for ddPrimer pipeline.
 
-This module provides consistent interfaces for file operations including:
-- File selection
-- File reading/writing
-- Format conversions
+Contains functionality for:
+1. Cross-platform file selection with GUI and CLI support
+2. FASTA file reading and writing operations
+3. Excel file formatting with comprehensive styling
+4. Sequence table loading from CSV and Excel formats
+5. Temporary directory management and cleanup
+
+This module provides consistent interfaces for file operations including
+file selection, reading/writing, and format conversions across different
+platforms and environments.
 """
 
 import os
@@ -17,10 +23,10 @@ import pandas as pd
 import contextlib
 import tempfile
 import shutil
+from ..config import FileSelectionError, FileFormatError, FileError
 
-# Import package modules
-from ..config import FileSelectionError, FileFormatError
-
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 # Optional import for Excel formatting
 try:
@@ -41,10 +47,19 @@ except ImportError:
 
 @contextlib.contextmanager
 def _silence_cocoa_stderr():
-    """Temporarily redirect C-level stderr to /dev/null (macOS IMK chatter)."""
+    """
+    Temporarily redirect C-level stderr to /dev/null (macOS IMK chatter).
+    
+    This context manager suppresses macOS Input Method Kit warning messages
+    that can clutter the console output during GUI operations.
+    
+    Yields:
+        None - Context manager for silencing stderr on macOS
+    """
     if platform.system() != "Darwin":
         yield
         return
+        
     import os, sys
     old_fd = os.dup(2)
     devnull = os.open(os.devnull, os.O_WRONLY)
@@ -58,7 +73,24 @@ def _silence_cocoa_stderr():
 
 
 class FileIO:
-    """Handles all file I/O operations with consistent interfaces."""
+    """
+    Handles all file I/O operations with consistent interfaces.
+    
+    This class provides cross-platform file operations including GUI and CLI
+    file selection, FASTA file processing, Excel formatting, and sequence
+    table loading. It automatically detects the environment and chooses
+    appropriate methods for file operations.
+    
+    Attributes:
+        use_cli: Whether to use CLI mode instead of GUI
+        is_macos: Whether running on macOS
+        has_pyobjc: Whether PyObjC is available on macOS
+        
+    Example:
+        >>> sequences = FileIO.load_fasta("genome.fasta")
+        >>> file_path = FileIO.select_fasta_file("Select genome file")
+        >>> FileIO.save_results(df, "output_dir", "input.fasta")
+    """
     
     # Default to GUI mode unless explicitly detected as headless
     use_cli = False
@@ -105,18 +137,31 @@ class FileIO:
     def initialize_wx_app(cls):
         """
         Initialize the wxPython app if it doesn't exist yet.
+        
+        Creates a wxPython application instance for file dialogs,
+        with proper error handling and logging.
+        
+        Raises:
+            FileSelectionError: If wxPython initialization fails
         """
         if HAS_WX and cls._wx_app is None:
-            with _silence_cocoa_stderr():
-                cls._wx_app = wx.App(False)
-                logger = logging.getLogger("ddPrimer")
-                logger.debug("wxPython app initialized")
+            try:
+                with _silence_cocoa_stderr():
+                    cls._wx_app = wx.App(False)
+                    logger.debug("wxPython app initialized successfully")
+            except Exception as e:
+                error_msg = f"Failed to initialize wxPython app: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise FileSelectionError(error_msg) from e
     
     @classmethod
     def hide_app(cls):
         """
         Hide the wxPython app without destroying it.
-        This is safer on macOS and avoids segmentation faults.
+        
+        This is safer on macOS and avoids segmentation faults by hiding
+        the application from the dock rather than destroying it.
         """
         if cls.is_macos and cls.has_pyobjc and cls._wx_app is not None:
             try:
@@ -124,18 +169,19 @@ class FileIO:
                 # Hide from Dock
                 NSApplication = AppKit.NSApplication.sharedApplication()
                 NSApplication.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
-                logger = logging.getLogger("ddPrimer")
                 logger.debug("App hidden from macOS dock")
             except Exception as e:
-                logger = logging.getLogger("ddPrimer")
-                logger.debug(f"Error hiding app: {e}")
+                logger.warning(f"Error hiding app from dock: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
 
     @classmethod
     def mark_selection_complete(cls):
         """
         Mark that all file selections are complete and hide the app from the dock.
+        
+        Should be called when file selection operations are finished to clean
+        up the GUI application properly.
         """
-        logger = logging.getLogger("ddPrimer")
         logger.debug("File selection process marked as complete")
         cls.hide_app()
 
@@ -144,14 +190,25 @@ class FileIO:
         """
         Get the last directory used, loading from persistent storage if needed.
         
+        Loads the last used directory from configuration file to provide
+        a better user experience by starting file dialogs in the most
+        recently used location.
+        
         Returns:
-            str: Path to the last directory used
+            Path to the last directory used, or home directory as fallback
         """
         if cls._last_directory is None:
-            # Try to load the last directory from a config file
-            logger = logging.getLogger("ddPrimer")
+            logger.debug("=== LAST DIRECTORY LOADING DEBUG ===")
             config_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer")
-            os.makedirs(config_dir, exist_ok=True)
+            
+            try:
+                os.makedirs(config_dir, exist_ok=True)
+            except OSError as e:
+                logger.warning(f"Failed to create config directory {config_dir}: {str(e)}")
+                cls._last_directory = os.path.expanduser("~")
+                logger.debug("=== END LAST DIRECTORY LOADING DEBUG ===")
+                return cls._last_directory
+                
             config_file = os.path.join(config_dir, "last_directory.txt")
             
             if os.path.exists(config_file):
@@ -163,11 +220,19 @@ class FileIO:
                         logger.debug(f"Loaded last directory from config: {last_dir}")
                     else:
                         cls._last_directory = os.path.expanduser("~")
+                        logger.debug(f"Last directory no longer exists, using home: {cls._last_directory}")
+                except (OSError, IOError) as e:
+                    logger.warning(f"Error reading last directory config: {str(e)}")
+                    cls._last_directory = os.path.expanduser("~")
                 except Exception as e:
-                    logger.debug(f"Error reading last directory config: {e}")
+                    logger.warning(f"Unexpected error reading last directory config: {str(e)}")
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
                     cls._last_directory = os.path.expanduser("~")
             else:
                 cls._last_directory = os.path.expanduser("~")
+                logger.debug(f"No last directory config found, using home: {cls._last_directory}")
+            
+            logger.debug("=== END LAST DIRECTORY LOADING DEBUG ===")
         
         return cls._last_directory
     
@@ -176,37 +241,54 @@ class FileIO:
         """
         Save the last directory to persistent storage.
         
+        Persists the directory path to configuration file for future use,
+        improving user experience in subsequent file selections.
+        
         Args:
-            directory (str): Path to save
+            directory: Path to save as last used directory
         """
-        if directory and os.path.isdir(directory):
-            cls._last_directory = directory
-            logger = logging.getLogger("ddPrimer")
+        if not directory or not isinstance(directory, str):
+            logger.debug("Invalid directory provided to save_last_directory")
+            return
             
-            # Save to config file
-            config_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer")
+        if not os.path.isdir(directory):
+            logger.debug(f"Directory does not exist, not saving: {directory}")
+            return
+            
+        cls._last_directory = directory
+        
+        # Save to config file
+        config_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer")
+        
+        try:
             os.makedirs(config_dir, exist_ok=True)
             config_file = os.path.join(config_dir, "last_directory.txt")
             
-            try:
-                with open(config_file, 'w') as f:
-                    f.write(directory)
-                logger.debug(f"Saved last directory to config: {directory}")
-            except Exception as e:
-                logger.debug(f"Error saving last directory config: {e}")
+            with open(config_file, 'w') as f:
+                f.write(directory)
+            logger.debug(f"Saved last directory to config: {directory}")
+        except (OSError, IOError) as e:
+            logger.warning(f"Error saving last directory config: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        except Exception as e:
+            logger.warning(f"Unexpected error saving last directory config: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
 
     @classmethod
     def normalize_filetypes(cls, filetypes):
         """
         Normalize file types for different platforms.
         
+        Converts file type specifications to platform-appropriate formats,
+        handling differences between macOS, Windows, and Linux file dialogs.
+        
         Args:
-            filetypes (list): List of (description, extension) tuples
+            filetypes: List of (description, extension) tuples
             
         Returns:
-            list: Normalized file types list
+            Normalized file types list for the current platform
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug(f"Normalizing {len(filetypes) if filetypes else 0} file types for platform {platform.system()}")
         
         # Define "All Files" for different platforms
         if cls.is_macos or platform.system() == "Linux":
@@ -242,8 +324,12 @@ class FileIO:
                     else:
                         clean_ext = ext
                     normalized.insert(0, (desc, clean_ext))
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Normalized file types:")
+            for desc, ext in normalized:
+                logger.debug(f"  {desc}: {ext}")
                     
-        logger.debug(f"Normalized {len(filetypes) if filetypes else 0} file types for platform {platform.system()}")
         return normalized
         
     @classmethod
@@ -251,17 +337,21 @@ class FileIO:
         """
         Show a file dialog or prompt for a file path if CLI mode is enabled.
         
+        Provides cross-platform file selection with automatic fallback from
+        GUI to CLI mode when necessary. Handles file validation and user
+        experience improvements like remembering last directory.
+        
         Args:
-            prompt (str): Text to display in the file dialog
-            filetypes (list): List of file type tuples for the dialog
+            prompt: Text to display in the file dialog
+            filetypes: List of file type tuples for the dialog
             
         Returns:
-            str: Selected file path
+            Selected file path
             
         Raises:
-            FileSelectionError: If file selection fails
+            FileSelectionError: If file selection fails or user cancels
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== FILE SELECTION DEBUG ===")
         
         # Get the last directory from our persistent storage
         last_directory = cls.get_last_directory()
@@ -269,17 +359,31 @@ class FileIO:
 
         if cls.use_cli:
             logger.debug(f"{prompt} (CLI mode)")
-            file_path = input(f"{prompt}: ").strip()
-            if not file_path:
-                logger.error("No file path provided in CLI mode")
-                raise FileSelectionError("No file path provided")
+            try:
+                file_path = input(f"{prompt}: ").strip()
+                if not file_path:
+                    error_msg = "No file path provided in CLI mode"
+                    logger.error(error_msg)
+                    raise FileSelectionError(error_msg)
+                    
+                # Validate the path exists
+                if not os.path.exists(file_path):
+                    error_msg = f"File not found: {file_path}"
+                    logger.error(error_msg)
+                    raise FileSelectionError(error_msg)
                 
-            # Validate the path exists
-            if not os.path.exists(file_path):
-                logger.error(f"File not found: {file_path}")
-                raise FileSelectionError(f"File not found: {file_path}")
-                
-            return file_path
+                logger.debug(f"CLI file selection successful: {file_path}")
+                logger.debug("=== END FILE SELECTION DEBUG ===")
+                return file_path
+            except KeyboardInterrupt:
+                error_msg = "File selection canceled by user"
+                logger.error(error_msg)
+                raise FileSelectionError(error_msg)
+            except Exception as e:
+                error_msg = f"CLI file selection failed: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise FileSelectionError(error_msg) from e
 
         # wxPython implementation
         if not cls.use_cli and HAS_WX:
@@ -310,16 +414,21 @@ class FileIO:
                     dlg.Destroy()
 
                 if not file_path:
-                    logger.error("No file was selected in the dialog")
-                    raise FileSelectionError("No file was selected")
+                    error_msg = "No file was selected in the dialog"
+                    logger.error(error_msg)
+                    raise FileSelectionError(error_msg)
 
                 # Update the last directory
                 cls.save_last_directory(os.path.dirname(file_path))
-                logger.debug(f"Selected file: {file_path}")
+                logger.debug(f"GUI file selection successful: {file_path}")
+                logger.debug("=== END FILE SELECTION DEBUG ===")
                 return file_path
 
+            except FileSelectionError:
+                # Re-raise FileSelectionError without modification
+                raise
             except Exception as e:
-                logger.debug(f"wxPython file selection failed: {e}")
+                logger.warning(f"wxPython file selection failed: {str(e)}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Fall back to CLI mode if wxPython fails
                 cls.use_cli = True
@@ -333,17 +442,20 @@ class FileIO:
         """
         Show a file dialog for multiple files or prompt if CLI mode is enabled.
         
+        Provides multi-file selection with the same cross-platform support
+        and fallback mechanisms as single file selection.
+        
         Args:
-            prompt (str): Text to display in the file dialog
-            filetypes (list): List of file type tuples for the dialog
+            prompt: Text to display in the file dialog
+            filetypes: List of file type tuples for the dialog
             
         Returns:
-            list: List of selected file paths
+            List of selected file paths
             
         Raises:
-            FileSelectionError: If file selection fails
+            FileSelectionError: If file selection fails or user cancels
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== MULTIPLE FILE SELECTION DEBUG ===")
         
         # Get the last directory from our persistent storage
         last_directory = cls.get_last_directory()
@@ -351,19 +463,33 @@ class FileIO:
 
         if cls.use_cli:
             logger.info(f"{prompt} (CLI mode)")
-            paths = input(f"{prompt} (paths separated by spaces): ").strip()
-            file_paths = paths.split() if paths else []
-            if not file_paths:
-                logger.error("No file paths provided in CLI mode")
-                raise FileSelectionError("No file paths provided")
-                
-            # Validate the paths exist
-            for path in file_paths:
-                if not os.path.exists(path):
-                    logger.error(f"File not found: {path}")
-                    raise FileSelectionError(f"File not found: {path}")
+            try:
+                paths = input(f"{prompt} (paths separated by spaces): ").strip()
+                file_paths = paths.split() if paths else []
+                if not file_paths:
+                    error_msg = "No file paths provided in CLI mode"
+                    logger.error(error_msg)
+                    raise FileSelectionError(error_msg)
                     
-            return file_paths
+                # Validate the paths exist
+                for path in file_paths:
+                    if not os.path.exists(path):
+                        error_msg = f"File not found: {path}"
+                        logger.error(error_msg)
+                        raise FileSelectionError(error_msg)
+                
+                logger.debug(f"CLI multiple file selection successful: {len(file_paths)} files")
+                logger.debug("=== END MULTIPLE FILE SELECTION DEBUG ===")
+                return file_paths
+            except KeyboardInterrupt:
+                error_msg = "Multiple file selection canceled by user"
+                logger.error(error_msg)
+                raise FileSelectionError(error_msg)
+            except Exception as e:
+                error_msg = f"CLI multiple file selection failed: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise FileSelectionError(error_msg) from e
 
         # wxPython implementation
         if not cls.use_cli and HAS_WX:
@@ -393,16 +519,21 @@ class FileIO:
                     dlg.Destroy()
 
                 if not file_paths:
-                    logger.error("No files were selected in the dialog")
-                    raise FileSelectionError("No files were selected")
+                    error_msg = "No files were selected in the dialog"
+                    logger.error(error_msg)
+                    raise FileSelectionError(error_msg)
 
                 # Update the last directory
                 cls.save_last_directory(os.path.dirname(file_paths[0]))
-                logger.debug(f"Selected {len(file_paths)} file(s)")
+                logger.debug(f"GUI multiple file selection successful: {len(file_paths)} files")
+                logger.debug("=== END MULTIPLE FILE SELECTION DEBUG ===")
                 return file_paths
 
+            except FileSelectionError:
+                # Re-raise FileSelectionError without modification
+                raise
             except Exception as e:
-                logger.error(f"wxPython multiple file selection failed: {e}")
+                logger.warning(f"wxPython multiple file selection failed: {str(e)}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Fall back to CLI mode if wxPython fails
                 cls.use_cli = True
@@ -414,20 +545,22 @@ class FileIO:
     @staticmethod
     def load_fasta(filepath):
         """
-        Load sequences from a FASTA file into a dict: {header_without_gt: sequence}.
-        Optimized for memory efficiency.
+        Load sequences from a FASTA file into a dictionary.
+        
+        Efficiently parses FASTA files with memory optimization for large
+        genomes. Handles validation and error reporting comprehensively.
         
         Args:
-            filepath (str): Path to the FASTA file
+            filepath: Path to the FASTA file
             
         Returns:
-            dict: Dictionary mapping sequence headers to sequences
+            Dictionary mapping sequence headers to sequences
             
         Raises:
-            FileNotFoundError: If the FASTA file doesn't exist
+            FileError: If the FASTA file doesn't exist
             FileFormatError: If there's an error parsing the FASTA file
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== FASTA LOADING DEBUG ===")
         sequences = {}
         name = None
         seq_chunks = []
@@ -436,30 +569,48 @@ class FileIO:
         
         # Validate file exists
         if not os.path.exists(filepath):
-            logger.error(f"FASTA file not found: {filepath}")
-            raise FileNotFoundError(f"FASTA file not found: {filepath}")
+            error_msg = f"FASTA file not found: {filepath}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
             
         try:
             with open(filepath, 'r') as f:
+                line_count = 0
                 for line in f:
+                    line_count += 1
                     line = line.strip()
                     if not line:
                         continue
                     if line.startswith(">"):
                         if name:
                             sequences[name] = "".join(seq_chunks).upper()
+                            logger.debug(f"Loaded sequence: {name} ({len(sequences[name]):,} bp)")
                         name = line[1:].split()[0]
                         seq_chunks = []
+                        logger.debug(f"Started new sequence: {name}")
                     else:
                         seq_chunks.append(line)
+                        
+                # Handle the last sequence
                 if name:
                     sequences[name] = "".join(seq_chunks).upper()
-        except Exception as e:
-            logger.error(f"Error reading FASTA file {os.path.abspath(filepath)}: {str(e)}")
+                    logger.debug(f"Loaded final sequence: {name} ({len(sequences[name]):,} bp)")
+                    
+        except (OSError, IOError) as e:
+            error_msg = f"Error reading FASTA file {os.path.abspath(filepath)}: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(f"Error parsing FASTA file: {str(e)}")
+            logger.debug("=== END FASTA LOADING DEBUG ===")
+            raise FileError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Error parsing FASTA file {os.path.abspath(filepath)}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END FASTA LOADING DEBUG ===")
+            raise FileFormatError(error_msg) from e
         
-        logger.debug(f"Loaded {len(sequences)} sequences from FASTA file")
+        logger.debug(f"Successfully loaded {len(sequences)} sequences from FASTA file")
+        logger.debug("=== END FASTA LOADING DEBUG ===")
         return sequences
     
     @staticmethod
@@ -467,44 +618,66 @@ class FileIO:
         """
         Save sequences to a FASTA file.
         
+        Writes sequences in proper FASTA format with 60-character line wrapping
+        for optimal readability and compatibility.
+        
         Args:
-            sequences (dict): Dictionary of sequence ID to sequence
-            filepath (str): Path to save the FASTA file
+            sequences: Dictionary of sequence ID to sequence
+            filepath: Path to save the FASTA file
             
         Raises:
             FileFormatError: If there's an error writing the FASTA file
         """
-        logger = logging.getLogger("ddPrimer")
         logger.info(f"Saving {len(sequences)} sequences to FASTA file: {filepath}")
         
+        if not sequences:
+            logger.warning("No sequences provided to save_fasta")
+            
         try:
             with open(filepath, 'w') as f:
                 for seq_id, sequence in sequences.items():
+                    if not seq_id or not sequence:
+                        logger.warning(f"Skipping invalid sequence: id='{seq_id}', seq_len={len(sequence) if sequence else 0}")
+                        continue
+                        
                     f.write(f">{seq_id}\n")
                     # Write sequence in chunks of 60 characters for readability
                     for i in range(0, len(sequence), 60):
                         f.write(f"{sequence[i:i+60]}\n")
-        except Exception as e:
-            logger.error(f"Error writing FASTA file {filepath}: {str(e)}")
+                        
+        except (OSError, IOError) as e:
+            error_msg = f"Error writing FASTA file {filepath}: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(f"Error writing FASTA file: {str(e)}")
+            raise FileFormatError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Unexpected error writing FASTA file {filepath}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileFormatError(error_msg) from e
             
         logger.debug(f"Successfully saved FASTA file: {filepath}")
     
     @staticmethod
     def format_excel(df, output_file):
         """
-        Save DataFrame to Excel with specific formatting.
-        If openpyxl is not available, falls back to standard pandas Excel export.
+        Save DataFrame to Excel with comprehensive formatting.
+        
+        Applies professional formatting including headers, color coding,
+        column grouping, and proper alignment. Falls back to basic export
+        if openpyxl is not available.
         
         Args:
-            df (pandas.DataFrame): DataFrame with primer results
-            output_file (str): Path to save the formatted Excel file
+            df: DataFrame with primer results
+            output_file: Path to save the formatted Excel file
             
         Returns:
-            str: Path to the saved Excel file
+            Path to the saved Excel file
+            
+        Raises:
+            FileFormatError: If Excel file cannot be created
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== EXCEL FORMATTING DEBUG ===")
         
         # When openpyxl is available, apply full formatting
         try:
@@ -624,53 +797,65 @@ class FileIO:
                             logger.debug(f"Merged cells for group '{group_name}' ({merge_range})")
                         except Exception as e:
                             # If merge fails, just leave as individual cells
-                            logger.debug(f"Could not merge range {merge_range}: {str(e)}")
+                            logger.warning(f"Could not merge range {merge_range}: {str(e)}")
+                            logger.debug(f"Error details: {str(e)}", exc_info=True)
             
             # Save the workbook
             workbook.save(output_file)
             logger.debug(f"Successfully saved formatted Excel file: {output_file}")
+            logger.debug("=== END EXCEL FORMATTING DEBUG ===")
             
             return output_file
                 
+        except ImportError:
+            # Expected case when openpyxl is not available
+            logger.warning("openpyxl not available, falling back to standard Excel export")
         except Exception as e:
             # If formatting fails, fall back to standard save
-            logger.error(f"Error applying Excel formatting: {str(e)}")
+            error_msg = f"Error applying Excel formatting: {str(e)}"
+            logger.error(error_msg)
             logger.warning("Falling back to standard Excel export")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             
-            # Basic fallback save
+        # Basic fallback save
+        try:
             df.to_excel(output_file, index=False)
             logger.info(f"Excel file saved to: {output_file} (without formatting)")
-            
+            logger.debug("=== END EXCEL FORMATTING DEBUG ===")
             return output_file
+        except Exception as e:
+            error_msg = f"Failed to save Excel file {output_file}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END EXCEL FORMATTING DEBUG ===")
+            raise FileFormatError(error_msg) from e
 
-        
     @staticmethod
     def load_sequences_from_table(file_path):
         """
         Load sequences from a CSV or Excel file with improved column detection.
         
-        This method can handle various file formats:
-        - Files with explicit sequence name and sequence columns
-        - Files with only sequence data (auto-generated IDs)
-        - Files with multiple columns where sequence columns aren't adjacent to name columns
+        Handles various file formats and column arrangements using intelligent
+        analysis to identify sequence name and sequence data columns. Supports
+        auto-generation of sequence IDs when names are not provided.
         
         Args:
-            file_path (str): Path to CSV or Excel file
+            file_path: Path to CSV or Excel file
             
         Returns:
-            dict: Dictionary of sequence ID to sequence
+            Dictionary of sequence ID to sequence
             
         Raises:
-            FileNotFoundError: If the file doesn't exist
+            FileError: If the file doesn't exist
             FileFormatError: If there's an error parsing the file
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== TABLE LOADING DEBUG ===")
         
         # Validate file exists
         if not os.path.exists(file_path):
-            logger.error(f"Table file not found: {file_path}")
-            raise FileNotFoundError(f"Table file not found: {file_path}")
+            error_msg = f"Table file not found: {file_path}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
             
         logger.debug(f"Loading sequences from table file: {file_path}")
         
@@ -680,31 +865,43 @@ class FileIO:
             analysis = SequenceAnalyzer.analyze_file(file_path)
             
             if "error" in analysis:
-                raise FileFormatError(f"Error analyzing file: {analysis['error']}")
+                error_msg = f"Error analyzing file: {analysis['error']}"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
                 
             # Get recommended columns from analysis
             name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
+            logger.debug(f"Recommended columns: name='{name_col}', sequence='{seq_col}'")
             
             # Determine file type and load with pandas
-            if file_path.endswith('.csv'):
-                df = pd.read_csv(file_path)
-            elif file_path.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(file_path)
-            else:
-                logger.error(f"Unsupported file format: {file_path}")
-                raise FileFormatError(f"Unsupported file format: {file_path}. Must be CSV or Excel.")
+            try:
+                if file_path.endswith('.csv'):
+                    df = pd.read_csv(file_path)
+                elif file_path.endswith(('.xlsx', '.xls')):
+                    df = pd.read_excel(file_path)
+                else:
+                    error_msg = f"Unsupported file format: {file_path}. Must be CSV or Excel."
+                    logger.error(error_msg)
+                    raise FileFormatError(error_msg)
+            except Exception as e:
+                error_msg = f"Error reading file {file_path}: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise FileFormatError(error_msg) from e
             
             # Remove any empty columns and rows
             df = df.dropna(axis=1, how='all')
             df = df.dropna(axis=0, how='all')
+            logger.debug(f"Data shape after cleanup: {df.shape}")
             
             # Convert to dictionary
             sequences = {}
             
             # If no sequence column was found, raise an error
             if not seq_col:
-                logger.error("Could not identify a sequence column in the file")
-                raise FileFormatError("Could not identify a sequence column in the file")
+                error_msg = "Could not identify a sequence column in the file"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
                 
             # If no name column was found, generate sequential IDs
             if not name_col:
@@ -714,54 +911,65 @@ class FileIO:
                     
                     # Skip empty sequences
                     if pd.isna(sequence) or not sequence:
+                        logger.debug(f"Skipping empty sequence at row {idx}")
                         continue
                     
                     # Generate a sequential ID
                     seq_id = f"Seq_{idx+1}"
                     sequences[seq_id] = sequence
+                    logger.debug(f"Added sequence: {seq_id} ({len(sequence)} bp)")
             else:
                 # Use the identified name and sequence columns
+                logger.debug(f"Using name column '{name_col}' and sequence column '{seq_col}'")
                 for idx, row in df.iterrows():
                     seq_id = str(row[name_col]).strip()
                     sequence = str(row[seq_col]).strip().upper()
                     
                     # Skip rows with empty names or sequences
                     if pd.isna(seq_id) or pd.isna(sequence) or not seq_id or not sequence:
+                        logger.debug(f"Skipping empty row at index {idx}")
                         continue
                     
                     # Handle duplicate IDs by appending a suffix
+                    original_seq_id = seq_id
                     if seq_id in sequences:
                         suffix = 1
                         while f"{seq_id}_{suffix}" in sequences:
                             suffix += 1
                         seq_id = f"{seq_id}_{suffix}"
-                        logger.debug(f"Renamed duplicate sequence ID to '{seq_id}'")
+                        logger.debug(f"Renamed duplicate sequence ID '{original_seq_id}' to '{seq_id}'")
                     
                     sequences[seq_id] = sequence
+                    logger.debug(f"Added sequence: {seq_id} ({len(sequence)} bp)")
             
-            logger.debug(f"Loaded {len(sequences)} sequences from table file")
+            logger.debug(f"Successfully loaded {len(sequences)} sequences from table file")
+            logger.debug("=== END TABLE LOADING DEBUG ===")
             return sequences
             
+        except (FileFormatError, FileError):
+            # Re-raise specific exceptions without modification
+            raise
         except Exception as e:
-            if isinstance(e, FileFormatError) or isinstance(e, FileNotFoundError):
-                raise e
-            logger.error(f"Error loading sequences from table file: {str(e)}")
+            error_msg = f"Error parsing sequence table {file_path}: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(f"Error parsing sequence table: {str(e)}")
+            logger.debug("=== END TABLE LOADING DEBUG ===")
+            raise FileFormatError(error_msg) from e
 
     @classmethod
     def select_sequences_file(cls):
         """
         Prompt the user to select a CSV or Excel file with sequences.
         
+        Provides user-friendly file selection specifically for sequence
+        table files with appropriate file type filters.
+        
         Returns:
-            str: Path to the selected file
+            Path to the selected file
             
         Raises:
             FileSelectionError: If file selection fails
         """
-        logger = logging.getLogger("ddPrimer")
-        
         logger.info("\n>>> Please select CSV or Excel file with sequences <<<")
         
         try:
@@ -771,28 +979,32 @@ class FileIO:
             )
             logger.debug(f"Selected sequences file: {file_path}")
             return file_path
+        except FileSelectionError:
+            # Re-raise FileSelectionError without modification
+            raise
         except Exception as e:
-            logger.error(f"Error selecting sequence file: {str(e)}")
+            error_msg = f"Failed to select sequence file: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileSelectionError(f"Failed to select sequence file: {str(e)}")
+            raise FileSelectionError(error_msg) from e
 
     @classmethod
     def select_fasta_file(cls, prompt="Select FASTA file"):
         """
         Prompt the user to select a FASTA file.
         
+        Provides user-friendly file selection specifically for FASTA
+        files with appropriate file type filters and validation.
+        
         Args:
-            prompt (str): Text to display in the file dialog
+            prompt: Text to display in the file dialog
             
         Returns:
-            str: Path to the selected FASTA file
+            Path to the selected FASTA file
             
         Raises:
             FileSelectionError: If file selection fails
         """
-        logger = logging.getLogger("ddPrimer")
-
-        
         try:
             file_path = cls.select_file(
                 prompt, 
@@ -800,35 +1012,47 @@ class FileIO:
             )
             logger.debug(f"Selected FASTA file: {file_path}")
             return file_path
+        except FileSelectionError:
+            # Re-raise FileSelectionError without modification
+            raise
         except Exception as e:
-            logger.error(f"Error selecting FASTA file: {str(e)}")
+            error_msg = f"Failed to select FASTA file: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileSelectionError(f"Failed to select FASTA file: {str(e)}")
+            raise FileSelectionError(error_msg) from e
 
     @staticmethod
     def save_results(df, output_dir, input_file, mode='standard', second_fasta=None):
         """
         Save results to an Excel file with correct naming based on input files and mode.
         
+        Generates appropriate output filenames based on pipeline mode and input
+        files, then saves results with comprehensive formatting.
+        
         Args:
-            df (pandas.DataFrame): DataFrame with primer results
-            output_dir (str): Output directory
-            input_file (str): Path to the input file (FASTA, CSV, MAF, etc.)
-            mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
-            second_fasta (str, optional): Path to second FASTA file for alignment mode
+            df: DataFrame with primer results
+            output_dir: Output directory
+            input_file: Path to the input file (FASTA, CSV, MAF, etc.)
+            mode: Pipeline mode ('standard', 'direct', or 'alignment')
+            second_fasta: Path to second FASTA file for alignment mode
             
         Returns:
-            str: Path to the output file
+            Path to the output file
             
         Raises:
             FileFormatError: If there's an error saving the results
         """
-        logger = logging.getLogger("ddPrimer")
-            
+        logger.debug("=== RESULTS SAVING DEBUG ===")
         logger.debug("\nSaving results...")
         
         # Make sure output directory exists
-        os.makedirs(output_dir, exist_ok=True)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            error_msg = f"Failed to create output directory {output_dir}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileFormatError(error_msg) from e
         
         # Set output filename based on mode and input files
         if mode == 'alignment':
@@ -904,7 +1128,11 @@ class FileIO:
             logger.debug(f"Added probe columns to output: {', '.join([c for c in probe_cols if c in df.columns])}")
         
         # Ensure all columns in the list exist in the DataFrame
+        original_column_count = len(columns)
         columns = [col for col in columns if col in df.columns]
+        if len(columns) < original_column_count:
+            missing_cols = original_column_count - len(columns)
+            logger.debug(f"Filtered out {missing_cols} missing columns from output")
         
         # Reorder the columns
         df = df[columns]
@@ -912,40 +1140,52 @@ class FileIO:
         # Save with formatting
         try:
             output_path = FileIO.format_excel(df, output_file)
+            logger.debug("=== END RESULTS SAVING DEBUG ===")
             return output_path
         except Exception as e:
             # Fallback if formatting fails
-            logger.error(f"Error saving Excel file: {str(e)}")
+            error_msg = f"Error saving Excel file: {str(e)}"
+            logger.error(error_msg)
             logger.warning("Falling back to basic Excel export")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             
             try:
                 df.to_excel(output_file, index=False)
                 logger.info(f"\nResults saved to: {output_file} (without formatting)")
+                logger.debug("=== END RESULTS SAVING DEBUG ===")
                 return output_file
             except Exception as ex:
-                logger.error(f"Failed to save results: {str(ex)}")
+                error_msg = f"Failed to save results to {output_file}: {str(ex)}"
+                logger.error(error_msg)
                 logger.debug(f"Error details: {str(ex)}", exc_info=True)
-                raise FileFormatError(f"Failed to save results: {str(ex)}")
+                logger.debug("=== END RESULTS SAVING DEBUG ===")
+                raise FileFormatError(error_msg) from ex
 
     @staticmethod
     def setup_output_directories(args, reference_file=None, mode='standard'):
         """
         Set up output directory and temporary directory for the pipeline.
         
+        Creates appropriate directory structure based on pipeline mode and
+        input files, with intelligent path determination for different scenarios.
+        
         Args:
-            args (argparse.Namespace): Command line arguments
-            reference_file (str, optional): Path to reference file
-            mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
+            args: Command line arguments
+            reference_file: Path to reference file
+            mode: Pipeline mode ('standard', 'direct', or 'alignment')
             
         Returns:
-            tuple: (output_dir, temp_dir) - Paths to output and temporary directories
+            Tuple of (output_dir, temp_dir) - Paths to output and temporary directories
+            
+        Raises:
+            FileError: If directory creation fails
         """
-        logger = logging.getLogger("ddPrimer")
+        logger.debug("=== OUTPUT DIRECTORY SETUP DEBUG ===")
         
         # Determine output directory
         if args.output:
             output_dir = args.output
+            logger.debug(f"Using user-specified output directory: {output_dir}")
         elif reference_file:
             if mode == 'alignment' and hasattr(args, 'maf_file') and args.maf_file:
                 # For MAF files, use the parent directory of the "Alignments" folder
@@ -956,22 +1196,38 @@ class FileIO:
                 else:
                     # Otherwise use the parent directory of the MAF file
                     output_dir = os.path.join(os.path.dirname(maf_dir), "Primers")
+                logger.debug(f"MAF-based output directory: {output_dir}")
             else:
                 # Use the directory of the reference file
                 input_dir = os.path.dirname(os.path.abspath(reference_file))
                 output_dir = os.path.join(input_dir, "Primers")
+                logger.debug(f"Reference file-based output directory: {output_dir}")
         else:
             # Fallback to current directory if no reference file
             output_dir = os.path.join(os.getcwd(), "Primers")
+            logger.debug(f"Fallback output directory: {output_dir}")
         
         # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        logger.debug(f"Created output directory: {output_dir}")
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            logger.debug(f"Created output directory: {output_dir}")
+        except OSError as e:
+            error_msg = f"Failed to create output directory {output_dir}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         
         # Create temporary directory
-        temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
-        logger.debug(f"Created temporary directory: {temp_dir}")
+        try:
+            temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=output_dir)
+            logger.debug(f"Created temporary directory: {temp_dir}")
+        except OSError as e:
+            error_msg = f"Failed to create temporary directory in {output_dir}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         
+        logger.debug("=== END OUTPUT DIRECTORY SETUP DEBUG ===")
         return output_dir, temp_dir
 
     @staticmethod
@@ -979,53 +1235,85 @@ class FileIO:
         """
         Clean up temporary directory safely.
         
+        Removes temporary directory and all contents with comprehensive
+        error handling and logging.
+        
         Args:
-            temp_dir (str): Path to temporary directory
+            temp_dir: Path to temporary directory
             
         Returns:
-            bool: True if cleanup was successful, False otherwise
+            True if cleanup was successful, False otherwise
         """
-        logger = logging.getLogger("ddPrimer")
-        
         if not temp_dir:
+            logger.debug("No temporary directory to clean up")
             return True
             
         try:
             if os.path.exists(temp_dir):
                 logger.debug(f"Cleaning up temporary directory: {temp_dir}")
                 shutil.rmtree(temp_dir)
+                logger.debug("Temporary directory cleanup completed successfully")
                 return True
-        except Exception as e:
-            logger.warning(f"Error cleaning up temporary files: {str(e)}")
+            else:
+                logger.debug(f"Temporary directory does not exist: {temp_dir}")
+                return True
+        except OSError as e:
+            logger.warning(f"Error cleaning up temporary files in {temp_dir}: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
-        
-        return True
+        except Exception as e:
+            logger.warning(f"Unexpected error cleaning up temporary files: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return False
     
+
 class TempDirectoryManager:
-    """Context manager for temporary directory creation and cleanup."""
+    """
+    Context manager for temporary directory creation and cleanup.
+    
+    Provides safe temporary directory management with automatic cleanup
+    and comprehensive error handling for pipeline operations.
+    
+    Attributes:
+        temp_dir: Path to the created temporary directory
+        base_dir: Base directory for temporary directory creation
+        
+    Example:
+        >>> with TempDirectoryManager() as temp_dir:
+        ...     # Use temp_dir for operations
+        ...     process_files(temp_dir)
+        # temp_dir is automatically cleaned up
+    """
     
     def __init__(self, base_dir=None):
         """
         Initialize the temporary directory manager.
         
         Args:
-            base_dir (str, optional): Base directory to create the temp directory in
+            base_dir: Base directory to create the temp directory in
         """
         self.temp_dir = None
         self.base_dir = base_dir
-        self.logger = logging.getLogger("ddPrimer")
         
     def __enter__(self):
         """
         Create and return the temporary directory path.
         
         Returns:
-            str: Path to the temporary directory
+            Path to the temporary directory
+            
+        Raises:
+            FileError: If temporary directory creation fails
         """
-        self.temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=self.base_dir)
-        self.logger.debug(f"Created temporary directory: {self.temp_dir}")
-        return self.temp_dir
+        try:
+            self.temp_dir = tempfile.mkdtemp(prefix="ddprimer_temp_", dir=self.base_dir)
+            logger.debug(f"Created temporary directory: {self.temp_dir}")
+            return self.temp_dir
+        except OSError as e:
+            error_msg = f"Failed to create temporary directory: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
@@ -1036,10 +1324,14 @@ class TempDirectoryManager:
             exc_val: Exception value if an exception was raised
             exc_tb: Exception traceback if an exception was raised
         """
-        try:
-            if self.temp_dir and os.path.exists(self.temp_dir):
-                self.logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
+        if self.temp_dir and os.path.exists(self.temp_dir):
+            try:
+                logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
                 shutil.rmtree(self.temp_dir)
-        except Exception as e:
-            self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.debug("Temporary directory cleanup completed")
+            except OSError as e:
+                logger.warning(f"Error cleaning up temporary files in {self.temp_dir}: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+            except Exception as e:
+                logger.warning(f"Unexpected error during cleanup: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)

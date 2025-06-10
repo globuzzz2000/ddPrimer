@@ -1,89 +1,121 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BLAST Database Verification Utilities
+BLAST Database Verification Utilities for ddPrimer pipeline.
 
-This module provides functions to verify BLAST databases before pipeline execution
-and offers options to create databases from model organisms when verification fails.
+Contains functionality for:
+1. BLAST database verification and validation
+2. Database file integrity checking
+3. Model organism database creation workflow
+4. Fallback verification methods
+
+This module provides functions to verify BLAST databases before pipeline
+execution and offers options to create databases from model organisms
+when verification fails.
 """
 
 import os
 import subprocess
 import tempfile
-import logging
 import re
 import shlex
 import time
+import logging
+from ..config import Config, ExternalToolError, FileError
 
-# Import package modules
-from ..config import Config
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 class BlastVerification:
-    """Handles BLAST database verification before pipeline execution."""
+    """
+    Handles BLAST database verification before pipeline execution.
+    
+    This class provides comprehensive database verification methods
+    including file integrity checks, functional testing, and fallback
+    verification strategies when primary methods fail.
+    
+    Example:
+        >>> if BlastVerification.verify_blast_database():
+        ...     print("Database verified successfully")
+        ... else:
+        ...     print("Database verification failed")
+    """
     
     @staticmethod
-    def verify_blast_database(logger=None):
+    def verify_blast_database():
         """
         Verify that a valid BLAST database exists and can be accessed.
-        If verification fails, offer options to create a new database.
         
-        Args:
-            logger (logging.Logger, optional): Logger instance for output messages
-            
+        Performs comprehensive verification including file existence checks
+        and functional testing. If verification fails, offers options to
+        create a new database from model organisms.
+        
         Returns:
-            bool: True if database is valid, False otherwise
+            True if database is valid, False otherwise
+            
+        Raises:
+            ExternalToolError: If BLAST tools are not available or functional
         """
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
+        logger.debug("=== BLAST DATABASE VERIFICATION DEBUG ===")
         
         config = Config.get_instance()
         db_path = Config.DB_PATH
+        logger.debug(f"Checking database path: {db_path}")
         
         # If no database path is set, immediately offer to create one
         if db_path is None:
             logger.info("No BLAST database configured. You need to create or select one.")
-            return BlastVerification._handle_failed_verification(logger)
+            logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+            return BlastVerification._handle_failed_verification()
         
         # Ensure path is absolute and properly expanded
         db_path = os.path.abspath(os.path.expanduser(db_path))
-        
-        logger.debug(f"Checking BLAST database at: {db_path}")
+        logger.debug(f"Expanded database path: {db_path}")
         
         # Basic file check - do the database files exist?
         required_extensions = ['.nhr', '.nin', '.nsq']
         missing_files = []
         
         for ext in required_extensions:
-            if not os.path.exists(db_path + ext):
+            file_path = db_path + ext
+            if not os.path.exists(file_path):
                 missing_files.append(ext)
+            else:
+                logger.debug(f"Found database file: {file_path}")
         
         if missing_files:
             logger.warning(f"BLAST database at {db_path} is missing files: {', '.join(missing_files)}")
-            # Database files are missing, offer to create a new database
-            return BlastVerification._handle_failed_verification(logger)
+            logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+            return BlastVerification._handle_failed_verification()
         else:
-            logger.debug("BLAST database files found.")
+            logger.debug("All required BLAST database files found")
         
         # Run a simple BLAST command to test functionality
         try:
             logger.debug("Running test BLAST command...")
             
             # Create a small temporary FASTA file
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp_query:
-                tmp_query.write(">test_seq\nACGTACGTACGTACGTACGT\n")
-                tmp_query.flush()
-                tmp_filename = tmp_query.name
+            try:
+                with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp_query:
+                    tmp_query.write(">test_seq\nACGTACGTACGTACGTACGT\n")
+                    tmp_query.flush()
+                    tmp_filename = tmp_query.name
+            except OSError as e:
+                error_msg = f"Failed to create temporary test file: {str(e)}"
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                raise ExternalToolError(error_msg, tool_name="blastn") from e
             
             try:
                 # Run test BLAST command with a very simple query
                 cmd = [
                     "blastn",
                     "-task", "blastn-short",
-                    "-db", f'"{db_path}"',  # Use the quoted path here
+                    "-db", f'"{db_path}"',
                     "-query", tmp_filename,
                     "-outfmt", "6",
-                    "-max_target_seqs", "5"  # Increased to avoid warning
+                    "-max_target_seqs", "5"
                 ]
                 
                 # Log the command with proper quoting for debug purposes
@@ -94,7 +126,7 @@ class BlastVerification:
                     cmd,
                     text=True,
                     capture_output=True,
-                    timeout=15  # Increased timeout
+                    timeout=15
                 )
                 
                 # Clean up temp file
@@ -102,7 +134,6 @@ class BlastVerification:
                 
                 # Analyze the result
                 if result.returncode == 0:
-                    # Even with no hits, a successful command should not have an error exit code
                     logger.debug("BLAST database test command executed successfully")
                     
                     # Check if there were hits or just no matches in the database
@@ -111,6 +142,7 @@ class BlastVerification:
                     else:
                         logger.debug("Test BLAST command executed but found no hits (this is normal for a test query)")
                         
+                    logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
                     return True
                 else:
                     # Check for common errors that might still allow the database to work
@@ -123,52 +155,67 @@ class BlastVerification:
                         # Check for warnings about examining matches which aren't fatal
                         if re.search(r"Examining \d+ or more matches is recommended", error_msg):
                             logger.warning("Non-critical BLAST warning detected, database may still work")
+                            logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
                             return True
                         
                         # Additional check - try again after a small delay
-                        # Sometimes memory mapping issues resolve themselves
                         logger.warning("Memory map error detected, retrying after short delay...")
                         time.sleep(2)
                         
                         # Try one more time with a different approach
-                        return BlastVerification._retry_verify_with_blastdbcmd(db_path, logger)
+                        result = BlastVerification._retry_verify_with_blastdbcmd(db_path)
+                        logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+                        return result
                         
                     # Log the full error
                     logger.error(f"BLAST database test failed: {error_msg}")
-                    # Database test failed, offer to create a new database
-                    return BlastVerification._handle_failed_verification(logger)
+                    logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+                    return BlastVerification._handle_failed_verification()
                     
             except subprocess.TimeoutExpired:
-                logger.error("BLAST command timed out - database may be corrupted or inaccessible")
+                error_msg = "BLAST command timed out - database may be corrupted or inaccessible"
+                logger.error(error_msg)
                 # Clean up temp file
-                os.remove(tmp_filename)
-                # Database test failed, offer to create a new database
-                return BlastVerification._handle_failed_verification(logger)
+                try:
+                    os.remove(tmp_filename)
+                except OSError:
+                    pass
+                logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+                return BlastVerification._handle_failed_verification()
                 
+        except ExternalToolError:
+            # Re-raise ExternalToolError without modification
+            raise
         except Exception as e:
-            logger.error(f"Error testing BLAST database: {str(e)}")
-            logger.debug(str(e), exc_info=True)
-            # Database test failed, offer to create a new database
-            return BlastVerification._handle_failed_verification(logger)
+            error_msg = f"Error testing BLAST database: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+            return BlastVerification._handle_failed_verification()
             
         # This code should not be reached, but just in case
-        return BlastVerification._retry_verify_with_blastdbcmd(db_path, logger)
+        result = BlastVerification._retry_verify_with_blastdbcmd(db_path)
+        logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
+        return result
 
     @staticmethod
-    def _retry_verify_with_blastdbcmd(db_path, logger):
+    def _retry_verify_with_blastdbcmd(db_path):
         """
         Fallback verification using blastdbcmd instead of blastn.
         
+        Provides an alternative verification method when standard BLAST
+        testing fails, using database information commands instead of
+        actual sequence searches.
+        
         Args:
-            db_path (str): Path to the BLAST database
-            logger (logging.Logger): Logger instance
+            db_path: Path to the BLAST database
             
         Returns:
-            bool: True if verification succeeds, False otherwise
-        """
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
+            True if verification succeeds, False otherwise
             
+        Raises:
+            ExternalToolError: If blastdbcmd is not available or fails
+        """
         try:
             # Quote the database path exactly like blast_processor.py does
             quoted_db_path = f'"{db_path}"'
@@ -178,7 +225,7 @@ class BlastVerification:
             
             cmd = [
                 "blastdbcmd",
-                "-db", quoted_db_path,  # Use the quoted path here
+                "-db", quoted_db_path,
                 "-info"
             ]
             
@@ -197,30 +244,37 @@ class BlastVerification:
                 logger.debug("BLAST database verified with blastdbcmd")
                 return True
             else:
-                logger.error(f"blastdbcmd verification failed: {result.stderr}")
-                # Database verification failed with all methods, offer to create a new database
-                return BlastVerification._handle_failed_verification(logger)
+                error_msg = f"blastdbcmd verification failed"
+                logger.error(error_msg)
+                logger.debug(f"blastdbcmd stderr: {result.stderr}")
+                return BlastVerification._handle_failed_verification()
                 
+        except subprocess.TimeoutExpired:
+            error_msg = "blastdbcmd verification timed out"
+            logger.error(error_msg)
+            return BlastVerification._handle_failed_verification()
         except Exception as e:
-            logger.error(f"Error during fallback verification: {str(e)}")
-            logger.debug(str(e), exc_info=True)
-            # Database verification failed with all methods, offer to create a new database
-            return BlastVerification._handle_failed_verification(logger)
+            error_msg = f"Error during fallback verification: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return BlastVerification._handle_failed_verification()
     
     @staticmethod
-    def _handle_failed_verification(logger):
+    def _handle_failed_verification():
         """
-        Handle failed database verification by offering options:
-        1. Create a new database from a model organism
-        2. Create a new database from a custom file
-        3. Try again with the current database
-        4. Exit
+        Handle failed database verification by offering creation options.
         
-        Args:
-            logger (logging.Logger): Logger instance
-            
+        Provides interactive menu for users to:
+        1. Create database from model organism
+        2. Create database from custom file  
+        3. Retry with current database
+        4. Exit pipeline
+        
         Returns:
-            bool: True if a new database was created and verified, False otherwise
+            True if new database was created and verified, False otherwise
+            
+        Raises:
+            ExternalToolError: If database creation tools fail
         """
         logger.error("\n======================================")
         logger.error("ERROR: BLAST database verification failed!")
@@ -240,7 +294,7 @@ class BlastVerification:
                 
                 # Use ModelOrganismManager to select and fetch a model organism
                 from . import ModelOrganismManager
-                organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism(logger)
+                organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism()
                 
                 if fasta_file is None:
                     logger.info("Database creation canceled. Exiting...")
@@ -260,35 +314,36 @@ class BlastVerification:
                 # Create the database
                 from . import BlastDBCreator
                 blast_db_creator = BlastDBCreator()
-                db_path = blast_db_creator.create_database(fasta_file, db_name)
+                try:
+                    db_path = blast_db_creator.create_database(fasta_file, db_name)
+                except (ExternalToolError, FileError) as e:
+                    error_msg = f"Failed to create database: {str(e)}"
+                    logger.error(error_msg)
+                    return False
                 
                 # If a database was successfully created
                 if db_path:
                     # Check if there's already a database path set that's not the default
                     if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
-                        # If there's already a non-default database, ask if we should use the new one
                         logger.info(f"Current BLAST database path: {Config.DB_PATH}")
                         use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
                         
                         if use_new_db == "" or use_new_db.startswith("y"):
                             Config.DB_PATH = db_path
                             Config.USE_CUSTOM_DB = True
-                            # Save the database path for future runs
                             Config.save_database_config(db_path)
                             logger.info(f"Now using new BLAST database: {db_path}")
                         else:
                             logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
                     else:
-                        # If no database or default database, automatically use the new one
                         Config.DB_PATH = db_path
                         Config.USE_CUSTOM_DB = True
-                        # Save the database path for future runs
                         Config.save_database_config(db_path)
                         logger.debug(f"BLAST database created and set as active: {db_path}")
                     
                     # Clean up genome file if it was from a model organism
                     if fasta_file and organism_key is not None:
-                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
+                        ModelOrganismManager.cleanup_genome_file(fasta_file)
                     
                     return True
                 else:
@@ -302,7 +357,12 @@ class BlastVerification:
                 # Create the database using BlastDBCreator
                 from . import BlastDBCreator
                 blast_db_creator = BlastDBCreator()
-                db_path = blast_db_creator.create_database(True)  # True means prompt for file
+                try:
+                    db_path = blast_db_creator.create_database(True)  # True means prompt for file
+                except (ExternalToolError, FileError) as e:
+                    error_msg = f"Failed to create database: {str(e)}"
+                    logger.error(error_msg)
+                    return False
                 
                 if db_path is None:
                     logger.info("Database creation canceled. Exiting...")
@@ -312,23 +372,19 @@ class BlastVerification:
                 if db_path:
                     # Check if there's already a database path set that's not the default
                     if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
-                        # If there's already a non-default database, ask if we should use the new one
                         logger.info(f"Current BLAST database path: {Config.DB_PATH}")
                         use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
                         
                         if use_new_db == "" or use_new_db.startswith("y"):
                             Config.DB_PATH = db_path
                             Config.USE_CUSTOM_DB = True
-                            # Save the database path for future runs
                             Config.save_database_config(db_path)
                             logger.info(f"Now using new BLAST database: {db_path}")
                         else:
                             logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
                     else:
-                        # If no database or default database, automatically use the new one
                         Config.DB_PATH = db_path
                         Config.USE_CUSTOM_DB = True
-                        # Save the database path for future runs
                         Config.save_database_config(db_path)
                         logger.info(f"BLAST database created and set as active: {db_path}")
                     
@@ -350,15 +406,13 @@ class BlastVerification:
                 
             else:
                 logger.error("Invalid choice. Please enter a number between 1 and 4.")
-                # For invalid choices, recursively call this method
-                # This line is important - when overriding in tests, we need to ensure 
-                # we use the class name explicitly to maintain the patching chain
-                return BlastVerification._handle_failed_verification(logger)
+                return BlastVerification._handle_failed_verification()
                 
         except KeyboardInterrupt:
             logger.info("\nOperation canceled by user.")
             return False
         except Exception as e:
-            logger.error(f"Error handling failed verification: {str(e)}")
-            logger.debug(str(e), exc_info=True)
+            error_msg = f"Error handling failed verification: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False

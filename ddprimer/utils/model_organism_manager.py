@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Model Organism Manager
+Model Organism Manager for ddPrimer pipeline.
 
-This module provides functionality to fetch genome files for common model organisms.
+Contains functionality for:
+1. Model organism genome fetching and processing
+2. Interactive organism selection menus
+3. Genome file download with progress tracking
+4. Compressed file extraction and management
+
+This module provides functionality to fetch genome files for common
+model organisms, supporting the BLAST database creation workflow
+with automated genome retrieval from NCBI.
 """
 
 import os
@@ -13,9 +21,28 @@ import urllib.request
 import gzip
 import time
 from pathlib import Path
+from ..config import FileError, ExternalToolError
+
+# Set up module logger
+logger = logging.getLogger(__name__)
+
 
 class ModelOrganismManager:
-    """Manages the fetching and processing of model organism genome files."""
+    """
+    Manages the fetching and processing of model organism genome files.
+    
+    This class provides methods for downloading genome files from NCBI
+    for common model organisms, with support for compressed file handling
+    and interactive organism selection.
+    
+    Attributes:
+        MODEL_ORGANISMS: Dictionary of available model organisms with URLs
+        
+    Example:
+        >>> key, name, path = ModelOrganismManager.select_model_organism()
+        >>> if path:
+        ...     print(f"Downloaded {name} genome to {path}")
+    """
     
     # Dictionary of model organisms with their genome download URLs - ordered as requested
     MODEL_ORGANISMS = {
@@ -71,8 +98,11 @@ class ModelOrganismManager:
         """
         Create a formatted menu of available model organisms.
         
+        Generates a user-friendly menu string showing all available
+        model organisms with their scientific names and common names.
+        
         Returns:
-            str: Menu formatted as a string
+            Formatted menu string for display to users
         """
         menu = "\nAvailable model organisms:\n"
         menu += "0. Custom FASTA file\n"
@@ -87,45 +117,59 @@ class ModelOrganismManager:
         return menu
     
     @staticmethod
-    def fetch_model_organism(key, output_dir=None, logger=None):
+    def fetch_model_organism(key, output_dir=None):
         """
         Fetch and prepare the genome file for a model organism.
         
+        Downloads the genome file for the specified organism from NCBI,
+        handling compressed files and providing progress feedback.
+        
         Args:
-            key (str): Model organism key (e.g., 'human', 'mouse')
-            output_dir (str, optional): Directory to save the downloaded genome
-            logger (logging.Logger, optional): Logger instance
+            key: Model organism key from MODEL_ORGANISMS dictionary
+            output_dir: Directory to save the downloaded genome
             
         Returns:
-            str: Path to the downloaded genome file
+            Path to the downloaded genome file
             
         Raises:
             ValueError: If the model organism key is invalid
-            ConnectionError: If the download fails
+            ExternalToolError: If the download fails
+            FileError: If file operations fail
         """
-        # Use default logger if none provided
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
-            
+        logger.debug("=== MODEL ORGANISM FETCH DEBUG ===")
+        logger.debug(f"Fetching organism: {key}")
+        
         # Check if model organism exists
         if key not in ModelOrganismManager.MODEL_ORGANISMS:
-            raise ValueError(f"Invalid model organism key: {key}")
+            error_msg = f"Invalid model organism key: {key}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
         
         organism_data = ModelOrganismManager.MODEL_ORGANISMS[key]
         organism_name = organism_data['name']
         url = organism_data['url']
         compressed = organism_data.get('compressed', False)
         
+        logger.debug(f"Organism name: {organism_name}")
+        logger.debug(f"Download URL: {url}")
+        logger.debug(f"Compressed: {compressed}")
+        
         # Create output directory if needed
         if output_dir is None:
-            # Use a standard location in the user's home directory
             output_dir = os.path.join(Path.home(), "ddprimer_genomes")
         
-        os.makedirs(output_dir, exist_ok=True)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            error_msg = f"Failed to create output directory {output_dir}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         
         # Determine the filename for the genome
         filename = os.path.basename(url)
         output_file = os.path.join(output_dir, filename)
+        logger.debug(f"Output file: {output_file}")
         
         # Check if the file already exists
         if os.path.exists(output_file):
@@ -136,11 +180,15 @@ class ModelOrganismManager:
                 uncompressed_file = output_file[:-3]  # Remove .gz extension
                 if os.path.exists(uncompressed_file):
                     logger.info(f"Uncompressed genome file already exists at {uncompressed_file}")
+                    logger.debug("=== END MODEL ORGANISM FETCH DEBUG ===")
                     return uncompressed_file
                 else:
                     logger.info(f"Extracting compressed genome file {output_file}")
-                    return ModelOrganismManager._extract_gzip(output_file, logger)
+                    result = ModelOrganismManager._extract_gzip(output_file)
+                    logger.debug("=== END MODEL ORGANISM FETCH DEBUG ===")
+                    return result
             
+            logger.debug("=== END MODEL ORGANISM FETCH DEBUG ===")
             return output_file
         
         # Download the genome file
@@ -167,34 +215,38 @@ class ModelOrganismManager:
             # If compressed, extract it
             if compressed and filename.endswith('.gz'):
                 logger.debug(f"Extracting compressed genome file {output_file}")
-                return ModelOrganismManager._extract_gzip(output_file, logger)
+                result = ModelOrganismManager._extract_gzip(output_file)
+                logger.debug("=== END MODEL ORGANISM FETCH DEBUG ===")
+                return result
             
+            logger.debug("=== END MODEL ORGANISM FETCH DEBUG ===")
             return output_file
             
         except Exception as e:
-            logger.error(f"Error downloading genome file: {str(e)}")
-            raise ConnectionError(f"Failed to download genome file: {str(e)}")
+            error_msg = f"Failed to download genome file for {organism_name}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ExternalToolError(error_msg, tool_name="wget/urllib") from e
     
     @staticmethod
-    def _extract_gzip(gzip_file, logger=None):
+    def _extract_gzip(gzip_file):
         """
         Extract a gzipped file.
         
+        Decompresses a gzipped genome file with progress tracking
+        and proper error handling for large files.
+        
         Args:
-            gzip_file (str): Path to the gzipped file
-            logger (logging.Logger, optional): Logger instance
+            gzip_file: Path to the gzipped file
             
         Returns:
-            str: Path to the extracted file
+            Path to the extracted file
             
         Raises:
-            IOError: If extraction fails
+            FileError: If extraction fails or file is inaccessible
         """
-        # Use default logger if none provided
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
-            
         output_file = gzip_file[:-3]  # Remove .gz extension
+        logger.debug(f"Extracting {gzip_file} to {output_file}")
         
         try:
             # Extract with progress indicator
@@ -233,26 +285,34 @@ class ModelOrganismManager:
             logger.debug(f"Extraction completed: {output_file}")
             return output_file
             
+        except (OSError, IOError, gzip.BadGzipFile) as e:
+            error_msg = f"Failed to extract genome file {gzip_file}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         except Exception as e:
-            logger.error(f"Error extracting genome file: {str(e)}")
-            raise IOError(f"Failed to extract genome file: {str(e)}")
+            error_msg = f"Unexpected error extracting genome file {gzip_file}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
     
     @staticmethod
-    def select_model_organism(logger=None):
+    def select_model_organism():
         """
         Present a menu to select a model organism or an existing database.
         
-        Args:
-            logger (logging.Logger, optional): Logger instance
-            
+        Displays an interactive menu allowing users to choose from model
+        organisms, custom files, or existing databases.
+        
         Returns:
-            tuple: (organism_key, organism_name, file_path) or (None, None, None) if canceled
-                  For existing database selection: ('existing_db', database_name, None)
-        """
-        # Use default logger if none provided
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
+            Tuple of (organism_key, organism_name, file_path) or (None, None, None) if canceled.
+            For existing database selection: ('existing_db', database_name, database_path)
             
+        Raises:
+            FileError: If file selection or database operations fail
+        """
+        logger.debug("Starting model organism selection")
+        
         # Display the menu
         menu = ModelOrganismManager.get_model_organism_menu()
         logger.info(menu)
@@ -269,26 +329,33 @@ class ModelOrganismManager:
             
             # Process the selection
             if choice == 0:  # Custom file
-                from ..utils import FileIO
                 try:
+                    from ..utils import FileIO
                     fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
                     return None, "Custom file", fasta_file
                 except Exception as e:
-                    logger.error(f"Error selecting custom file: {str(e)}")
+                    error_msg = f"Error selecting custom file: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return None, None, None
             elif choice == len(ModelOrganismManager.MODEL_ORGANISMS) + 1:  # Select from existing databases
                 logger.info("Selecting from existing BLAST databases...")
-                from ..utils import DatabaseSelector
-                selected_db_path = DatabaseSelector.select_database(logger)
-                
-                if selected_db_path is None:
-                    logger.info("Database selection canceled.")
+                try:
+                    from ..utils import DatabaseSelector
+                    selected_db_path = DatabaseSelector.select_database()
+                    
+                    if selected_db_path is None:
+                        logger.info("Database selection canceled.")
+                        return None, None, None
+                    
+                    # Return special values to indicate an existing database was selected
+                    db_name = os.path.basename(selected_db_path).replace("_", " ")
+                    return 'existing_db', db_name, selected_db_path
+                except Exception as e:
+                    error_msg = f"Error selecting existing database: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return None, None, None
-                
-                # Return special values to indicate an existing database was selected
-                # We set file_path to None since we're not downloading a genome file
-                db_name = os.path.basename(selected_db_path).replace("_", " ")
-                return 'existing_db', db_name, selected_db_path
             elif choice == len(ModelOrganismManager.MODEL_ORGANISMS) + 2:  # Cancel
                 return None, None, None
             elif 1 <= choice <= len(ModelOrganismManager.MODEL_ORGANISMS):
@@ -297,18 +364,32 @@ class ModelOrganismManager:
                 organism_data = ModelOrganismManager.MODEL_ORGANISMS[organism_key]
                 organism_name = organism_data['name']
                 
-                # Create system directory for genome files - use /usr/local/share if root, otherwise user home
+                # Create system directory for genome files
                 if os.geteuid() == 0:  # Check if running as root
                     genome_dir = "/usr/local/share/ddprimer/genomes"
                 else:
                     genome_dir = os.path.join(Path.home(), ".ddprimer", "genomes")
                 
-                os.makedirs(genome_dir, exist_ok=True)
+                try:
+                    os.makedirs(genome_dir, exist_ok=True)
+                except OSError as e:
+                    error_msg = f"Failed to create genome directory {genome_dir}: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    raise FileError(error_msg) from e
                 
                 # Fetch the genome file
-                file_path = ModelOrganismManager.fetch_model_organism(organism_key, genome_dir, logger)
-                
-                return organism_key, organism_name, file_path
+                try:
+                    file_path = ModelOrganismManager.fetch_model_organism(organism_key, genome_dir)
+                    return organism_key, organism_name, file_path
+                except (ValueError, ExternalToolError, FileError):
+                    # Re-raise specific exceptions without modification
+                    raise
+                except Exception as e:
+                    error_msg = f"Unexpected error fetching model organism: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    raise FileError(error_msg) from e
             else:
                 logger.error("Invalid choice. Please enter a number within the range.")
                 return None, None, None
@@ -316,24 +397,33 @@ class ModelOrganismManager:
         except KeyboardInterrupt:
             logger.info("\nOperation canceled by user.")
             return None, None, None
+        except (FileError, ValueError, ExternalToolError):
+            # Re-raise specific exceptions without modification
+            raise
         except Exception as e:
-            logger.error(f"Error selecting model organism: {str(e)}")
-            return None, None, None
+            error_msg = f"Error selecting model organism: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise FileError(error_msg) from e
         
     @staticmethod
-    def cleanup_genome_file(file_path, logger=None):
+    def cleanup_genome_file(file_path):
         """
         Delete a genome file after database creation.
         
-        Args:
-            file_path (str): Path to the genome file
-            logger (logging.Logger, optional): Logger instance
-        """
-        if logger is None:
-            logger = logging.getLogger("ddPrimer")
+        Removes downloaded genome files to free up disk space after
+        successful database creation, including both compressed and
+        uncompressed versions.
         
+        Args:
+            file_path: Path to the genome file to remove
+        """
+        if not file_path:
+            logger.debug("No genome file path provided for cleanup")
+            return
+            
         try:
-            if file_path and os.path.exists(file_path):
+            if os.path.exists(file_path):
                 logger.debug(f"Cleaning up genome file: {file_path}")
                 os.remove(file_path)
                 
@@ -347,5 +437,9 @@ class ModelOrganismManager:
                 logger.debug("Genome file cleanup completed")
             else:
                 logger.debug(f"No genome file to clean up or file not found: {file_path}")
+        except OSError as e:
+            logger.warning(f"Error cleaning up genome file {file_path}: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
         except Exception as e:
-            logger.warning(f"Error cleaning up genome file: {str(e)}")
+            logger.warning(f"Unexpected error during genome file cleanup: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
