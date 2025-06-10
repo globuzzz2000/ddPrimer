@@ -5,8 +5,19 @@ Common utilities for all primer design modes in the ddPrimer pipeline.
 
 This module contains functions shared between different pipeline modes:
 - Standard mode
-- Direct mode
+- Direct mode  
 - Alignment mode
+
+Contains functionality for:
+1. Unified primer design workflow execution
+2. Fragment filtering based on pipeline mode
+3. Primer3 design and result processing
+4. Thermodynamic property calculations
+5. BLAST specificity checking
+6. Coordinate mapping for alignment mode
+
+This module integrates with the broader ddPrimer pipeline to provide
+shared workflow components across all primer design modes.
 """
 
 import logging
@@ -18,8 +29,8 @@ from ..config import Config, SequenceProcessingError, PrimerDesignError
 from ..utils import FileIO
 from ..core import PrimerProcessor, BlastProcessor, SequenceProcessor, Primer3Processor, ViennaRNAProcessor 
 
-# Set up logger
-logger = logging.getLogger("ddPrimer")
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mode='standard', 
@@ -29,23 +40,30 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
     """
     Unified primer design workflow for all modes.
     
+    Executes the complete primer design pipeline including restriction site processing,
+    fragment filtering, primer design, thermodynamic calculations, and BLAST analysis.
+    
     Args:
-        masked_sequences (dict): Dictionary of masked sequences
-        output_dir (str): Output directory path
-        reference_file (str): Path to reference file (FASTA, CSV, MAF, etc.)
-        mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
-        genes (dict, optional): Gene annotations (not used in direct mode)
-        coordinate_map (dict, optional): Coordinate mapping for alignment mode
-        gff_file (str, optional): Path to GFF file
-        temp_dir (str, optional): Temporary directory
-        second_fasta (str, optional): Path to second FASTA file for alignment mode
-        skip_annotation_filtering (bool, optional): Skip gene annotation filtering
-        matching_status (dict, optional): Dictionary with reference matching status for sequences
-        all_sequences (dict, optional): Dictionary with all original sequences (for direct mode)
-        add_rows_function (callable, optional): Function to add rows for sequences without primers
+        masked_sequences: Dictionary of masked sequences
+        output_dir: Output directory path
+        reference_file: Path to reference file (FASTA, CSV, MAF, etc.)
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
+        genes: Gene annotations (not used in direct mode)
+        coordinate_map: Coordinate mapping for alignment mode
+        gff_file: Path to GFF file
+        temp_dir: Temporary directory
+        second_fasta: Path to second FASTA file for alignment mode
+        skip_annotation_filtering: Skip gene annotation filtering
+        matching_status: Dictionary with reference matching status for sequences
+        all_sequences: Dictionary with all original sequences (for direct mode)
+        add_rows_function: Function to add rows for sequences without primers
         
     Returns:
-        bool: Success or failure
+        True if workflow completed successfully, False otherwise
+        
+    Raises:
+        SequenceProcessingError: If sequence processing fails
+        PrimerDesignError: If primer design fails
     """
     logger.debug(f"Starting primer design workflow in {mode} mode")
     
@@ -134,15 +152,18 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             return False
             
     except SequenceProcessingError as e:
-        logger.error(f"Sequence processing error: {str(e)}")
+        error_msg = f"Sequence processing error: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except PrimerDesignError as e:
-        logger.error(f"Primer design error: {str(e)}")
+        error_msg = f"Primer design error: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
-        logger.error(f"Error in primer design workflow: {str(e)}")
+        error_msg = f"Error in primer design workflow: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
 
@@ -151,14 +172,18 @@ def filter_fragments_by_mode(restriction_fragments, mode, genes, skip_annotation
     """
     Filter fragments based on pipeline mode.
     
+    Applies mode-specific filtering to restriction fragments, including
+    gene overlap extraction for standard/alignment modes or direct
+    processing for direct mode.
+    
     Args:
-        restriction_fragments (list): List of restriction fragments
-        mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
-        genes (dict): Gene annotations
-        skip_annotation_filtering (bool): Skip gene annotation filtering
+        restriction_fragments: List of restriction fragments
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
+        genes: Gene annotations
+        skip_annotation_filtering: Skip gene annotation filtering
         
     Returns:
-        list: Filtered fragments
+        List of filtered fragments
         
     Raises:
         SequenceProcessingError: If there's an error in fragment filtering
@@ -189,20 +214,24 @@ def filter_fragments_by_mode(restriction_fragments, mode, genes, skip_annotation
             logger.info(f"Extracted {len(filtered_fragments)} gene fragments from {len(restriction_fragments)} restriction fragments")
             return filtered_fragments
         except Exception as e:
-            logger.error(f"Error in gene overlap extraction: {str(e)}")
+            error_msg = f"Error in gene overlap extraction: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(f"Gene overlap extraction failed: {str(e)}")
+            raise SequenceProcessingError(error_msg) from e
 
 
 def process_direct_mode_fragments(restriction_fragments):
     """
     Process fragments specifically for direct mode.
     
+    Creates simplified fragments for direct mode with minimal metadata,
+    explicitly excluding location data that's not relevant for this mode.
+    
     Args:
-        restriction_fragments (list): List of restriction fragments
+        restriction_fragments: List of restriction fragments
         
     Returns:
-        list: Simplified fragments for direct mode
+        List of simplified fragments for direct mode
     """
     filtered_fragments = []
     for fragment in restriction_fragments:
@@ -225,12 +254,15 @@ def design_primers_with_primer3(fragments, mode='standard'):
     """
     Run Primer3 design on the provided fragments.
     
+    Prepares input for Primer3, executes primer design in parallel,
+    and parses results into a standardized format.
+    
     Args:
-        fragments (list): List of sequence fragments
-        mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
+        fragments: List of sequence fragments
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         
     Returns:
-        list: Primer design results
+        List of primer design results
         
     Raises:
         PrimerDesignError: If there's an error in primer design
@@ -261,21 +293,26 @@ def design_primers_with_primer3(fragments, mode='standard'):
         return primer_results
         
     except Exception as e:
-        logger.error(f"Error running Primer3: {str(e)}")
+        error_msg = f"Error running Primer3: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Primer3 execution failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
 
 
 def map_alignment_coordinates(df, coordinate_map):
     """
     Map primer coordinates to the second genome for alignment mode.
     
+    Translates primer coordinates from the reference genome to the
+    corresponding positions in the second genome using the provided
+    coordinate mapping.
+    
     Args:
-        df (pandas.DataFrame): DataFrame with primer results
-        coordinate_map (dict): Coordinate mapping dictionary
+        df: DataFrame with primer results
+        coordinate_map: Coordinate mapping dictionary
         
     Returns:
-        pandas.DataFrame: Updated DataFrame with mapped coordinates
+        Updated DataFrame with mapped coordinates
     """
     logger.debug("\nMapping primer coordinates to second genome...")
     
@@ -321,11 +358,14 @@ def process_restriction_sites(masked_sequences):
     """
     Cut sequences at restriction sites.
     
+    Processes masked sequences to identify and cut at restriction sites,
+    creating fragments suitable for primer design.
+    
     Args:
-        masked_sequences (dict): Dictionary of sequences
+        masked_sequences: Dictionary of sequences
         
     Returns:
-        list: List of restriction fragments
+        List of restriction fragments
         
     Raises:
         SequenceProcessingError: If there's an error in restriction site processing
@@ -355,22 +395,26 @@ def process_restriction_sites(masked_sequences):
         
         return restriction_fragments
     except Exception as e:
-        logger.error(f"Error in restriction site filtering: {str(e)}")
+        error_msg = f"Error in restriction site filtering: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise SequenceProcessingError(f"Restriction site filtering failed: {str(e)}")
+        raise SequenceProcessingError(error_msg) from e
 
 
 def prepare_primer3_inputs(fragments, mode='standard'):
     """
     Prepare input blocks for Primer3 from sequence fragments.
+    
+    Creates Primer3-compatible input dictionaries from fragment data,
+    storing fragment metadata for later result processing.
     No target regions - let Primer3 freely choose amplicon locations based on product size range.
     
     Args:
-        fragments (list): List of sequence fragments
-        mode (str): Pipeline mode ('standard', 'direct', or 'alignment')
+        fragments: List of sequence fragments
+        mode: Pipeline mode ('standard', 'direct', or 'alignment')
         
     Returns:
-        tuple: (primer3_inputs, fragment_info) - Lists of Primer3 input dicts and fragment info dict
+        Tuple of (primer3_inputs, fragment_info) - Lists of Primer3 input dicts and fragment info dict
     """
     primer3_inputs = []
     fragment_info = {}  # Dictionary to store fragment information
@@ -406,11 +450,14 @@ def filter_primers(primer_results):
     """
     Filter primers based on various criteria.
     
+    Applies sequential filtering based on penalty scores, repeat sequences,
+    and GC content to ensure high-quality primer selection.
+    
     Args:
-        primer_results (list): List of primer results from Primer3
+        primer_results: List of primer results from Primer3
         
     Returns:
-        pandas.DataFrame: Filtered primer DataFrame
+        Filtered primer DataFrame, or None if no primers pass filtering
         
     Raises:
         PrimerDesignError: If there's an error in primer filtering
@@ -436,9 +483,10 @@ def filter_primers(primer_results):
         
         logger.debug("Penalty filtering completed successfully")
     except Exception as e:
-        logger.error(f"Error in penalty filtering: {str(e)}")
+        error_msg = f"Error in penalty filtering: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Penalty filtering failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     logger.debug(f"After penalty filtering: {len(df)}/{initial_count} primers")
     
     # Filter by repeats
@@ -447,9 +495,10 @@ def filter_primers(primer_results):
         df = PrimerProcessor.filter_by_repeats(df)
         logger.debug("Repeat filtering completed successfully")
     except Exception as e:
-        logger.error(f"Error in repeat filtering: {str(e)}")
+        error_msg = f"Error in repeat filtering: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Repeat filtering failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     logger.debug(f"After repeat filtering: {len(df)}/{initial_count} primers")
     
     # Filter by GC content
@@ -458,9 +507,10 @@ def filter_primers(primer_results):
         df = PrimerProcessor.filter_by_gc_content(df)
         logger.debug("GC content filtering completed successfully")
     except Exception as e:
-        logger.error(f"Error in GC content filtering: {str(e)}")
+        error_msg = f"Error in GC content filtering: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"GC content filtering failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     logger.info(f"After filtering: {len(df)}/{initial_count} primers")
     
     # Process internal oligos (reverse complement if needed)
@@ -469,9 +519,10 @@ def filter_primers(primer_results):
         df = PrimerProcessor.process_internal_oligos(df)
         logger.debug("Internal oligo processing completed successfully")
     except Exception as e:
-        logger.error(f"Error in internal oligo processing: {str(e)}")
+        error_msg = f"Error in internal oligo processing: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Internal oligo processing failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     if len(df) == 0:
         logger.warning("No primers passed filtering.")
@@ -484,11 +535,14 @@ def calculate_thermodynamics(df):
     """
     Calculate thermodynamic properties using ViennaRNA.
     
+    Computes minimum free energy (ΔG) for primers, probes, and amplicons
+    using ViennaRNA with DNA-specific parameters.
+    
     Args:
-        df (pandas.DataFrame): DataFrame with primer information
+        df: DataFrame with primer information
         
     Returns:
-        pandas.DataFrame: DataFrame with added thermodynamic properties
+        DataFrame with added thermodynamic properties
         
     Raises:
         PrimerDesignError: If there's an error in thermodynamic calculations
@@ -514,9 +568,10 @@ def calculate_thermodynamics(df):
             df["Primer F dG"] = df["Primer F"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Forward primer deltaG calculation completed successfully")
     except Exception as e:
-        logger.error(f"Error calculating forward primer deltaG: {str(e)}")
+        error_msg = f"Error calculating forward primer deltaG: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Forward primer thermodynamic calculation failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for reverse primers
     logger.debug("Calculating ΔG for reverse primers...")
@@ -528,9 +583,10 @@ def calculate_thermodynamics(df):
             df["Primer R dG"] = df["Primer R"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Reverse primer deltaG calculation completed successfully")
     except Exception as e:
-        logger.error(f"Error calculating reverse primer deltaG: {str(e)}")
+        error_msg = f"Error calculating reverse primer deltaG: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Reverse primer thermodynamic calculation failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for probes if present
     if "Probe" in df.columns:
@@ -547,9 +603,10 @@ def calculate_thermodynamics(df):
                                                if pd.notnull(x) and x else None)
             logger.debug("Probe deltaG calculation completed successfully")
         except Exception as e:
-            logger.error(f"Error calculating probe deltaG: {str(e)}")
+            error_msg = f"Error calculating probe deltaG: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise PrimerDesignError(f"Probe thermodynamic calculation failed: {str(e)}")
+            raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for amplicons
     logger.debug("Calculating ΔG for amplicons...")
@@ -561,9 +618,10 @@ def calculate_thermodynamics(df):
             df["Amplicon dG"] = df["Amplicon"].apply(ViennaRNAProcessor.calc_deltaG)
         logger.debug("Amplicon deltaG calculation completed successfully")
     except Exception as e:
-        logger.error(f"Error calculating amplicon deltaG: {str(e)}")
+        error_msg = f"Error calculating amplicon deltaG: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Amplicon thermodynamic calculation failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
         
     return df
 
@@ -572,11 +630,15 @@ def run_blast_specificity(df):
     """
     Run BLAST for primer specificity checking.
     
+    Executes BLAST analysis for all primers and probes to assess specificity,
+    then filters results based on BLAST e-value thresholds.
+    
     Args:
-        df (pandas.DataFrame): DataFrame with primer information
+        df: DataFrame with primer information
         
     Returns:
-        pandas.DataFrame: DataFrame with added BLAST results
+        DataFrame with added BLAST results and filtered for specificity,
+        or None if no primers pass BLAST filtering
         
     Raises:
         PrimerDesignError: If there's an error in BLAST execution or filtering
@@ -600,9 +662,10 @@ def run_blast_specificity(df):
         df["Primer F BLAST1"], df["Primer F BLAST2"] = zip(*blast_results_f)
         logger.debug("Forward primer BLAST completed successfully")
     except Exception as e:
-        logger.error(f"Error in forward primer BLAST: {str(e)}")
+        error_msg = f"Error in forward primer BLAST: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Forward primer BLAST failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     # Run BLAST for reverse primers
     try:
@@ -620,9 +683,10 @@ def run_blast_specificity(df):
         df["Primer R BLAST1"], df["Primer R BLAST2"] = zip(*blast_results_r)
         logger.debug("Reverse primer BLAST completed successfully")
     except Exception as e:
-        logger.error(f"Error in reverse primer BLAST: {str(e)}")
+        error_msg = f"Error in reverse primer BLAST: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"Reverse primer BLAST failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     # Run BLAST for probes if present
     if "Probe" in df.columns:
@@ -644,9 +708,10 @@ def run_blast_specificity(df):
             df["Probe BLAST1"], df["Probe BLAST2"] = zip(*blast_results_p)
             logger.debug("Probe BLAST completed successfully")
         except Exception as e:
-            logger.error(f"Error in probe BLAST: {str(e)}")
+            error_msg = f"Error in probe BLAST: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise PrimerDesignError(f"Probe BLAST failed: {str(e)}")
+            raise PrimerDesignError(error_msg) from e
     
     # Filter by BLAST specificity
     try:
@@ -656,9 +721,10 @@ def run_blast_specificity(df):
         logger.debug("BLAST filtering completed successfully")
         logger.info(f"After BLAST filtering: {len(df)}/{initial_count} primers")
     except Exception as e:
-        logger.error(f"Error in BLAST filtering: {str(e)}")
+        error_msg = f"Error in BLAST filtering: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        raise PrimerDesignError(f"BLAST filtering failed: {str(e)}")
+        raise PrimerDesignError(error_msg) from e
     
     if len(df) == 0:
         logger.warning("No primers passed BLAST filtering.")

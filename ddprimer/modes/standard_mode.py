@@ -3,10 +3,15 @@
 """
 Standard mode for ddPrimer pipeline.
 
-This module contains the implementation of the standard mode workflow:
-1. Load FASTA, VCF and GFF files
-2. Extract variants from VCF and mask the FASTA file
-3. Pass masked sequences to the common primer design workflow
+Contains functionality for:
+1. File selection and validation for standard mode inputs
+2. VCF variant extraction with chromosome mapping
+3. Sequence masking with SNP variants
+4. Gene annotation loading and processing
+5. Integration with common primer design workflow
+
+This module integrates with the broader ddPrimer pipeline to provide
+the standard primer design workflow for genomic sequences.
 """
 
 import os
@@ -19,19 +24,27 @@ from ..utils import FileIO
 from ..core import SNPMaskingProcessor, AnnotationProcessor
 from . import common
 
-# Set up logger
-logger = logging.getLogger("ddPrimer")
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 def run(args):
     """
     Run the standard mode primer design workflow.
     
+    Executes the complete standard mode pipeline including file selection,
+    variant extraction, sequence masking, gene annotation loading, and
+    primer design workflow execution.
+    
     Args:
-        args (argparse.Namespace): Command line arguments
+        args: Command line arguments containing file paths and options
         
     Returns:
-        bool: True if the workflow completed successfully, False otherwise
+        True if the workflow completed successfully, False otherwise
+        
+    Raises:
+        FileSelectionError: If required input files cannot be selected
+        SequenceProcessingError: If sequence processing fails
     """
     logger.info("=== Standard Mode Workflow ===")
     
@@ -43,7 +56,8 @@ def run(args):
                 args.fasta = FileIO.select_fasta_file("Select FASTA sequence file")
                 logger.debug(f"Selected FASTA file: {args.fasta}")
             except FileSelectionError as e:
-                logger.error(f"FASTA file selection failed: {str(e)}")
+                error_msg = f"FASTA file selection failed: {str(e)}"
+                logger.error(error_msg)
                 return False
         
         # VCF file selection
@@ -56,7 +70,8 @@ def run(args):
                 )
                 logger.debug(f"Selected VCF file: {args.vcf}")
             except FileSelectionError as e:
-                logger.error(f"VCF file selection failed: {str(e)}")
+                error_msg = f"VCF file selection failed: {str(e)}"
+                logger.error(error_msg)
                 return False
         
         # GFF file selection
@@ -69,7 +84,8 @@ def run(args):
                 )
                 logger.debug(f"Selected GFF file: {args.gff}")
             except FileSelectionError as e:
-                logger.error(f"GFF file selection failed: {str(e)}")
+                error_msg = f"GFF file selection failed: {str(e)}"
+                logger.error(error_msg)
                 return False
         elif args.noannotation:
             logger.info("\nSkipping GFF annotation file selection")
@@ -109,9 +125,10 @@ def run(args):
             logger.debug(f"Extracted {total_variants} variants from {len(variants)} chromosomes")
                 
         except Exception as e:
-            logger.error(f"Error extracting variants: {str(e)}")
+            error_msg = f"Error extracting variants: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(f"Failed to extract variants: {str(e)}")
+            raise SequenceProcessingError(error_msg) from e
         
         # Load sequences from FASTA file
         logger.info("Loading sequences from FASTA file...")
@@ -120,7 +137,8 @@ def run(args):
             logger.debug(f"Sequences loaded successfully from {args.fasta}")
             logger.debug(f"Loaded {len(sequences)} sequences")
         except Exception as e:
-            logger.error(f"Error loading FASTA: {str(e)}")
+            error_msg = f"Error loading FASTA: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
         
@@ -144,9 +162,10 @@ def run(args):
                     masked_seq = snp_processor.mask_variants(sequence, seq_variants)
                     masked_sequences[seq_id] = masked_seq
                 except Exception as e:
-                    logger.error(f"Error masking variants in {seq_id}: {str(e)}")
+                    error_msg = f"Error masking variants in {seq_id}: {str(e)}"
+                    logger.error(error_msg)
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    raise SequenceProcessingError(f"Failed to mask variants in {seq_id}: {str(e)}")
+                    raise SequenceProcessingError(error_msg) from e
             else:
                 logger.debug(f"No variants to mask in {seq_id}")
                 masked_sequences[seq_id] = sequence
@@ -159,7 +178,8 @@ def run(args):
                 logger.debug(f"Gene annotations loaded successfully from {args.gff}")
                 logger.debug(f"Loaded {len(genes)} gene annotations")
             except Exception as e:
-                logger.error(f"Error loading gene annotations: {str(e)}")
+                error_msg = f"Error loading gene annotations: {str(e)}"
+                logger.error(error_msg)
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
                 return False
         else:
@@ -181,10 +201,12 @@ def run(args):
         return success
             
     except SequenceProcessingError as e:
-        logger.error(f"Sequence processing error: {str(e)}")
+        error_msg = f"Sequence processing error: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
-        logger.error(f"Error in standard mode workflow: {str(e)}")
+        error_msg = f"Error in standard mode workflow: {str(e)}"
+        logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False

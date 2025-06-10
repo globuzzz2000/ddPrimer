@@ -14,6 +14,17 @@ A streamlined script that:
 8. Saves results to an Excel file
 
 Now with support for automatic model organism database creation!
+
+Contains functionality for:
+1. Command line argument parsing and validation
+2. Configuration management and display
+3. Database creation and verification
+4. Workflow factory pattern for mode selection
+5. Temporary directory management
+6. Main pipeline orchestration and error handling
+
+This module serves as the main entry point for the ddPrimer pipeline,
+coordinating all components to provide a complete primer design solution.
 """
 
 import sys
@@ -31,19 +42,22 @@ from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 # Type alias for path inputs
 PathLike = Union[str, Path]
 
-# Define logger
-logger = logging.getLogger("ddPrimer.pipeline")
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 
 def parse_arguments():
     """
     Parse command line arguments.
     
+    Validates argument combinations and provides comprehensive help
+    for all available options and modes.
+    
     Returns:
-        argparse.Namespace: Parsed arguments
+        Parsed arguments namespace
         
     Raises:
-        argparse.ArgumentError: If there are conflicting or invalid arguments
+        SystemExit: If arguments are invalid or conflicting
     """
     parser = argparse.ArgumentParser(
         description='ddPrimer: A pipeline for primer design and filtering',
@@ -179,10 +193,10 @@ class WorkflowFactory:
         Create and return the appropriate workflow based on command line arguments.
         
         Args:
-            args (argparse.Namespace): Command line arguments
+            args: Command line arguments namespace
             
         Returns:
-            callable: Workflow function to execute
+            Workflow function to execute
         """
         # For both lastzonly and alignment, use alignment mode
         if args.alignment or args.lastzonly:
@@ -206,7 +220,6 @@ class TempDirectoryManager:
     Attributes:
         temp_dir: Path to the created temporary directory
         base_dir: Base directory for temporary directory creation
-        logger: Logger instance for this manager
         
     Example:
         >>> with TempDirectoryManager() as temp_dir:
@@ -224,14 +237,13 @@ class TempDirectoryManager:
         """
         self.temp_dir = None
         self.base_dir = str(base_dir) if base_dir else None
-        self.logger = logging.getLogger("ddPrimer.temp_manager")
         
     def __enter__(self):
         """
         Create and return the temporary directory path.
         
         Returns:
-            str: Path to the temporary directory
+            Path to the temporary directory
             
         Raises:
             FileError: If temporary directory creation fails
@@ -242,11 +254,11 @@ class TempDirectoryManager:
                 prefix=Config.BLAST_TEMP_FILE_PREFIX,
                 dir=self.base_dir
             )
-            self.logger.debug(f"Created temporary directory: {self.temp_dir}")
+            logger.debug(f"Created temporary directory: {self.temp_dir}")
             return self.temp_dir
         except OSError as e:
             error_msg = f"Failed to create temporary directory: {str(e)}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             raise FileError(error_msg) from e
         
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -261,11 +273,11 @@ class TempDirectoryManager:
         if self.temp_dir and Path(self.temp_dir).exists():
             try:
                 import shutil
-                self.logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
+                logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
                 shutil.rmtree(self.temp_dir)
             except OSError as e:
-                self.logger.warning(f"Error cleaning up temporary files: {str(e)}")
-                self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.warning(f"Error cleaning up temporary files: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
 
 
 def run_pipeline():
@@ -276,7 +288,7 @@ def run_pipeline():
     configuration loading, database verification, and workflow execution.
     
     Returns:
-        bool: True if the pipeline completed successfully, False otherwise
+        True if the pipeline completed successfully, False otherwise
         
     Raises:
         DDPrimerError: For application-specific errors
@@ -284,7 +296,7 @@ def run_pipeline():
         ExternalToolError: For external tool failures
     """
     # Initialize logger first to handle any early errors
-    logger = None
+    logger_instance = None
 
     try:
         # Parse command line arguments
@@ -293,13 +305,13 @@ def run_pipeline():
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
         
-        logger = logging.getLogger("ddPrimer.pipeline")
-        logger.debug("Initializing Config settings")
+        logger_instance = logging.getLogger(__name__)
+        logger_instance.debug("Initializing Config settings")
         Config.get_instance()
-        logger.debug(f"Initial DB_PATH: {Config.DB_PATH}")
-        logger.debug("Starting pipeline execution")
-        logger.debug(f"Arguments: {args}")
-        logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
+        logger_instance.debug(f"Initial DB_PATH: {Config.DB_PATH}")
+        logger_instance.debug("Starting pipeline execution")
+        logger_instance.debug(f"Arguments: {args}")
+        logger_instance.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
         # Display configuration if --config is provided with special values
         if args.config in ['DISPLAY', 'all', 'basic', 'template']:
@@ -320,43 +332,44 @@ def run_pipeline():
         # Force CLI mode if specified
         if args.cli:
             FileIO.use_cli = True
-            logger.debug("CLI mode enforced via command line argument")
+            logger_instance.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
         if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
-            logger.debug(f"Loading custom configuration from {args.config}")
+            logger_instance.debug(f"Loading custom configuration from {args.config}")
             try:
                 Config.load_from_file(args.config)
             except FileNotFoundError as e:
                 error_msg = f"Configuration file not found: {args.config}"
-                logger.error(error_msg)
+                logger_instance.error(error_msg)
                 raise FileError(error_msg) from e
             except Exception as e:
                 error_msg = f"Error loading configuration file {args.config}: {str(e)}"
-                logger.error(error_msg)
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
                 raise FileError(error_msg) from e
             
         # Apply nooligo setting if specified
         if args.nooligo:
-            logger.info("Internal oligo (probe) design is disabled")
+            logger_instance.info("Internal oligo (probe) design is disabled")
             # Modify settings
             Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
             Config.DISABLE_INTERNAL_OLIGO = True
         
         # Process BLAST database arguments - simplified handling
         if args.db is not None:
-            logger.info("BLAST database operation requested")
+            logger_instance.info("BLAST database operation requested")
             try:
                 blast_db_creator = BlastDBCreator()
                 
                 # Handle model organism / existing db selection
                 if args.db_action == 'select':
-                    logger.info("Database selection requested")
+                    logger_instance.info("Database selection requested")
                     from .utils import ModelOrganismManager as MOManager
-                    organism_key, organism_name, fasta_file = MOManager.select_model_organism(logger)
+                    organism_key, organism_name, fasta_file = MOManager.select_model_organism(logger_instance)
                     
                     if organism_key is None and fasta_file is None:
-                        logger.info("Database selection canceled. Exiting...")
+                        logger_instance.info("Database selection canceled. Exiting...")
                         return False
                     
                     # Handle the case of selecting an existing database
@@ -366,7 +379,7 @@ def run_pipeline():
                         Config.DB_PATH = selected_db_path
                         Config.save_database_config(selected_db_path)
                         Config.USE_CUSTOM_DB = True
-                        logger.info(f"Now using BLAST database: {selected_db_path}")
+                        logger_instance.info(f"Now using BLAST database: {selected_db_path}")
                         
                         # If only running database operations, exit successfully
                         if not args.fasta:
@@ -381,7 +394,7 @@ def run_pipeline():
                         organism_name = MOManager.MODEL_ORGANISMS[organism_key]["name"]
                         scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
                         db_name = scientific_name.replace(' ', '_')
-                        logger.info(f"Using database name: {db_name}")
+                        logger_instance.info(f"Using database name: {db_name}")
                     else:
                         db_name = args.db_name
                 
@@ -390,7 +403,7 @@ def run_pipeline():
                     fasta_file = args.db_fasta
                     if not Path(fasta_file).exists():
                         error_msg = f"FASTA file not found: {fasta_file}"
-                        logger.error(error_msg)
+                        logger_instance.error(error_msg)
                         raise FileError(error_msg)
                     organism_key = None  # Not a model organism
                     db_name = args.db_name
@@ -411,26 +424,26 @@ def run_pipeline():
                     # Clean up genome file if it was from a model organism
                     if organism_key is not None and organism_key != 'existing_db':
                         from .utils import ModelOrganismManager
-                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
+                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger_instance)
 
                     # Check if there's already a database path set
                     if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
                         # If there's already a non-default database, ask if we should use the new one
-                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        logger_instance.info(f"Current BLAST database path: {Config.DB_PATH}")
                         use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
                         if use_new_db == "" or use_new_db.startswith("y"):
                             Config.DB_PATH = db_path
                             Config.save_database_config(db_path)
                             Config.USE_CUSTOM_DB = True
-                            logger.info(f"Now using new BLAST database: {db_path}")
+                            logger_instance.info(f"Now using new BLAST database: {db_path}")
                         else:
-                            logger.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                            logger_instance.info(f"Keeping current BLAST database: {Config.DB_PATH}")
                     else:
                         # If no database or default database, automatically use the new one
                         Config.DB_PATH = db_path
                         Config.save_database_config(db_path)
                         Config.USE_CUSTOM_DB = True
-                        logger.info(f"BLAST database created and set as active: {db_path}")
+                        logger_instance.info(f"BLAST database created and set as active: {db_path}")
                         
                     # If only running database operations, exit successfully
                     if not args.fasta:
@@ -444,8 +457,8 @@ def run_pipeline():
                 raise
             except Exception as e:
                 error_msg = f"Unexpected error during database operation: {str(e)}"
-                logger.error(error_msg)
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 raise DDPrimerError(error_msg) from e
@@ -453,23 +466,24 @@ def run_pipeline():
         # Skip BLAST verification for lastzonly mode
         if not args.lastzonly:
             # Verify BLAST database
-            logger.debug("Verifying BLAST database...")
+            logger_instance.debug("Verifying BLAST database...")
             
             try:
-                if not BlastVerification.verify_blast_database(logger):
+                if not BlastVerification.verify_blast_database(logger_instance):
                     error_msg = "BLAST database verification failed, and no new database created."
-                    logger.error(error_msg)
+                    logger_instance.error(error_msg)
                     # Mark file selection as complete
                     FileIO.mark_selection_complete()
                     raise ExternalToolError(error_msg, tool_name="blastn")
             except Exception as e:
                 error_msg = f"Error during BLAST verification: {str(e)}"
-                logger.error(error_msg)
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 raise ExternalToolError(error_msg, tool_name="blastn") from e
         
-        logger.debug("=== Primer Design Pipeline ===")
+        logger_instance.debug("=== Primer Design Pipeline ===")
         
         # Use factory pattern to get the appropriate workflow
         workflow = WorkflowFactory.create_workflow(args)
@@ -478,27 +492,29 @@ def run_pipeline():
         success = workflow(args)
         
         if success:
-            logger.info("\n=== Pipeline execution completed successfully! ===")
-            logger.info("")
+            logger_instance.info("\n=== Pipeline execution completed successfully! ===")
+            logger_instance.info("")
             return True
         else:
-            logger.error("Pipeline execution failed")
+            logger_instance.error("Pipeline execution failed")
             return False
             
     except DDPrimerError as e:
         # Handle application-specific exceptions
-        if logger:
-            logger.error(f"Pipeline error: {str(e)}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        if logger_instance:
+            error_msg = f"Pipeline error: {str(e)}"
+            logger_instance.error(error_msg)
+            logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
         else:
             print(f"Pipeline error: {str(e)}")
             print(f"Run with --debug for more detailed error information")
         return False
     except Exception as e:
         # Handle unexpected exceptions
-        if logger:
-            logger.error(f"Unhandled exception during pipeline execution: {str(e)}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
+        if logger_instance:
+            error_msg = f"Unhandled exception during pipeline execution: {str(e)}"
+            logger_instance.error(error_msg)
+            logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
         else:
             print(f"Unhandled exception during pipeline execution: {str(e)}")
             print(f"Run with --debug for more detailed error information")
@@ -511,7 +527,7 @@ def main():
     Entry point when running the script directly.
     
     Returns:
-        int: Exit code (0 for success, 1 for failure)
+        Exit code (0 for success, 1 for failure)
     """
     success = run_pipeline()
     sys.exit(0 if success else 1)

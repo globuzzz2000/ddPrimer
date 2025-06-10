@@ -53,9 +53,9 @@ class Config:
     FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
     COUNT_AMBIGUOUS_AS_MISMATCH = False
     GENE_OVERLAP_MARGIN = 25
-    RESTRICTION_SITE = None
+    RESTRICTION_SITE = "GGCC"
     PENALTY_MAX = 5.0
-    MAX_PRIMER_PAIRS_PER_SEGMENT = 5
+    MAX_PRIMER_PAIRS_PER_SEGMENT = 3
     PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
@@ -63,8 +63,8 @@ class Config:
     #############################################################################
     #                           SNP Masking Parameters
     #############################################################################
-    SNP_ALLELE_FREQUENCY_THRESHOLD = 0.05    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
-    SNP_QUALITY_THRESHOLD = 25               # Minimum QUAL score to include variants (e.g., None, 30.0)
+    SNP_ALLELE_FREQUENCY_THRESHOLD = None    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
+    SNP_QUALITY_THRESHOLD = None             # Minimum QUAL score to include variants (e.g., None, 30.0)
     SNP_FLANKING_MASK_SIZE = 0               # Number of bases to mask around each SNP (0 = just the SNP)
     SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
     
