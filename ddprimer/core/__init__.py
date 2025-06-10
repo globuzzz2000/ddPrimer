@@ -26,7 +26,7 @@ __all__ = [
 from .sequence_processor import SequenceProcessor
 from .primer_processor import PrimerProcessor
 from .annotation_processor import AnnotationProcessor
-from .SNP_masking_processor import SNPMaskingProcessor
+from .snp_processor import SNPMaskingProcessor
 from .primer3_processor import Primer3Processor
 from .blast_processor import BlastProcessor
 from .vienna_processor import ViennaRNAProcessor

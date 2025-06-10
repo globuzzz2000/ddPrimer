@@ -56,6 +56,7 @@ class BlastVerification:
             
         Raises:
             ExternalToolError: If BLAST tools are not available or functional
+            FileError: If database files cannot be accessed
         """
         logger.debug("=== BLAST DATABASE VERIFICATION DEBUG ===")
         
@@ -105,7 +106,7 @@ class BlastVerification:
                 error_msg = f"Failed to create temporary test file: {str(e)}"
                 logger.error(error_msg)
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
-                raise ExternalToolError(error_msg, tool_name="blastn") from e
+                raise FileError(error_msg) from e
             
             try:
                 # Run test BLAST command with a very simple query
@@ -168,9 +169,10 @@ class BlastVerification:
                         return result
                         
                     # Log the full error
-                    logger.error(f"BLAST database test failed: {error_msg}")
+                    error_msg = f"BLAST database test failed: {error_msg}"
+                    logger.error(error_msg)
                     logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
-                    return BlastVerification._handle_failed_verification()
+                    raise ExternalToolError(error_msg, tool_name="blastn")
                     
             except subprocess.TimeoutExpired:
                 error_msg = "BLAST command timed out - database may be corrupted or inaccessible"
@@ -181,17 +183,17 @@ class BlastVerification:
                 except OSError:
                     pass
                 logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
-                return BlastVerification._handle_failed_verification()
+                raise ExternalToolError(error_msg, tool_name="blastn")
                 
-        except ExternalToolError:
-            # Re-raise ExternalToolError without modification
+        except (ExternalToolError, FileError):
+            # Re-raise custom exceptions without modification
             raise
         except Exception as e:
             error_msg = f"Error testing BLAST database: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.debug("=== END BLAST DATABASE VERIFICATION DEBUG ===")
-            return BlastVerification._handle_failed_verification()
+            raise ExternalToolError(error_msg, tool_name="blastn") from e
             
         # This code should not be reached, but just in case
         result = BlastVerification._retry_verify_with_blastdbcmd(db_path)
@@ -247,17 +249,20 @@ class BlastVerification:
                 error_msg = f"blastdbcmd verification failed"
                 logger.error(error_msg)
                 logger.debug(f"blastdbcmd stderr: {result.stderr}")
-                return BlastVerification._handle_failed_verification()
+                raise ExternalToolError(error_msg, tool_name="blastdbcmd")
                 
         except subprocess.TimeoutExpired:
             error_msg = "blastdbcmd verification timed out"
             logger.error(error_msg)
-            return BlastVerification._handle_failed_verification()
+            raise ExternalToolError(error_msg, tool_name="blastdbcmd")
+        except ExternalToolError:
+            # Re-raise ExternalToolError without modification
+            raise
         except Exception as e:
             error_msg = f"Error during fallback verification: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return BlastVerification._handle_failed_verification()
+            raise ExternalToolError(error_msg, tool_name="blastdbcmd") from e
     
     @staticmethod
     def _handle_failed_verification():
@@ -275,6 +280,7 @@ class BlastVerification:
             
         Raises:
             ExternalToolError: If database creation tools fail
+            FileError: If file operations fail
         """
         logger.error("\n======================================")
         logger.error("ERROR: BLAST database verification failed!")
@@ -293,8 +299,14 @@ class BlastVerification:
                 logger.info("Creating a new database from a model organism genome...")
                 
                 # Use ModelOrganismManager to select and fetch a model organism
-                from . import ModelOrganismManager
-                organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism()
+                try:
+                    from . import ModelOrganismManager
+                    organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism()
+                except Exception as e:
+                    error_msg = f"Failed to access model organism selection: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    raise ExternalToolError(error_msg, tool_name="ModelOrganismManager") from e
                 
                 if fasta_file is None:
                     logger.info("Database creation canceled. Exiting...")
@@ -312,14 +324,15 @@ class BlastVerification:
                     db_name = None
                 
                 # Create the database
-                from . import BlastDBCreator
-                blast_db_creator = BlastDBCreator()
                 try:
+                    from . import BlastDBCreator
+                    blast_db_creator = BlastDBCreator()
                     db_path = blast_db_creator.create_database(fasta_file, db_name)
-                except (ExternalToolError, FileError) as e:
+                except Exception as e:
                     error_msg = f"Failed to create database: {str(e)}"
                     logger.error(error_msg)
-                    return False
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    raise ExternalToolError(error_msg, tool_name="BlastDBCreator") from e
                 
                 # If a database was successfully created
                 if db_path:
@@ -343,7 +356,11 @@ class BlastVerification:
                     
                     # Clean up genome file if it was from a model organism
                     if fasta_file and organism_key is not None:
-                        ModelOrganismManager.cleanup_genome_file(fasta_file)
+                        try:
+                            ModelOrganismManager.cleanup_genome_file(fasta_file)
+                        except Exception as e:
+                            logger.warning(f"Failed to clean up genome file: {str(e)}")
+                            logger.debug(f"Cleanup error details: {str(e)}", exc_info=True)
                     
                     return True
                 else:
@@ -355,14 +372,15 @@ class BlastVerification:
                 logger.info("Creating a new database from a custom FASTA file...")
                 
                 # Create the database using BlastDBCreator
-                from . import BlastDBCreator
-                blast_db_creator = BlastDBCreator()
                 try:
+                    from . import BlastDBCreator
+                    blast_db_creator = BlastDBCreator()
                     db_path = blast_db_creator.create_database(True)  # True means prompt for file
-                except (ExternalToolError, FileError) as e:
+                except Exception as e:
                     error_msg = f"Failed to create database: {str(e)}"
                     logger.error(error_msg)
-                    return False
+                    logger.debug(f"Error details: {str(e)}", exc_info=True)
+                    raise ExternalToolError(error_msg, tool_name="BlastDBCreator") from e
                 
                 if db_path is None:
                     logger.info("Database creation canceled. Exiting...")
@@ -411,8 +429,11 @@ class BlastVerification:
         except KeyboardInterrupt:
             logger.info("\nOperation canceled by user.")
             return False
+        except (ExternalToolError, FileError):
+            # Re-raise custom exceptions without modification
+            raise
         except Exception as e:
             error_msg = f"Error handling failed verification: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return False
+            raise ExternalToolError(error_msg, tool_name="database_creation") from e

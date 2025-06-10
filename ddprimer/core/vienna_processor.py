@@ -160,7 +160,6 @@ class ViennaRNAProcessor:
                 param_file = cls._find_dna_parameter_file()
                 if param_file:
                     cmd.append(f"--paramFile={param_file}")
-                    logger.debug(f"Using DNA parameter file: {param_file}")
             
             # Add temperature setting
             cmd.append(f"--temp={Config.THERMO_TEMPERATURE}")
@@ -179,7 +178,6 @@ class ViennaRNAProcessor:
                 output = result.stdout.decode()
                 energy = cls._parse_rnafold_output(output)
                 
-                logger.debug(f"RNAfold CLI successful: {energy:.3f} kcal/mol for {len(seq)} bp sequence")
                 return energy
                 
             except subprocess.CalledProcessError as e:

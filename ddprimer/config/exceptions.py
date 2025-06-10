@@ -14,6 +14,10 @@ to provide more specific error information and improve error handling
 across all components of the primer design workflow.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class DDPrimerError(Exception):
     """
@@ -270,6 +274,9 @@ class ExternalToolError(DDPrimerError):
             stdout: Standard output from the command
             stderr: Standard error from the command
             
+        Raises:
+            ExternalToolError: Always, as this is an exception constructor
+            
         Example:
             >>> error = ExternalToolError(
             ...     "Tool execution failed",
@@ -278,6 +285,9 @@ class ExternalToolError(DDPrimerError):
             ... )
             >>> print(error.tool_name)  # "primer3"
         """
+        logger.debug("=== EXTERNAL TOOL ERROR DEBUG ===")
+        logger.debug(f"Creating ExternalToolError: tool={tool_name}, message={message}")
+        
         self.tool_name = tool_name
         self.command = command
         self.return_code = return_code
@@ -290,6 +300,9 @@ class ExternalToolError(DDPrimerError):
             detailed_message = f"{tool_name} error: {message}"
         if return_code is not None:
             detailed_message += f" (return code: {return_code})"
+        
+        logger.debug(f"Built detailed error message: {detailed_message}")
+        logger.debug("=== END EXTERNAL TOOL ERROR DEBUG ===")
             
         super().__init__(detailed_message)
     
@@ -301,14 +314,14 @@ class ExternalToolError(DDPrimerError):
         about the failed external tool execution for logging and debugging.
         
         Returns:
-            Dictionary with debug information including command, outputs, etc.
+            dict: Dictionary with debug information including command, outputs, etc.
             
         Example:
             >>> error = ExternalToolError("Failed", tool_name="blast")
             >>> debug_info = error.get_debug_info()
             >>> print(debug_info['tool_name'])  # "blast"
         """
-        return {
+        debug_info = {
             'tool_name': self.tool_name,
             'command': self.command,
             'return_code': self.return_code,
@@ -316,3 +329,6 @@ class ExternalToolError(DDPrimerError):
             'stderr': self.stderr,
             'message': str(self)
         }
+        
+        logger.debug(f"Generated debug info for ExternalToolError: {debug_info}")
+        return debug_info

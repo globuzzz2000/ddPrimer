@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """
-    Parse command line arguments.
+    Parse command line arguments with enhanced debug support.
     
     Validates argument combinations and provides comprehensive help
     for all available options and modes.
@@ -62,7 +62,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug] [--config [.json]] \n'
+        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug [MODULE...]] [--config [.json]] \n'
             '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
             '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
             '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
@@ -75,11 +75,18 @@ def parse_arguments():
     input_group = parser.add_argument_group('inputs (optional)')
 
     # Modes
-    mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, help='Enable target-sequence based primer design workflow')
-    mode_group.add_argument("--alignment", action="store_true", help="Enable alignment-based primer design workflow")
+    mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
+                           help='Enable target-sequence based primer design workflow')
+    mode_group.add_argument("--alignment", action="store_true", 
+                           help="Enable alignment-based primer design workflow")
 
-    # Options - DO NOT add help here, argparse adds it automatically
-    option_group.add_argument('--debug', action='store_true', help='Enable debug mode')
+    # Enhanced debug option
+    option_group.add_argument('--debug', nargs='*', metavar='MODULE', 
+                             help='Enable debug mode. Use without arguments for universal debug, '
+                                  'or specify module names (e.g., --debug standard_mode snp blast). '
+                                  'Available modules: standard_mode, direct_mode, alignment_mode, '
+                                  'snp, annotations, blast, vienna, primer3, utils')
+    
     option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
     option_group.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
                       help='Configuration file path or special mode ("all", "basic", or "template")')
@@ -103,6 +110,18 @@ def parse_arguments():
     input_group.add_argument('--maf', metavar='[.maf]', nargs='?', const=True, help="For alignment mode: Pre-computed MAF alignment file (skips LastZ alignment)")
     
     args = parser.parse_args()
+
+    # Process debug argument
+    if args.debug is not None:
+        if len(args.debug) == 0:
+            # --debug with no arguments: universal debug
+            args.debug = True
+        else:
+            # --debug with module names: specific debug
+            args.debug = args.debug  # Keep as list of module names
+    else:
+        # --debug not specified
+        args.debug = False
 
     # Check for conflicting options
     if args.direct and args.alignment:
@@ -469,7 +488,7 @@ def run_pipeline():
             logger_instance.debug("Verifying BLAST database...")
             
             try:
-                if not BlastVerification.verify_blast_database(logger_instance):
+                if not BlastVerification.verify_blast_database():
                     error_msg = "BLAST database verification failed, and no new database created."
                     logger_instance.error(error_msg)
                     # Mark file selection as complete

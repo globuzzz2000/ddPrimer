@@ -32,7 +32,7 @@ ddPrimer/
 │   │   └── standard_mode.py       # Standard pipeline
 │   ├── core/                      # Core processing modules
 │   │   ├── __init__.py
-│   │   ├── SNP_masking_processor.py
+│   │   ├── SNP_processor.py
 │   │   ├── annotation_processor.py
 │   │   ├── blast_processor.py
 │   │   ├── vienna_processor.py    # ViennaRNA thermodynamic processor
@@ -64,8 +64,11 @@ ddPrimer/
 │       ├── __init__.py
 │       ├── blast_db_creator.py
 │       ├── blast_verification.py
+│       ├── chromosome_mapper.py
 │       ├── common_utils.py
+│       ├── db_selector.py
 │       ├── file_io.py
+│       ├── model_organism_manager.py
 │       └── sequence_utils.py
 ├── pyproject.toml                 # Package configuration and dependencies
 └── README.md                      # This file

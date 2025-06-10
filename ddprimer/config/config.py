@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Configuration module for the ddPrimer pipeline.
+Configuration module for ddPrimer pipeline.
+
+Contains functionality for:
+1. Central configuration settings management with singleton pattern
+2. JSON and Primer3 format configuration file loading/saving
+3. BLAST database path management and auto-detection
+4. Comprehensive Primer3 settings configuration
+
+This module provides centralized configuration management for the ddPrimer
+pipeline, supporting both simple parameter overrides and complete
+Primer3 settings customization.
 """
 
 import os
@@ -11,8 +21,28 @@ import logging
 from multiprocessing import cpu_count
 from typing import Dict, Any
 
+logger = logging.getLogger(__name__)
+
+
 class Config:
-    """Central configuration settings for the ddPrimer pipeline with singleton pattern."""
+    """
+    Central configuration settings for ddPrimer pipeline with singleton pattern.
+    
+    This class manages all configuration settings for the ddPrimer pipeline,
+    providing a singleton pattern for consistent settings access across
+    all modules and comprehensive configuration file support.
+    
+    Attributes:
+        DEBUG_MODE: Enable debug logging mode
+        NUM_PROCESSES: Number of parallel processes to use
+        PRIMER_MIN_SIZE: Minimum primer length
+        PRIMER_MAX_SIZE: Maximum primer length
+        
+    Example:
+        >>> config = Config.get_instance()
+        >>> config.PRIMER_MIN_SIZE = 20
+        >>> Config.load_from_file("my_config.json")
+    """
     
     # Singleton instance
     _instance = None
@@ -71,7 +101,6 @@ class Config:
     #############################################################################
     #                           Thermodynamic Calculation Settings
     #############################################################################
-    DNA_PARAM_FILE_PATH = "/opt/miniconda3/envs/ddpcr/share/ViennaRNA/dna_mathews2004.par"
     THERMO_TEMPERATURE = 37  # Celsius
     THERMO_SODIUM = 0.05     # Molar
     THERMO_MAGNESIUM = 0.0   # Molar
@@ -299,46 +328,79 @@ class Config:
         
         Returns:
             Config: Singleton instance
+            
+        Example:
+            >>> config = Config.get_instance()
+            >>> config.PRIMER_MIN_SIZE = 20
         """
         if cls._instance is None:
+            logger.debug("Creating new Config singleton instance")
             cls._instance = cls()
             # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
             if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
                 cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
+                logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
+            
+            # Initialize the BLAST database path if not already set
+            if cls.DB_PATH is None:
+                cls.DB_PATH = cls._initialize_db_path()
+                logger.debug(f"Initialized DB_PATH to {cls.DB_PATH}")
         return cls._instance
     
     @classmethod
     def get_primer3_global_args(cls) -> Dict[str, Any]:
         """
         Get global primer3 arguments as a dictionary.
-        This combines the simplified settings with the complete settings.
+        
+        This combines the simplified settings with the complete settings,
+        allowing for easy parameter override while maintaining full
+        Primer3 compatibility.
         
         Returns:
-            dict: Dictionary of primer3 settings
+            dict: Dictionary of primer3 settings ready for use
+            
+        Example:
+            >>> args = Config.get_primer3_global_args()
+            >>> args['PRIMER_MIN_SIZE']
+            18
         """
-        # Start with complete settings
-        settings = cls.PRIMER3_SETTINGS.copy()
+        logger.debug("=== PRIMER3 ARGS DEBUG ===")
+        logger.debug("Generating Primer3 global arguments")
         
-        # Override with simplified settings for commonly adjusted parameters
-        settings.update({
-            "PRIMER_MIN_SIZE": cls.PRIMER_MIN_SIZE,
-            "PRIMER_OPT_SIZE": cls.PRIMER_OPT_SIZE,
-            "PRIMER_MAX_SIZE": cls.PRIMER_MAX_SIZE,
-            "PRIMER_MIN_TM": cls.PRIMER_MIN_TM,
-            "PRIMER_OPT_TM": cls.PRIMER_OPT_TM,
-            "PRIMER_MAX_TM": cls.PRIMER_MAX_TM,
-            "PRIMER_MIN_GC": cls.PRIMER_MIN_GC,
-            "PRIMER_MAX_GC": cls.PRIMER_MAX_GC,
-            "PRIMER_NUM_RETURN": cls.MAX_PRIMER_PAIRS_PER_SEGMENT,
-        })
+        try:
+            # Start with complete settings
+            settings = cls.PRIMER3_SETTINGS.copy()
+            
+            # Override with simplified settings for commonly adjusted parameters
+            settings.update({
+                "PRIMER_MIN_SIZE": cls.PRIMER_MIN_SIZE,
+                "PRIMER_OPT_SIZE": cls.PRIMER_OPT_SIZE,
+                "PRIMER_MAX_SIZE": cls.PRIMER_MAX_SIZE,
+                "PRIMER_MIN_TM": cls.PRIMER_MIN_TM,
+                "PRIMER_OPT_TM": cls.PRIMER_OPT_TM,
+                "PRIMER_MAX_TM": cls.PRIMER_MAX_TM,
+                "PRIMER_MIN_GC": cls.PRIMER_MIN_GC,
+                "PRIMER_MAX_GC": cls.PRIMER_MAX_GC,
+                "PRIMER_NUM_RETURN": cls.MAX_PRIMER_PAIRS_PER_SEGMENT,
+            })
+            
+            # Convert the product size range from list to string format if needed
+            if isinstance(cls.PRIMER_PRODUCT_SIZE_RANGE, list):
+                # Convert [[min1, max1], [min2, max2], ...] to "min1-max1 min2-max2 ..."
+                size_range_str = " ".join([f"{r[0]}-{r[1]}" for r in cls.PRIMER_PRODUCT_SIZE_RANGE])
+                settings["PRIMER_PRODUCT_SIZE_RANGE"] = size_range_str
+                logger.debug(f"Converted product size range to: {size_range_str}")
+            
+            logger.debug(f"Generated {len(settings)} Primer3 arguments")
+            return settings
+            
+        except Exception as e:
+            error_msg = f"Failed to generate Primer3 global arguments"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
         
-        # Convert the product size range from list to string format if needed
-        if isinstance(cls.PRIMER_PRODUCT_SIZE_RANGE, list):
-            # Convert [[min1, max1], [min2, max2], ...] to "min1-max1 min2-max2 ..."
-            size_range_str = " ".join([f"{r[0]}-{r[1]}" for r in cls.PRIMER_PRODUCT_SIZE_RANGE])
-            settings["PRIMER_PRODUCT_SIZE_RANGE"] = size_range_str
-        
-        return settings
+        logger.debug("=== END PRIMER3 ARGS DEBUG ===")
     
     @classmethod
     def format_settings_for_file(cls) -> str:
@@ -346,37 +408,83 @@ class Config:
         Format settings for writing to a primer3 settings file.
         
         Returns:
-            str: Formatted settings string
+            str: Formatted settings string in key=value format
+            
+        Raises:
+            ConfigError: If formatting fails
+            
+        Example:
+            >>> formatted = Config.format_settings_for_file()
+            >>> print(formatted.split('\\n')[0])
+            P3_FILE_TYPE=settings
         """
-        settings = cls.get_primer3_global_args()
-        return "\n".join(f"{key}={value}" for key, value in settings.items()) + "\n"
+        try:
+            settings = cls.get_primer3_global_args()
+            formatted = "\n".join(f"{key}={value}" for key, value in settings.items()) + "\n"
+            logger.debug(f"Formatted {len(settings)} settings for file output")
+            return formatted
+        except Exception as e:
+            error_msg = f"Failed to format settings for file"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def load_from_file(cls, filepath: str) -> bool:
         """
         Load settings from a configuration file.
-        Supports both Primer3 format and JSON format.
+        
+        Supports both Primer3 format (key=value) and JSON format,
+        automatically detecting the format based on file extension.
         
         Args:
             filepath: Path to the settings file
             
         Returns:
             bool: True if settings were loaded successfully
+            
+        Raises:
+            ConfigError: If file loading fails
+            FileFormatError: If file format is invalid
+            
+        Example:
+            >>> success = Config.load_from_file("my_config.json")
+            >>> if success:
+            ...     print("Settings loaded successfully")
         """
+        logger.debug("=== CONFIG LOAD DEBUG ===")
+        logger.debug(f"Loading configuration from {filepath}")
+        
         try:
             # Initialize the singleton if not already done
             cls.get_instance()
             
+            if not os.path.exists(filepath):
+                error_msg = f"Configuration file not found: {filepath}"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
             # JSON configuration
             if filepath.endswith('.json'):
-                return cls._load_from_json(filepath)
+                result = cls._load_from_json(filepath)
             # Primer3 format (key=value)
             else:
-                return cls._load_from_primer3_format(filepath)
+                result = cls._load_from_primer3_format(filepath)
+            
+            if result:
+                logger.debug("Configuration loaded successfully")
+            else:
+                logger.warning("Configuration loading returned False")
+                
+            return result
                 
         except Exception as e:
-            print(f"Error loading settings from {filepath}: {e}")
-            return False
+            error_msg = f"Failed to load settings from {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+        
+        logger.debug("=== END CONFIG LOAD DEBUG ===")
     
     @classmethod
     def _load_from_json(cls, filepath: str) -> bool:
@@ -388,17 +496,26 @@ class Config:
             
         Returns:
             bool: True if settings were loaded successfully
+            
+        Raises:
+            ConfigError: If JSON loading fails
         """
         try:
+            logger.debug(f"Loading JSON configuration from {filepath}")
+            
             with open(filepath, 'r') as f:
                 settings = json.load(f)
+            
+            logger.debug(f"Loaded {len(settings)} settings from JSON")
             
             # Update class attributes based on JSON
             for key, value in settings.items():
                 if hasattr(cls, key):
                     setattr(cls, key, value)
+                    logger.debug(f"Updated {key} = {value}")
                 elif key in cls.PRIMER3_SETTINGS:
                     cls.PRIMER3_SETTINGS[key] = value
+                    logger.debug(f"Updated Primer3 setting {key} = {value}")
             
             # Handle special case for PRIMER_PRODUCT_SIZE_RANGE
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
@@ -408,11 +525,14 @@ class Config:
                     # Also update MIN_SEGMENT_LENGTH
                     if value and value[0]:
                         cls.MIN_SEGMENT_LENGTH = value[0][0]
+                        logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
             
             return True
         except Exception as e:
-            print(f"Error loading JSON settings from {filepath}: {e}")
-            return False
+            error_msg = f"Failed to load JSON settings from {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def _load_from_primer3_format(cls, filepath: str) -> bool:
@@ -424,8 +544,13 @@ class Config:
             
         Returns:
             bool: True if settings were loaded successfully
+            
+        Raises:
+            ConfigError: If Primer3 format loading fails
         """
         try:
+            logger.debug(f"Loading Primer3 format configuration from {filepath}")
+            
             with open(filepath, 'r') as f:
                 settings_text = f.read()
                 
@@ -448,6 +573,8 @@ class Config:
                         
                     settings[key] = value
             
+            logger.debug(f"Parsed {len(settings)} settings from Primer3 format")
+            
             # Update settings
             cls.PRIMER3_SETTINGS.update(settings)
             
@@ -467,6 +594,7 @@ class Config:
             for primer3_key, config_attr in simplified_settings_map.items():
                 if primer3_key in settings:
                     setattr(cls, config_attr, settings[primer3_key])
+                    logger.debug(f"Updated {config_attr} = {settings[primer3_key]}")
             
             # Handle product size range
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
@@ -483,6 +611,7 @@ class Config:
                     # Update MIN_SEGMENT_LENGTH
                     if ranges and ranges[0]:
                         cls.MIN_SEGMENT_LENGTH = ranges[0][0]
+                        logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
             
             # Handle BLAST database options
             blast_settings_map = {
@@ -497,11 +626,14 @@ class Config:
                     setattr(cls, config_attr, settings[setting_key])
                     if setting_key == "DB_FASTA":
                         cls.USE_CUSTOM_DB = True
+                        logger.debug("Enabled USE_CUSTOM_DB due to DB_FASTA setting")
             
             return True
         except Exception as e:
-            print(f"Error loading Primer3 settings from {filepath}: {e}")
-            return False
+            error_msg = f"Failed to load Primer3 settings from {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def save_to_file(cls, filepath: str, format_type: str = "primer3") -> bool:
@@ -514,15 +646,33 @@ class Config:
             
         Returns:
             bool: True if settings were saved successfully
+            
+        Raises:
+            ConfigError: If saving fails
+            
+        Example:
+            >>> Config.save_to_file("my_config.json", "json")
+            True
         """
+        logger.debug(f"Saving configuration to {filepath} in {format_type} format")
+        
         try:
             if format_type.lower() == "json":
-                return cls._save_to_json(filepath)
+                result = cls._save_to_json(filepath)
             else:  # Default to primer3 format
-                return cls._save_to_primer3_format(filepath)
+                result = cls._save_to_primer3_format(filepath)
+            
+            if result:
+                logger.debug("Configuration saved successfully")
+            else:
+                logger.warning("Configuration saving returned False")
+                
+            return result
         except Exception as e:
-            print(f"Error saving settings to {filepath}: {e}")
-            return False
+            error_msg = f"Failed to save settings to {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def _save_to_primer3_format(cls, filepath: str) -> bool:
@@ -534,87 +684,91 @@ class Config:
             
         Returns:
             bool: True if settings were saved successfully
+            
+        Raises:
+            ConfigError: If Primer3 format saving fails
         """
         try:
             with open(filepath, 'w') as f:
                 f.write(cls.format_settings_for_file())
+            logger.debug(f"Saved Primer3 format settings to {filepath}")
             return True
         except Exception as e:
-            print(f"Error saving Primer3 settings to {filepath}: {e}")
-            return False
-
+            error_msg = f"Failed to save Primer3 settings to {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
 
     @classmethod
     def _initialize_db_path(cls):
-        """Find a BLAST database path for use."""
-        logger = logging.getLogger("ddPrimer")
-        
-        # First check for a saved database path in config file
-        config_dir = os.path.join(Path.home(), ".ddprimer")
-        config_file = os.path.join(config_dir, "db_config.txt")
-        
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, "r") as f:
-                    db_path = f.read().strip()
-                    
-                # Verify this path still has database files
-                if db_path and os.path.exists(db_path + ".nhr"):
-                    logger.debug(f"Using configured BLAST database: {db_path}")
-                    return db_path
-                else:
-                    logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
-            except Exception as e:
-                logger.debug(f"Error reading database config: {str(e)}")
-        else:
-            logger.debug(f"No database config file found at {config_file}")
-        
-        # If no saved config or the saved path is invalid, 
-        # fall back to looking in standard directories
-        possible_locations = [
-            # System directory
-            "/usr/local/share/ddprimer/blast_db",
-            # User directory
-            os.path.join(Path.home(), ".ddprimer", "blast_db")
-        ]
-        
-        for location in possible_locations:
-            if os.path.exists(location):
-                logger.debug(f"Checking for BLAST databases in {location}")
-                # Look for any .nhr files which indicate BLAST databases
-                db_files = [f for f in os.listdir(location) if f.endswith(".nhr")]
-                if db_files:
-                    # Use the first database found, without the extension
-                    db_name = os.path.splitext(db_files[0])[0]
-                    db_path = os.path.join(location, db_name)
-                    logger.debug(f"Found existing BLAST database: {db_path}")
-                    return db_path
-                else:
-                    logger.debug(f"No database files (.nhr) found in {location}")
-        
-        # If no database found, return None
-        logger.debug("No existing BLAST database found.")
-        return None
-
-
-    @classmethod
-    def get_instance(cls) -> 'Config':
         """
-        Get the singleton instance of Config.
+        Find a BLAST database path for use.
         
         Returns:
-            Config: Singleton instance
-        """
-        if cls._instance is None:
-            cls._instance = cls()
-            # Update MIN_SEGMENT_LENGTH based on PRIMER_PRODUCT_SIZE_RANGE
-            if cls.PRIMER_PRODUCT_SIZE_RANGE and cls.PRIMER_PRODUCT_SIZE_RANGE[0]:
-                cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
+            str or None: Path to BLAST database or None if not found
             
-            # Initialize the BLAST database path if not already set
-            if cls.DB_PATH is None:
-                cls.DB_PATH = cls._initialize_db_path()
-        return cls._instance
+        Raises:
+            ConfigError: If database initialization fails
+        """
+        logger.debug("=== DB PATH INITIALIZATION DEBUG ===")
+        logger.debug("Searching for BLAST database path")
+        
+        try:
+            # First check for a saved database path in config file
+            config_dir = os.path.join(Path.home(), ".ddprimer")
+            config_file = os.path.join(config_dir, "db_config.txt")
+            
+            if os.path.exists(config_file):
+                logger.debug(f"Found database config file: {config_file}")
+                try:
+                    with open(config_file, "r") as f:
+                        db_path = f.read().strip()
+                        
+                    # Verify this path still has database files
+                    if db_path and os.path.exists(db_path + ".nhr"):
+                        logger.debug(f"Using configured BLAST database: {db_path}")
+                        return db_path
+                    else:
+                        logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
+                except Exception as e:
+                    logger.debug(f"Error reading database config: {str(e)}")
+            else:
+                logger.debug(f"No database config file found at {config_file}")
+            
+            # If no saved config or the saved path is invalid, 
+            # fall back to looking in standard directories
+            possible_locations = [
+                # System directory
+                "/usr/local/share/ddprimer/blast_db",
+                # User directory
+                os.path.join(Path.home(), ".ddprimer", "blast_db")
+            ]
+            
+            for location in possible_locations:
+                if os.path.exists(location):
+                    logger.debug(f"Checking for BLAST databases in {location}")
+                    # Look for any .nhr files which indicate BLAST databases
+                    db_files = [f for f in os.listdir(location) if f.endswith(".nhr")]
+                    if db_files:
+                        # Use the first database found, without the extension
+                        db_name = os.path.splitext(db_files[0])[0]
+                        db_path = os.path.join(location, db_name)
+                        logger.debug(f"Found existing BLAST database: {db_path}")
+                        return db_path
+                    else:
+                        logger.debug(f"No database files (.nhr) found in {location}")
+            
+            # If no database found, return None
+            logger.debug("No existing BLAST database found")
+            return None
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize database path"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+        
+        logger.debug("=== END DB PATH INITIALIZATION DEBUG ===")
     
     @classmethod
     def save_database_config(cls, db_path):
@@ -623,14 +777,31 @@ class Config:
         
         Args:
             db_path (str): Path to the BLAST database
+            
+        Raises:
+            ConfigError: If saving database config fails
+            
+        Example:
+            >>> Config.save_database_config("/path/to/blast_db")
         """
-        config_dir = os.path.join(Path.home(), ".ddprimer")
-        os.makedirs(config_dir, exist_ok=True)
+        logger.debug(f"Saving database config: {db_path}")
         
-        # Save the database path to a simple config file
-        config_file = os.path.join(config_dir, "db_config.txt")
-        with open(config_file, "w") as f:
-            f.write(db_path)
+        try:
+            config_dir = os.path.join(Path.home(), ".ddprimer")
+            os.makedirs(config_dir, exist_ok=True)
+            
+            # Save the database path to a simple config file
+            config_file = os.path.join(config_dir, "db_config.txt")
+            with open(config_file, "w") as f:
+                f.write(db_path)
+            
+            logger.debug(f"Database config saved to {config_file}")
+            
+        except Exception as e:
+            error_msg = f"Failed to save database config for path {db_path}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def _save_to_json(cls, filepath: str) -> bool:
@@ -642,6 +813,9 @@ class Config:
             
         Returns:
             bool: True if settings were saved successfully
+            
+        Raises:
+            ConfigError: If JSON format saving fails
         """
         try:
             # Get all public class attributes (excluding methods, private attrs, etc.)
@@ -659,10 +833,13 @@ class Config:
             with open(filepath, 'w') as f:
                 json.dump(settings, f, indent=4)
             
+            logger.debug(f"Saved JSON format settings to {filepath}")
             return True
         except Exception as e:
-            print(f"Error saving JSON settings to {filepath}: {e}")
-            return False
+            error_msg = f"Failed to save JSON settings to {filepath}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
     
     @classmethod
     def get_all_settings(cls) -> Dict[str, Any]:
@@ -670,7 +847,12 @@ class Config:
         Get all settings as a dictionary.
         
         Returns:
-            dict: Dictionary of all settings
+            dict: Dictionary of all configuration settings
+            
+        Example:
+            >>> settings = Config.get_all_settings()
+            >>> print(settings['PRIMER_MIN_SIZE'])
+            18
         """
         settings = {}
         
@@ -679,6 +861,7 @@ class Config:
             if not key.startswith('_') and not callable(getattr(cls, key)):
                 settings[key] = getattr(cls, key)
         
+        logger.debug(f"Retrieved {len(settings)} configuration settings")
         return settings
     
     @staticmethod
@@ -688,6 +871,19 @@ class Config:
         
         Args:
             message: The debug message to print
+            
+        Example:
+            >>> Config.debug("This is a debug message")
         """
         if Config.DEBUG_MODE:
             print(f"[DEBUG] {message}")
+
+
+class ConfigError(Exception):
+    """Error with configuration parameters or operations."""
+    pass
+
+
+class FileFormatError(Exception):
+    """Error with file formatting or parsing."""
+    pass

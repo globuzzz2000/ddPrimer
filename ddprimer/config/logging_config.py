@@ -1,270 +1,439 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Logging configuration module for the ddPrimer pipeline.
+Logging configuration module for ddPrimer pipeline.
+
+Contains functionality for:
+1. Module-specific debug level control based on filenames
+2. Enhanced debug filtering and formatting with colors  
+3. Singleton pattern for consistent logging configuration
+4. Automatic log file management and rotation
+
+This module provides comprehensive logging configuration for the ddPrimer
+pipeline, enabling granular debug control per module and enhanced
+debugging capabilities with colored output.
 """
 
 import os
-import sys
 import logging
-from tqdm import tqdm
 from datetime import datetime
+from typing import Dict, List, Optional, Union
 
-# Import package modules
-from .config import Config
+logger = logging.getLogger(__name__)
 
 
-class ColoredFormatter(logging.Formatter):
-    """Custom formatter that adds ANSI color codes for different log levels in debug mode."""
+class ModuleDebugConfig:
+    """
+    Configuration for module-specific debug settings.
     
-    # ANSI color codes
-    COLORS = {
-        'DEBUG': '\033[37m',     # White
-        'INFO': '\033[36m',      # Cyan
-        'WARNING': '\033[33m',   # Yellow
-        'ERROR': '\033[31m',     # Red
-        'CRITICAL': '\033[35m',  # Magenta
+    This class manages debug level configuration for individual modules,
+    providing filename-based debug control for intuitive usage and
+    comprehensive module coverage.
+    
+    Attributes:
+        MODULE_DEBUG_LEVELS: Dictionary mapping module names to log levels
+        FILENAME_TO_MODULE: Dictionary mapping filenames to full module paths
+        
+    Example:
+        >>> config = ModuleDebugConfig()
+        >>> config.MODULE_DEBUG_LEVELS['ddprimer.pipeline']
+        20
+    """
+    
+    # All modules default to INFO level
+    MODULE_DEBUG_LEVELS = {
+        'ddprimer.pipeline': logging.INFO,
+        'ddprimer.modes.standard_mode': logging.INFO,
+        'ddprimer.modes.direct_mode': logging.INFO,
+        'ddprimer.modes.alignment_mode': logging.INFO,
+        'ddprimer.modes.common': logging.INFO,
+        'ddprimer.core.SNP_processor': logging.INFO,
+        'ddprimer.core.annotation_processor': logging.INFO,
+        'ddprimer.core.blast_processor': logging.INFO,
+        'ddprimer.core.vienna_processor': logging.INFO,
+        'ddprimer.core.primer3_processor': logging.INFO,
+        'ddprimer.core.primer_processor': logging.INFO,
+        'ddprimer.core.sequence_processor': logging.INFO,
+        'ddprimer.helpers.alignment_workflow': logging.INFO,
+        'ddprimer.helpers.direct_masking': logging.INFO,
+        'ddprimer.helpers.lastz_runner': logging.INFO,
+        'ddprimer.helpers.maf_parser': logging.INFO,
+        'ddprimer.utils.blast_db_creator': logging.INFO,
+        'ddprimer.utils.blast_verification': logging.INFO,
+        'ddprimer.utils.chromosome_mapper': logging.INFO,
+        'ddprimer.utils.common_utils': logging.INFO,
+        'ddprimer.utils.db_selector': logging.INFO,
+        'ddprimer.utils.file_io': logging.INFO,
+        'ddprimer.utils.model_organism_manager': logging.INFO,
+        'ddprimer.utils.sequence_utils': logging.INFO,
+        'ddprimer.config.config': logging.INFO,
+        'ddprimer.config.config_display': logging.INFO,
+        'ddprimer.config.template_generator': logging.INFO,
     }
-    RESET = '\033[0m'  # Reset to normal
+    
+    # Filename to module mapping for intuitive usage
+    FILENAME_TO_MODULE = {
+        # Main pipeline
+        'pipeline': 'ddprimer.pipeline',
+        
+        # Mode files
+        'standard_mode': 'ddprimer.modes.standard_mode',
+        'direct_mode': 'ddprimer.modes.direct_mode', 
+        'alignment_mode': 'ddprimer.modes.alignment_mode',
+        'common': 'ddprimer.modes.common',
+        
+        # Core processing files
+        'SNP_processor': 'ddprimer.core.SNP_processor',
+        'annotation_processor': 'ddprimer.core.annotation_processor',
+        'blast_processor': 'ddprimer.core.blast_processor',
+        'vienna_processor': 'ddprimer.core.vienna_processor',
+        'primer3_processor': 'ddprimer.core.primer3_processor',
+        'primer_processor': 'ddprimer.core.primer_processor',
+        'sequence_processor': 'ddprimer.core.sequence_processor',
+        
+        # Helper files
+        'alignment_workflow': 'ddprimer.helpers.alignment_workflow',
+        'direct_masking': 'ddprimer.helpers.direct_masking',
+        'lastz_runner': 'ddprimer.helpers.lastz_runner',
+        'maf_parser': 'ddprimer.helpers.maf_parser',
+        
+        # Utility files
+        'blast_db_creator': 'ddprimer.utils.blast_db_creator',
+        'blast_verification': 'ddprimer.utils.blast_verification',
+        'chromosome_mapper': 'ddprimer.utils.chromosome_mapper',
+        'common_utils': 'ddprimer.utils.common_utils',
+        'db_selector': 'ddprimer.utils.db_selector',
+        'file_io': 'ddprimer.utils.file_io',
+        'model_organism_manager': 'ddprimer.utils.model_organism_manager',
+        'sequence_utils': 'ddprimer.utils.sequence_utils',
+        
+        # Config files  
+        'config': 'ddprimer.config.config',
+        'config_display': 'ddprimer.config.config_display',
+        'template_generator': 'ddprimer.config.template_generator',
+    }
+
+
+class SimpleDebugFormatter(logging.Formatter):
+    """
+    Simple formatter with colors for debug output.
+    
+    Provides color-coded log output for improved readability during
+    debugging, with support for different log levels and optional
+    color disabling for environments that don't support ANSI colors.
+    
+    Attributes:
+        use_colors: Whether to use ANSI color codes in output
+        COLORS: Dictionary mapping log levels to ANSI color codes
+        
+    Example:
+        >>> formatter = SimpleDebugFormatter(use_colors=True)
+        >>> handler.setFormatter(formatter)
+    """
     
     def __init__(self, fmt=None, datefmt=None, use_colors=False):
         """
-        Initialize the colored formatter.
+        Initialize formatter with optional color support.
         
         Args:
-            fmt: Log format string
+            fmt: Log message format string
             datefmt: Date format string
-            use_colors: Whether to use ANSI color codes
+            use_colors: Whether to enable ANSI color codes
         """
         super().__init__(fmt, datefmt)
         self.use_colors = use_colors
+        
+        # ANSI color codes
+        self.COLORS = {
+            'DEBUG': '\033[37m',      # White
+            'INFO': '\033[1;37m',     # Bold White
+            'WARNING': '\033[33m',    # Yellow
+            'ERROR': '\033[31m',      # Red
+            'CRITICAL': '\033[35m',   # Magenta
+        }
+        self.RESET = '\033[0m'
     
     def format(self, record):
         """
-        Format the log record with colors if enabled.
+        Format the log record with colors.
         
         Args:
-            record: LogRecord instance
+            record: LogRecord instance to format
             
         Returns:
-            str: Formatted log message
+            str: Formatted log message with optional colors
         """
+        formatted_message = super().format(record)
+        
+        # Add colors if enabled
         if self.use_colors and record.levelname in self.COLORS:
-            # Get the original formatted message
-            original_format = super().format(record)
-            
-            # Add color codes
             color_code = self.COLORS[record.levelname]
-            return f"{color_code}{original_format}{self.RESET}"
-        else:
-            return super().format(record)
+            formatted_message = f"{color_code}{formatted_message}{self.RESET}"
+        
+        return formatted_message
 
 
-def setup_logging(debug: bool = False) -> str:
+class EnhancedDebugFilter(logging.Filter):
     """
-    Configure logging for the application.
+    Filter that controls module-specific debug output.
+    
+    Provides granular control over debug output by filtering log records
+    based on module-specific log levels, allowing users to enable debug
+    mode for specific modules while keeping others at INFO level.
+    
+    Attributes:
+        module_levels: Dictionary mapping module names to minimum log levels
+        
+    Example:
+        >>> filter_obj = EnhancedDebugFilter({'ddprimer.pipeline': logging.DEBUG})
+        >>> handler.addFilter(filter_obj)
+    """
+    
+    def __init__(self, module_levels: Dict[str, int]):
+        """
+        Initialize filter with module-specific log levels.
+        
+        Args:
+            module_levels: Dictionary mapping module names to minimum log levels
+        """
+        super().__init__()
+        self.module_levels = module_levels
+    
+    def filter(self, record):
+        """
+        Filter records based on module-specific levels.
+        
+        Args:
+            record: LogRecord instance to filter
+            
+        Returns:
+            bool: True if record should be logged, False otherwise
+        """
+        module_name = record.name
+        
+        # Try exact match first
+        if module_name in self.module_levels:
+            return record.levelno >= self.module_levels[module_name]
+        
+        # Try parent module matches
+        for module_pattern, level in self.module_levels.items():
+            if module_name.startswith(module_pattern + '.') or module_name == module_pattern:
+                return record.levelno >= level
+        
+        # For modules not in our config, default to INFO level
+        return record.levelno >= logging.INFO
+
+
+def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
+    """
+    Configure logging with filename-based debug control.
+    
+    Sets up comprehensive logging configuration with support for module-specific
+    debug levels, colored console output, and automatic log file management.
     
     Args:
-        debug: Enable debug mode
+        debug: Debug configuration options:
+               - False: No debug logging
+               - True: Universal debug for all modules
+               - str: Single filename for debug (e.g., 'pipeline', 'SNP_processor')
+               - List[str]: List of filenames for debug
         
     Returns:
-        str: Path to the log file
+        str: Path to the created log file
+        
+    Raises:
+        LoggingConfigError: If logging setup fails
+        
+    Example:
+        >>> log_file = setup_logging(debug=['pipeline', 'blast_processor'])
+        >>> print(f"Logs saved to: {log_file}")
     """
-    # Use the Config.DEBUG_MODE if not explicitly set via command line
-    debug_enabled = debug or Config.DEBUG_MODE
+    logger.debug("=== LOGGING SETUP DEBUG ===")
+    logger.debug(f"Setting up logging with debug={debug}")
     
-    log_level = logging.DEBUG if debug_enabled else logging.INFO
-    
-    # Different log formats based on debug mode
-    if debug_enabled:
-        log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
-        use_colors = True  # Enable colors in debug mode
-    else:
-        log_format = '%(message)s'  # Simpler format for regular use
-        use_colors = False
-    
-    # Set up logging to file
-    log_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"ddPrimer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-    
-    # Create file handler (always uses detailed format without colors)
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
-    ))
-    
-    # Create console handler with appropriate format and colors
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    
-    # Use ColoredFormatter for console output
-    console_formatter = ColoredFormatter(log_format, use_colors=use_colors)
-    console_handler.setFormatter(console_formatter)
-    
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
-    
-    # Clear existing handlers to avoid duplicates
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    # Add the handlers
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
-    # Configure our specific logger
-    logger = logging.getLogger("ddPrimer")
-    
-    if debug_enabled:
-        logger.debug(f"Debug mode: {debug_enabled}")
-        logger.debug(f"Log file: {log_file}")
-        logger.debug(f"Python version: {sys.version}")
-        logger.debug(f"Platform: {sys.platform}")
-        logger.info("INFO messages will appear in bold in debug mode")
-    else:
-        logger.debug(f"Log file: {log_file}")
-    
-    # Set Config.DEBUG_MODE to ensure consistency
-    Config.DEBUG_MODE = debug_enabled
-    
-    return log_file
-
-
-class ProgressReporter:
-    """Base class for progress reporting."""
-    
-    def start(self, total: int, description: str) -> None:
-        """
-        Start the progress reporter.
-        
-        Args:
-            total: Total number of items to process
-            description: Description of the current task
-        """
-        pass
-    
-    def update(self, amount: int = 1) -> None:
-        """
-        Update the progress by a given amount.
-        
-        Args:
-            amount: Amount to increment the progress by
-        """
-        pass
-    
-    def finish(self) -> None:
-        """Close the progress reporter."""
-        pass
-
-
-class TqdmProgressReporter(ProgressReporter):
-    """Progress reporter implementation using tqdm."""
-    
-    def __init__(self):
-        """Initialize the tqdm progress reporter."""
-        self.pbar = None
-    
-    def start(self, total: int, description: str) -> None:
-        """
-        Start the progress bar.
-        
-        Args:
-            total: Total number of items to process
-            description: Description of the current task
-        """
-        self.pbar = tqdm(total=total, desc=description)
-    
-    def update(self, amount: int = 1) -> None:
-        """
-        Update the progress by a given amount.
-        
-        Args:
-            amount: Amount to increment the progress by
-        """
-        if self.pbar:
-            self.pbar.update(amount)
-    
-    def finish(self) -> None:
-        """Close the progress bar."""
-        if self.pbar:
-            self.pbar.close()
-            self.pbar = None
-
-
-class LoggingProgressReporter(ProgressReporter):
-    """Progress reporter implementation using logging."""
-    
-    def __init__(self, logger_name: str = "ddPrimer", log_interval: int = 10):
-        """
-        Initialize the logging progress reporter.
-        
-        Args:
-            logger_name: Name of the logger to use
-            log_interval: Interval (in percentage) for progress log messages
-        """
-        self.logger = logging.getLogger(logger_name)
-        self.log_interval = log_interval
-        self.total = 0
-        self.current = 0
-        self.description = ""
-        self.last_percentage = 0
-    
-    def start(self, total: int, description: str) -> None:
-        """
-        Start the progress reporter.
-        
-        Args:
-            total: Total number of items to process
-            description: Description of the current task
-        """
-        self.total = total
-        self.current = 0
-        self.description = description
-        self.last_percentage = 0
-        self.logger.info(f"Starting {description} (0/{total}, 0%)")
-    
-    def update(self, amount: int = 1) -> None:
-        """
-        Update the progress by a given amount.
-        
-        Args:
-            amount: Amount to increment the progress by
-        """
-        self.current += amount
-        
-        # Calculate current percentage
-        if self.total > 0:
-            percentage = int((self.current / self.total) * 100)
-            
-            # Log if we've passed a log interval threshold
-            if percentage >= self.last_percentage + self.log_interval or self.current == self.total:
-                self.logger.info(f"{self.description}: {self.current}/{self.total} ({percentage}%)")
-                self.last_percentage = percentage
-    
-    def finish(self) -> None:
-        """Finish the progress reporting."""
-        if self.current < self.total:
-            self.current = self.total
-            self.logger.info(f"Completed {self.description}: {self.current}/{self.total} (100%)")
-
-
-def get_progress_reporter() -> ProgressReporter:
-    """
-    Get an appropriate progress reporter based on configuration.
-    
-    Returns:
-        ProgressReporter: A progress reporter instance
-    """
-    # Check if we should use a progress reporter at all
-    if not Config.SHOW_PROGRESS:
-        return ProgressReporter()  # Return the base class which does nothing
-    
-    # Try to use tqdm if available
     try:
-        return TqdmProgressReporter()
-    except ImportError:
-        # Fall back to logging-based reporter
-        return LoggingProgressReporter()
+        from .config import Config
+        
+        # Normalize debug input
+        debug_enabled, debug_modules = _normalize_debug_input(debug)
+        logger.debug(f"Normalized debug: enabled={debug_enabled}, modules={debug_modules}")
+        
+        # Start with default module configuration
+        module_config = ModuleDebugConfig.MODULE_DEBUG_LEVELS.copy()
+        
+        # Apply module-specific debug configuration
+        if debug_modules:
+            # Start with INFO level for all modules
+            for module in module_config:
+                module_config[module] = logging.INFO
+            
+            # Enable DEBUG for specified modules
+            for module_name in debug_modules:
+                full_module_name = _resolve_module_name(module_name)
+                if full_module_name and full_module_name in module_config:
+                    module_config[full_module_name] = logging.DEBUG
+                    logger.debug(f"Enabled DEBUG for {full_module_name}")
+        elif debug_enabled:
+            # Universal debug - enable DEBUG for all modules
+            for module in module_config:
+                module_config[module] = logging.DEBUG
+            logger.debug("Enabled DEBUG for all modules")
+        
+        # Set up log directory
+        log_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"ddPrimer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+        
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        
+        # Clear existing handlers
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+        
+        # File handler (detailed, no colors)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+        )
+        file_handler.setFormatter(file_formatter)
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+        
+        if debug_enabled:
+            # Enhanced debug format with colors
+            console_formatter = SimpleDebugFormatter(
+                fmt='%(levelname)-8s [%(name)s] %(message)s',
+                use_colors=True
+            )
+            
+            # Add module-specific filter
+            debug_filter = EnhancedDebugFilter(module_config)
+            console_handler.addFilter(debug_filter)
+        else:
+            # Simple format for normal operation
+            console_formatter = SimpleDebugFormatter(
+                fmt='%(message)s',
+                use_colors=False
+            )
+        
+        console_handler.setFormatter(console_formatter)
+        
+        # Add handlers to root logger
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
+        
+        # Configure main logger
+        main_logger = logging.getLogger("ddPrimer")
+        
+        if debug_enabled:
+            main_logger.debug("Debug logging enabled")
+            main_logger.debug(f"Log file: {log_file}")
+            if debug_modules:
+                resolved_modules = []
+                unresolved_modules = []
+                for module_name in debug_modules:
+                    full_module_name = _resolve_module_name(module_name)
+                    if full_module_name:
+                        resolved_modules.append(f"{module_name} → {full_module_name}")
+                    else:
+                        unresolved_modules.append(module_name)
+                
+                if resolved_modules:
+                    main_logger.debug(f"Debug enabled for modules: {', '.join(resolved_modules)}")
+                if unresolved_modules:
+                    main_logger.warning(f"Unknown module names: {', '.join(unresolved_modules)}")
+            else:
+                main_logger.debug("Debug enabled for all modules")
+        
+        # Update Config
+        Config.DEBUG_MODE = debug_enabled
+        logger.debug("Updated Config.DEBUG_MODE")
+        
+        logger.debug("Logging setup completed successfully")
+        return log_file
+        
+    except Exception as e:
+        error_msg = f"Failed to setup logging configuration"
+        print(f"ERROR: {error_msg}: {str(e)}")  # Can't use logger here since setup failed
+        raise LoggingConfigError(error_msg) from e
+    
+    logger.debug("=== END LOGGING SETUP DEBUG ===")
+
+
+def _normalize_debug_input(debug: Union[bool, List[str], str]) -> tuple[bool, Optional[List[str]]]:
+    """
+    Normalize various debug input formats to (debug_enabled, debug_modules).
+    
+    Args:
+        debug: Debug input in various formats
+        
+    Returns:
+        Tuple of (debug_enabled: bool, debug_modules: Optional[List[str]])
+        
+    Example:
+        >>> enabled, modules = _normalize_debug_input(['pipeline', 'blast'])
+        >>> print(enabled, modules)
+        True ['pipeline', 'blast']
+    """
+    try:
+        from .config import Config
+        
+        if isinstance(debug, bool):
+            debug_enabled = debug or Config.DEBUG_MODE
+            debug_modules = None
+        elif isinstance(debug, str):
+            # Single module name as string
+            debug_enabled = True
+            debug_modules = [debug]
+        elif isinstance(debug, list):
+            # List of module names
+            debug_enabled = True
+            debug_modules = debug
+        else:
+            # Unknown format, default to False
+            debug_enabled = False
+            debug_modules = None
+        
+        return debug_enabled, debug_modules
+        
+    except Exception as e:
+        error_msg = f"Failed to normalize debug input: {debug}"
+        logger.error(error_msg)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        raise LoggingConfigError(error_msg) from e
+
+
+def _resolve_module_name(filename: str) -> Optional[str]:
+    """
+    Resolve a filename to its full module path.
+    
+    Args:
+        filename: Filename like 'pipeline', 'SNP_processor', etc.
+        
+    Returns:
+        Full module path or None if not found
+        
+    Example:
+        >>> module_name = _resolve_module_name('pipeline')
+        >>> print(module_name)
+        ddprimer.pipeline
+    """
+    # Try exact match first
+    if filename in ModuleDebugConfig.FILENAME_TO_MODULE:
+        return ModuleDebugConfig.FILENAME_TO_MODULE[filename]
+    
+    # If it's already a full module name, check if it exists
+    if filename in ModuleDebugConfig.MODULE_DEBUG_LEVELS:
+        return filename
+        
+    return None
+
+
+class LoggingConfigError(Exception):
+    """Error during logging configuration setup."""
+    pass
