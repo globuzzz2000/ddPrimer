@@ -13,10 +13,8 @@ Handles BLAST operations for primer specificity checking including:
 import os
 import tempfile
 import subprocess
-import concurrent.futures
 import logging
 import pandas as pd
-from tqdm import tqdm
 
 from ..config import Config, SequenceProcessingError
 

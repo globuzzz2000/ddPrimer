@@ -20,7 +20,7 @@ import os
 import re
 import logging
 from collections import defaultdict
-from ..config import Config, FileError, SequenceProcessingError, ExternalToolError
+from ..config import FileError, SequenceProcessingError, ExternalToolError
 
 # Set up module logger
 logger = logging.getLogger(__name__)

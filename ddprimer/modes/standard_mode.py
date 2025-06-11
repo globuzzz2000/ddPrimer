@@ -6,7 +6,7 @@ Standard mode for ddPrimer pipeline.
 Contains functionality for:
 1. File selection and validation for standard mode inputs
 2. VCF variant extraction with chromosome mapping
-3. Sequence masking with SNP variants
+3. Sequence processing with SNP masking and fixed SNP substitution
 4. Gene annotation loading and processing
 5. Integration with common primer design workflow
 
@@ -16,7 +16,6 @@ the standard primer design workflow for genomic sequences.
 
 import os
 import logging
-from tqdm import tqdm
 
 # Import package modules
 from ..config import Config, FileSelectionError, SequenceProcessingError
@@ -33,8 +32,8 @@ def run(args):
     Run the standard mode primer design workflow.
     
     Executes the complete standard mode pipeline including file selection,
-    variant extraction, sequence masking, gene annotation loading, and
-    primer design workflow execution.
+    variant extraction, sequence processing, gene annotation loading, and
+    primer design workflow execution. Supports fixed SNP substitution.
     
     Args:
         args: Command line arguments containing file paths and options
@@ -89,7 +88,6 @@ def run(args):
                 return False
         elif args.noannotation:
             logger.info("\nSkipping GFF annotation file selection")
-            # Set args.gff to None so it's consistent
             args.gff = None
         
         # Signal that all file selections are complete
@@ -112,17 +110,22 @@ def run(args):
         try:
             snp_processor = SNPMaskingProcessor()
             
-            # Use the new method that includes chromosome mapping
+            # Extract variants with chromosome mapping
             variants = snp_processor.process_vcf_with_chromosome_mapping(
                 args.vcf,
-                args.fasta,  # Add this parameter for chromosome mapping
+                args.fasta,
                 min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
                 min_qual=Config.SNP_QUALITY_THRESHOLD
             )
             
             logger.debug(f"Variants extracted successfully from {args.vcf}")
-            total_variants = sum(len(positions) for positions in variants.values())
+            
+            # Count variants and fixed SNPs
+            total_variants = sum(len(variant_list) for variant_list in variants.values())
+            fixed_variants = sum(sum(1 for v in variant_list if v.is_fixed) 
+                               for variant_list in variants.values())
             logger.debug(f"Extracted {total_variants} variants from {len(variants)} chromosomes")
+            logger.debug(f"Fixed SNPs identified: {fixed_variants}")
                 
         except Exception as e:
             error_msg = f"Error extracting variants: {str(e)}"
@@ -142,33 +145,23 @@ def run(args):
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
         
-        # Mask variants in sequences
-        logger.debug("\nMasking variants in sequences...")
-        
-        masked_sequences = {}
-        seq_items = list(sequences.items())
-        if Config.SHOW_PROGRESS:
-            seq_iter = tqdm(seq_items, total=len(seq_items), desc="Masking sequences")
-        else:
-            seq_iter = seq_items
-            
-        for seq_id, sequence in seq_iter:
-            # Get variants for this sequence/chromosome
-            seq_variants = variants.get(seq_id, set())
-            
-            if seq_variants:
-                logger.debug(f"Masking {len(seq_variants)} variants in {seq_id}...")
-                try:
-                    masked_seq = snp_processor.mask_variants(sequence, seq_variants)
-                    masked_sequences[seq_id] = masked_seq
-                except Exception as e:
-                    error_msg = f"Error masking variants in {seq_id}: {str(e)}"
-                    logger.error(error_msg)
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    raise SequenceProcessingError(error_msg) from e
-            else:
-                logger.debug(f"No variants to mask in {seq_id}")
-                masked_sequences[seq_id] = sequence
+        # Process variants in sequences (masking + substitution)
+        logger.info("\nProcessing variants in sequences (masking + fixed SNP substitution)...")
+        try:
+            masked_sequences = snp_processor.mask_sequences_for_primer_design(
+                sequences=sequences,
+                variants=variants,
+                flanking_size=Config.SNP_FLANKING_MASK_SIZE,
+                use_soft_masking=Config.SNP_USE_SOFT_MASKING,
+                min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
+                min_qual=Config.SNP_QUALITY_THRESHOLD
+            )
+            logger.debug("Variant processing completed successfully")
+        except Exception as e:
+            error_msg = f"Error processing variants: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise SequenceProcessingError(error_msg) from e
         
         # Load gene annotations if needed
         if not args.noannotation:
@@ -184,7 +177,7 @@ def run(args):
                 return False
         else:
             logger.info("\nSkipping gene annotation loading (--noannotation specified)")
-            genes = None  # Set to None when annotation filtering is disabled
+            genes = None
             
         # Use the common workflow function to handle the rest of the pipeline
         success = common.run_primer_design_workflow(

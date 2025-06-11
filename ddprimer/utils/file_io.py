@@ -188,49 +188,33 @@ class FileIO:
     @classmethod
     def get_last_directory(cls):
         """
-        Get the last directory used, loading from persistent storage if needed.
+        Get the last directory used, loading from unified config storage.
         
-        Loads the last used directory from configuration file to provide
-        a better user experience by starting file dialogs in the most
-        recently used location.
+        Loads the last used directory from the unified configuration system
+        to provide a better user experience by starting file dialogs in the
+        most recently used location.
         
         Returns:
             Path to the last directory used, or home directory as fallback
         """
         if cls._last_directory is None:
             logger.debug("=== LAST DIRECTORY LOADING DEBUG ===")
-            config_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer")
             
             try:
-                os.makedirs(config_dir, exist_ok=True)
-            except OSError as e:
-                logger.warning(f"Failed to create config directory {config_dir}: {str(e)}")
-                cls._last_directory = os.path.expanduser("~")
-                logger.debug("=== END LAST DIRECTORY LOADING DEBUG ===")
-                return cls._last_directory
+                from ..config import Config
+                last_dir = Config.load_user_setting("last_directory", None)
                 
-            config_file = os.path.join(config_dir, "last_directory.txt")
-            
-            if os.path.exists(config_file):
-                try:
-                    with open(config_file, 'r') as f:
-                        last_dir = f.read().strip()
-                    if os.path.isdir(last_dir):
-                        cls._last_directory = last_dir
-                        logger.debug(f"Loaded last directory from config: {last_dir}")
-                    else:
-                        cls._last_directory = os.path.expanduser("~")
-                        logger.debug(f"Last directory no longer exists, using home: {cls._last_directory}")
-                except (OSError, IOError) as e:
-                    logger.warning(f"Error reading last directory config: {str(e)}")
+                if last_dir and os.path.isdir(last_dir):
+                    cls._last_directory = last_dir
+                    logger.debug(f"Loaded last directory from unified config: {last_dir}")
+                else:
                     cls._last_directory = os.path.expanduser("~")
-                except Exception as e:
-                    logger.warning(f"Unexpected error reading last directory config: {str(e)}")
-                    logger.debug(f"Error details: {str(e)}", exc_info=True)
-                    cls._last_directory = os.path.expanduser("~")
-            else:
+                    logger.debug(f"No valid last directory, using home: {cls._last_directory}")
+                    
+            except Exception as e:
+                logger.warning(f"Error loading last directory from unified config: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 cls._last_directory = os.path.expanduser("~")
-                logger.debug(f"No last directory config found, using home: {cls._last_directory}")
             
             logger.debug("=== END LAST DIRECTORY LOADING DEBUG ===")
         
@@ -239,10 +223,10 @@ class FileIO:
     @classmethod
     def save_last_directory(cls, directory):
         """
-        Save the last directory to persistent storage.
+        Save the last directory to unified config storage.
         
-        Persists the directory path to configuration file for future use,
-        improving user experience in subsequent file selections.
+        Persists the directory path using the unified configuration system
+        for future use, improving user experience in subsequent file selections.
         
         Args:
             directory: Path to save as last used directory
@@ -257,21 +241,13 @@ class FileIO:
             
         cls._last_directory = directory
         
-        # Save to config file
-        config_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer")
-        
+        # Save to unified config system
         try:
-            os.makedirs(config_dir, exist_ok=True)
-            config_file = os.path.join(config_dir, "last_directory.txt")
-            
-            with open(config_file, 'w') as f:
-                f.write(directory)
-            logger.debug(f"Saved last directory to config: {directory}")
-        except (OSError, IOError) as e:
-            logger.warning(f"Error saving last directory config: {str(e)}")
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            from ..config import Config
+            Config.save_user_setting("last_directory", directory)
+            logger.debug(f"Saved last directory to unified config: {directory}")
         except Exception as e:
-            logger.warning(f"Unexpected error saving last directory config: {str(e)}")
+            logger.warning(f"Error saving last directory to unified config: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
 
     @classmethod

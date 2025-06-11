@@ -12,7 +12,6 @@ Contains functionality for:
 
 import re
 import logging
-from typing import Dict, List, Optional
 
 from ..config import Config, SequenceProcessingError
 

@@ -15,6 +15,7 @@ Contains functionality for:
 4. Thermodynamic property calculations
 5. BLAST specificity checking
 6. Coordinate mapping for alignment mode
+7. Enhanced SNP processing with fixed SNP substitution support
 
 This module integrates with the broader ddPrimer pipeline to provide
 shared workflow components across all primer design modes.
@@ -42,9 +43,10 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
     
     Executes the complete primer design pipeline including restriction site processing,
     fragment filtering, primer design, thermodynamic calculations, and BLAST analysis.
+    Now supports enhanced SNP processing with fixed SNP substitution.
     
     Args:
-        masked_sequences: Dictionary of masked sequences
+        masked_sequences: Dictionary of processed sequences (masked/substituted)
         output_dir: Output directory path
         reference_file: Path to reference file (FASTA, CSV, MAF, etc.)
         mode: Pipeline mode ('standard', 'direct', or 'alignment')
@@ -66,6 +68,7 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
         PrimerDesignError: If primer design fails
     """
     logger.debug(f"Starting primer design workflow in {mode} mode")
+    logger.debug("Enhanced SNP processing: Fixed SNPs substituted, variable SNPs masked")
     
     try:
         # Step 1: Cut sequences at restriction sites
@@ -354,15 +357,15 @@ def map_alignment_coordinates(df, coordinate_map):
     return df
 
 
-def process_restriction_sites(masked_sequences):
+def process_restriction_sites(processed_sequences):
     """
     Cut sequences at restriction sites.
     
-    Processes masked sequences to identify and cut at restriction sites,
-    creating fragments suitable for primer design.
+    Processes sequences (which may already be masked/substituted) to identify 
+    and cut at restriction sites, creating fragments suitable for primer design.
     
     Args:
-        masked_sequences: Dictionary of sequences
+        processed_sequences: Dictionary of sequences (masked and/or with fixed SNPs substituted)
         
     Returns:
         List of restriction fragments
@@ -371,24 +374,32 @@ def process_restriction_sites(masked_sequences):
         SequenceProcessingError: If there's an error in restriction site processing
     """
     logger.info("\nFiltering sequences by restriction sites...")
+    logger.debug("Processing sequences that may contain masked variants and fixed SNP substitutions")
+    
     try:
         logger.debug(f"Using restriction site pattern: {Config.RESTRICTION_SITE}")
         
         # Log sequence stats before restriction site cutting
         if Config.DEBUG_MODE:
             logger.debug(f"Sequences before restriction site cutting:")
-            for seq_id, seq in masked_sequences.items():
-                logger.debug(f"  {seq_id}: {len(seq)} bp")
+            for seq_id, seq in processed_sequences.items():
+                n_count = seq.count('N')
+                lowercase_count = sum(1 for c in seq if c.islower())
+                logger.debug(f"  {seq_id}: {len(seq)} bp, {n_count} hard masked, {lowercase_count} soft masked")
         
         # Use the standard restriction site method for all modes
-        restriction_fragments = SequenceProcessor.cut_at_restriction_sites(masked_sequences)
+        restriction_fragments = SequenceProcessor.cut_at_restriction_sites(processed_sequences)
         
         # Log detailed information about restriction fragments
         if Config.DEBUG_MODE:
             logger.debug("Restriction fragments after cutting:")
             for fragment in restriction_fragments:
-                logger.debug(f"  {fragment['id']}: {len(fragment['sequence'])} bp, chr={fragment.get('chr', 'NA')}, "
-                            f"start={fragment.get('start', 'NA')}, end={fragment.get('end', 'NA')}")
+                frag_seq = fragment['sequence']
+                n_count = frag_seq.count('N')
+                lowercase_count = sum(1 for c in frag_seq if c.islower())
+                logger.debug(f"  {fragment['id']}: {len(frag_seq)} bp, chr={fragment.get('chr', 'NA')}, "
+                            f"start={fragment.get('start', 'NA')}, end={fragment.get('end', 'NA')}, "
+                            f"{n_count} hard masked, {lowercase_count} soft masked")
         
         logger.debug("Restriction site filtering completed successfully")
         logger.info(f"Generated {len(restriction_fragments)} fragments after restriction site cutting")

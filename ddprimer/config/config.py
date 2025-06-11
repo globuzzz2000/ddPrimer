@@ -8,10 +8,11 @@ Contains functionality for:
 2. JSON and Primer3 format configuration file loading/saving
 3. BLAST database path management and auto-detection
 4. Comprehensive Primer3 settings configuration
+5. K-mer masking configuration and integration
 
 This module provides centralized configuration management for the ddPrimer
 pipeline, supporting both simple parameter overrides and complete
-Primer3 settings customization.
+Primer3 settings customization including k-mer library integration.
 """
 
 import os
@@ -30,13 +31,15 @@ class Config:
     
     This class manages all configuration settings for the ddPrimer pipeline,
     providing a singleton pattern for consistent settings access across
-    all modules and comprehensive configuration file support.
+    all modules and comprehensive configuration file support including
+    k-mer masking integration.
     
     Attributes:
         DEBUG_MODE: Enable debug logging mode
         NUM_PROCESSES: Number of parallel processes to use
         PRIMER_MIN_SIZE: Minimum primer length
         PRIMER_MAX_SIZE: Maximum primer length
+        KMER_MASKING_ENABLED: Enable k-mer based masking
         
     Example:
         >>> config = Config.get_instance()
@@ -90,10 +93,11 @@ class Config:
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
 
+
     #############################################################################
     #                           SNP Masking Parameters
     #############################################################################
-    SNP_ALLELE_FREQUENCY_THRESHOLD = None    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
+    SNP_ALLELE_FREQUENCY_THRESHOLD = 0.05    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
     SNP_QUALITY_THRESHOLD = None             # Minimum QUAL score to include variants (e.g., None, 30.0)
     SNP_FLANKING_MASK_SIZE = 0               # Number of bases to mask around each SNP (0 = just the SNP)
     SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
@@ -124,11 +128,6 @@ class Config:
     BLAST_GAPEXTEND = 2
     BLAST_FILTER_FACTOR = 100  # E-value filtering factor
 
-    #############################################################################
-    #                           K-mer generation parameters
-    #############################################################################
-    KMER_SIZES = [11, 16]  # Standard k-mer sizes for primer design
-    KMER_MIN_FREQUENCY = 2  # Minimum frequency threshold for k-mer inclusion
 
     #############################################################################
     #                           Alignment Parameters
@@ -149,7 +148,151 @@ class Config:
     # --ydrop=3400      : Y-drop parameter (controls extension termination)
     # --gappedthresh=3000 : Threshold for gapped alignments
 
+        
+    #############################################################################
+    #                           K-mer Parameter
+    #############################################################################
+    # Core k-mer masking control
+    KMER_MASKING_ENABLED = False            # Enable automatic k-mer template masking
+    KMER_SIZES = [11, 16]                   # Standard k-mer sizes for primer design
+    KMER_MIN_FREQUENCY = 2                  # Minimum frequency threshold for k-mer inclusion
+
+    @classmethod
+    def get_kmer_lists_dir(cls) -> str:
+        """
+        Get the k-mer lists directory, creating it if necessary.
+        
+        Returns:
+            Path to k-mer lists directory
+        """
+        if cls.KMER_LISTS_PATH is None:
+            cls.KMER_LISTS_PATH = os.path.join(cls.get_user_config_dir(), "kmer_lists")
+        
+        try:
+            os.makedirs(cls.KMER_LISTS_PATH, exist_ok=True)
+            return cls.KMER_LISTS_PATH
+        except OSError as e:
+            logger.warning(f"Failed to create k-mer lists directory: {str(e)}")
+            # Fallback to user config directory
+            return cls.get_user_config_dir()
+
+
+    #############################################################################
+    #                           Unified Configuration Storage
+    #############################################################################
     
+    @classmethod
+    def get_user_config_dir(cls) -> str:
+        """
+        Get the user configuration directory, creating it if necessary.
+        
+        Returns:
+            Path to user configuration directory
+            
+        Raises:
+            ConfigError: If directory cannot be created
+        """
+        config_dir = os.path.join(os.path.expanduser("~"), ".ddprimer")
+        
+        try:
+            os.makedirs(config_dir, exist_ok=True)
+            logger.debug(f"User config directory: {config_dir}")
+            return config_dir
+        except OSError as e:
+            error_msg = f"Failed to create user config directory {config_dir}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+    
+    @classmethod
+    def save_user_setting(cls, key: str, value: Any) -> bool:
+        """
+        Save a user setting to persistent storage.
+        
+        Args:
+            key: Setting key name
+            value: Setting value (must be JSON-serializable)
+            
+        Returns:
+            True if setting was saved successfully
+            
+        Raises:
+            ConfigError: If setting cannot be saved
+        """
+        logger.debug(f"Saving user setting: {key} = {value}")
+        
+        try:
+            config_dir = cls.get_user_config_dir()
+            settings_file = os.path.join(config_dir, "user_settings.json")
+            
+            # Load existing settings
+            settings = {}
+            if os.path.exists(settings_file):
+                try:
+                    with open(settings_file, 'r') as f:
+                        settings = json.load(f)
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Error reading existing settings, starting fresh: {str(e)}")
+                    settings = {}
+            
+            # Update with new setting
+            settings[key] = value
+            
+            # Save back to file
+            with open(settings_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+            
+            logger.debug(f"Successfully saved user setting: {key}")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Failed to save user setting {key}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+    
+    @classmethod
+    def load_user_setting(cls, key: str, default: Any = None) -> Any:
+        """
+        Load a user setting from persistent storage.
+        
+        Args:
+            key: Setting key name
+            default: Default value if setting doesn't exist
+            
+        Returns:
+            Setting value or default if not found
+            
+        Raises:
+            ConfigError: If there's a critical error reading settings
+        """
+        logger.debug(f"Loading user setting: {key}")
+        
+        try:
+            config_dir = cls.get_user_config_dir()
+            settings_file = os.path.join(config_dir, "user_settings.json")
+            
+            if not os.path.exists(settings_file):
+                logger.debug(f"Settings file doesn't exist, returning default for {key}")
+                return default
+            
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+            
+            value = settings.get(key, default)
+            logger.debug(f"Loaded user setting {key} = {value}")
+            return value
+            
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Error reading user settings for {key}, returning default: {str(e)}")
+            return default
+        except Exception as e:
+            error_msg = f"Critical error loading user setting {key}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+
+
     #############################################################################
     #                           Primer3 Settings
     #############################################################################
@@ -360,7 +503,7 @@ class Config:
         
         This combines the simplified settings with the complete settings,
         allowing for easy parameter override while maintaining full
-        Primer3 compatibility.
+        Primer3 compatibility. Now includes k-mer library integration.
         
         Returns:
             dict: Dictionary of primer3 settings ready for use
@@ -397,7 +540,7 @@ class Config:
                 settings["PRIMER_PRODUCT_SIZE_RANGE"] = size_range_str
                 logger.debug(f"Converted product size range to: {size_range_str}")
             
-            logger.debug(f"Generated {len(settings)} Primer3 arguments")
+            logger.debug(f"Generated {len(settings)} Primer3 arguments (including k-mer settings)")
             return settings
             
         except Exception as e:
@@ -490,7 +633,7 @@ class Config:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
         
-        logger.debug("=== END CONFIG LOAD DEBUG ===")
+    logger.debug("=== END CONFIG LOAD DEBUG ===")
     
     @classmethod
     def _load_from_json(cls, filepath: str) -> bool:
@@ -602,6 +745,20 @@ class Config:
                     setattr(cls, config_attr, settings[primer3_key])
                     logger.debug(f"Updated {config_attr} = {settings[primer3_key]}")
             
+            # Handle k-mer settings
+            kmer_settings_map = {
+                "PRIMER_MAX_LIBRARY_MISPRIMING": "KMER_MAX_LIBRARY_MISPRIMING",
+                "PRIMER_INTERNAL_MAX_LIBRARY_MISHYB": "KMER_MAX_INTERNAL_MISHYB",
+                "PRIMER_PAIR_MAX_LIBRARY_MISPRIMING": "KMER_PAIR_MAX_LIBRARY_MISPRIMING",
+                "PRIMER_WT_LIBRARY_MISPRIMING": "KMER_WT_LIBRARY_MISPRIMING",
+                "PRIMER_PAIR_WT_LIBRARY_MISPRIMING": "KMER_PAIR_WT_LIBRARY_MISPRIMING",
+            }
+            
+            for primer3_key, config_attr in kmer_settings_map.items():
+                if primer3_key in settings:
+                    setattr(cls, config_attr, settings[primer3_key])
+                    logger.debug(f"Updated k-mer setting {config_attr} = {settings[primer3_key]}")
+            
             # Handle product size range
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
                 value = settings["PRIMER_PRODUCT_SIZE_RANGE"]
@@ -708,7 +865,7 @@ class Config:
     @classmethod
     def _initialize_db_path(cls):
         """
-        Find a BLAST database path for use.
+        Find a BLAST database path for use using unified config system.
         
         Returns:
             str or None: Path to BLAST database or None if not found
@@ -720,26 +877,19 @@ class Config:
         logger.debug("Searching for BLAST database path")
         
         try:
-            # First check for a saved database path in config file
-            config_dir = os.path.join(Path.home(), ".ddprimer")
-            config_file = os.path.join(config_dir, "db_config.txt")
+            # First check for a saved database path in unified config
+            saved_db_path = cls.load_user_setting("blast_db_path", None)
             
-            if os.path.exists(config_file):
-                logger.debug(f"Found database config file: {config_file}")
-                try:
-                    with open(config_file, "r") as f:
-                        db_path = f.read().strip()
-                        
-                    # Verify this path still has database files
-                    if db_path and os.path.exists(db_path + ".nhr"):
-                        logger.debug(f"Using configured BLAST database: {db_path}")
-                        return db_path
-                    else:
-                        logger.debug(f"Saved database path {db_path} is not valid (missing .nhr file)")
-                except Exception as e:
-                    logger.debug(f"Error reading database config: {str(e)}")
+            if saved_db_path:
+                logger.debug(f"Found saved database path: {saved_db_path}")
+                # Verify this path still has database files
+                if os.path.exists(saved_db_path + ".nhr"):
+                    logger.debug(f"Using configured BLAST database: {saved_db_path}")
+                    return saved_db_path
+                else:
+                    logger.debug(f"Saved database path {saved_db_path} is not valid (missing .nhr file)")
             else:
-                logger.debug(f"No database config file found at {config_file}")
+                logger.debug("No saved database path found in unified config")
             
             # If no saved config or the saved path is invalid, 
             # fall back to looking in standard directories
@@ -779,7 +929,7 @@ class Config:
     @classmethod
     def save_database_config(cls, db_path):
         """
-        Save the database path to a config file for future runs.
+        Save the database path to unified config system for future runs.
         
         Args:
             db_path (str): Path to the BLAST database
@@ -793,15 +943,8 @@ class Config:
         logger.debug(f"Saving database config: {db_path}")
         
         try:
-            config_dir = os.path.join(Path.home(), ".ddprimer")
-            os.makedirs(config_dir, exist_ok=True)
-            
-            # Save the database path to a simple config file
-            config_file = os.path.join(config_dir, "db_config.txt")
-            with open(config_file, "w") as f:
-                f.write(db_path)
-            
-            logger.debug(f"Database config saved to {config_file}")
+            cls.save_user_setting("blast_db_path", db_path)
+            logger.debug(f"Database config saved to unified storage: {db_path}")
             
         except Exception as e:
             error_msg = f"Failed to save database config for path {db_path}"

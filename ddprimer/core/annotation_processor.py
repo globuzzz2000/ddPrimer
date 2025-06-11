@@ -19,7 +19,7 @@ import re
 import concurrent.futures
 import logging
 from tqdm import tqdm
-from typing import List, Dict, Any
+from typing import List, Dict
 
 # Import package modules
 from ..config import Config

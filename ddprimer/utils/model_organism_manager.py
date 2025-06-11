@@ -331,6 +331,7 @@ class ModelOrganismManager:
             if choice == 0:  # Custom file
                 try:
                     from ..utils import FileIO
+                    logger.info("\n>>> Please select a FASTA file for BLAST database creation <<<")
                     fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
                     return None, "Custom file", fasta_file
                 except Exception as e:
@@ -339,10 +340,10 @@ class ModelOrganismManager:
                     logger.debug(f"Error details: {str(e)}", exc_info=True)
                     return None, None, None
             elif choice == len(ModelOrganismManager.MODEL_ORGANISMS) + 1:  # Select from existing databases
-                logger.info("Selecting from existing BLAST databases...")
+                logger.debug("\nSelecting from existing BLAST databases...")
                 try:
-                    from ..utils import DatabaseSelector
-                    selected_db_path = DatabaseSelector.select_database()
+                    from ..utils import Selector
+                    selected_db_path = Selector.select_blast_database()
                     
                     if selected_db_path is None:
                         logger.info("Database selection canceled.")

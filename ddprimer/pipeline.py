@@ -380,93 +380,41 @@ def run_pipeline():
         
         # Handle k-mer generation/selection mode
         if args.kmer is not None:
-            logger.info("K-mer operation requested")
+            logger.debug("K-mer operation requested")
             try:
                 if args.kmer_action == 'select':
-                    # K-mer selection menu (similar to database selection)
-                    logger.info("K-mer selection menu")
+                    # K-mer selection menu
+                    logger.info("=== K-mer selection menu ===")
                     
-                    # Get existing k-mer lists
-                    kmer_lists_by_organism = Selector.find_kmer_lists()
+                    from .utils import Selector
+                    action, data = Selector.select_kmer_operation()
                     
-                    if kmer_lists_by_organism:
-                        # Display menu with existing k-mer lists + option to create new
-                        logger.info("\nAvailable k-mer lists by organism:")
-                        organisms = list(kmer_lists_by_organism.keys())
+                    if action == 'select':
+                        # User selected existing k-mer lists - data is now a dict
+                        if data and data.get('success'):
+                            logger.info(f"\n=== Selected k-mer lists: {data['file_prefix']} ===")
+                            return True
+                        else:
+                            logger.info("K-mer selection canceled")
+                            return False
                         
-                        for i, organism in enumerate(organisms, 1):
-                            sizes = [item['size'] for item in kmer_lists_by_organism[organism]]
-                            sizes_str = ', '.join(f"{size}-mer" for size in sizes)
-                            logger.info(f"{i}. {organism.title()} ({sizes_str})")
+                    elif action == 'generate':
+                        # User chose to generate new k-mer lists
+                        fasta_file = data
+                        output_dir = args.output if args.output else None
+                        success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
                         
-                        logger.info(f"{len(organisms) + 1}. Create new k-mer lists from FASTA file")
-                        logger.info(f"{len(organisms) + 2}. Cancel")
-                        
-                        try:
-                            choice = input(f"Enter your choice [1-{len(organisms) + 2}]: ")
-                            choice = int(choice)
-                            
-                            if 1 <= choice <= len(organisms):
-                                # Select existing k-mer lists
-                                selected_organism = organisms[choice - 1]
-                                selected_files = [item['path'] for item in kmer_lists_by_organism[selected_organism]]
-                                
-                                sizes_str = ', '.join(f"{item['size']}-mer" for item in kmer_lists_by_organism[selected_organism])
-                                logger.info(f"Selected {selected_organism.title()} k-mer lists: {sizes_str}")
-                                
-                                for path in selected_files:
-                                    logger.info(f"  - {Path(path).name}")
-                                return True
-                                
-                            elif choice == len(organisms) + 1:
-                                # Create new k-mer lists - prompt for FASTA file
-                                logger.info("Please select a FASTA file for k-mer generation")
-                                fasta_file = FileIO.select_fasta_file("Select FASTA file for k-mer generation")
-                                
-                                # Generate k-mer lists
-                                output_dir = args.output if args.output else None
-                                success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
-                                
-                                if success:
-                                    logger.info("K-mer generation completed successfully!")
-                                    return True
-                                else:
-                                    logger.error("K-mer generation failed")
-                                    return False
-                                    
-                            elif choice == len(organisms) + 2:
-                                # Cancel
-                                logger.info("K-mer operation canceled")
-                                return False
-                            else:
-                                logger.error("Invalid choice")
-                                return False
-                                
-                        except (ValueError, KeyboardInterrupt):
-                            logger.info("K-mer operation canceled")
+                        if success:
+                            logger.debug("K-mer generation completed successfully!")
+                            return True
+                        else:
+                            logger.error("K-mer generation failed")
                             return False
                     else:
-                        # No existing k-mer lists found - offer to create new ones
-                        logger.info("No existing k-mer lists found.")
-                        create_new = input("Would you like to create new k-mer lists from a FASTA file? [Y/n]: ").strip().lower()
+                        # User canceled
+                        logger.info("K-mer operation canceled")
+                        return False
                         
-                        if create_new == "" or create_new.startswith("y"):
-                            logger.info("Please select a FASTA file for k-mer generation")
-                            fasta_file = FileIO.select_fasta_file("Select FASTA file for k-mer generation")
-                            
-                            output_dir = args.output if args.output else None
-                            success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
-                            
-                            if success:
-                                logger.info("K-mer generation completed successfully!")
-                                return True
-                            else:
-                                logger.error("K-mer generation failed")
-                                return False
-                        else:
-                            logger.info("K-mer operation canceled")
-                            return False
-                            
                 elif args.kmer_action == 'generate':
                     # Direct file path provided for generation
                     fasta_file = args.kmer_fasta
@@ -480,7 +428,7 @@ def run_pipeline():
                     success = run_kmer_generation(fasta_file=fasta_file, output_dir=output_dir)
                     
                     if success:
-                        logger.info("K-mer generation completed successfully!")
+                        logger.debug("K-mer generation completed successfully!")
                         return True
                     else:
                         logger.error("K-mer generation failed")
@@ -526,15 +474,16 @@ def run_pipeline():
         
         # Process BLAST database arguments - simplified handling
         if args.db is not None:
-            logger_instance.info("BLAST database operation requested")
+            logger_instance.debug("BLAST database operation requested")
             try:
                 blast_db_creator = BlastDBCreator()
                 
                 # Handle model organism / existing db selection
                 if args.db_action == 'select':
-                    logger_instance.info("Database selection requested")
+                    logger_instance.info("=== Blast Database selection menu ===")
                     from .utils import ModelOrganismManager as MOManager
-                    organism_key, organism_name, fasta_file = MOManager.select_model_organism(logger_instance)
+                    # Fix: Remove the logger_instance argument
+                    organism_key, organism_name, fasta_file = MOManager.select_model_organism()
                     
                     if organism_key is None and fasta_file is None:
                         logger_instance.info("Database selection canceled. Exiting...")
@@ -547,7 +496,7 @@ def run_pipeline():
                         Config.DB_PATH = selected_db_path
                         Config.save_database_config(selected_db_path)
                         Config.USE_CUSTOM_DB = True
-                        logger_instance.info(f"Now using BLAST database: {selected_db_path}")
+                        logger_instance.info(f"\n=== Selected database: {selected_db_path} ===")
                         
                         # If only running database operations, exit successfully
                         if not args.fasta:
@@ -583,7 +532,7 @@ def run_pipeline():
                     output_dir = args.output if args.output else None
                     
                     # Create the database
-                    db_path = blast_db_creator.create_database(
+                    db_path = blast_db_creator.create_db(
                         fasta_file,
                         db_name,  # Custom database name
                         output_dir
@@ -603,7 +552,7 @@ def run_pipeline():
                             Config.DB_PATH = db_path
                             Config.save_database_config(db_path)
                             Config.USE_CUSTOM_DB = True
-                            logger_instance.info(f"Now using new BLAST database: {db_path}")
+                            logger_instance.info(f"\n=== Now using: {db_path} ===")
                         else:
                             logger_instance.info(f"Keeping current BLAST database: {Config.DB_PATH}")
                     else:

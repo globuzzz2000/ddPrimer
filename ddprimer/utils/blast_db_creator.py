@@ -15,7 +15,6 @@ robust BLAST database management capabilities.
 
 import os
 import subprocess
-import traceback
 import shlex
 import tempfile
 import shutil
@@ -42,46 +41,6 @@ class BlastDBCreator:
         >>> print(f"Database created at: {db_path}")
     """
     
-    def create_database(self, fasta_file=None, db_name=None, output_dir=None):
-        """
-        Create a BLAST database from a FASTA file or model organism.
-        
-        Args:
-            fasta_file: Path to FASTA file or None to prompt for selection
-            db_name: Custom name for the database
-            output_dir: Directory to store database files
-            
-        Returns:
-            Path to the created BLAST database
-            
-        Raises:
-            FileError: If FASTA file doesn't exist or is inaccessible
-            ExternalToolError: If database creation fails
-        """
-        logger.debug("=== BLAST DATABASE CREATION DEBUG ===")
-        logger.debug(f"Input parameters: fasta_file={fasta_file}, db_name={db_name}, output_dir={output_dir}")
-        
-        # If no fasta_file is provided, offer model organism selection
-        if fasta_file is None or fasta_file is True:
-            logger.info("No FASTA file specified. You can select a model organism or provide a custom file.")
-            
-            organism_key, organism_name, fasta_file = ModelOrganismManager.select_model_organism()
-            
-            # If selection was canceled or failed
-            if fasta_file is None:
-                logger.info("BLAST database creation canceled.")
-                return None
-                
-            # If a model organism was selected, use its name as the default DB name
-            if organism_key is not None and db_name is None:
-                organism_name = ModelOrganismManager.MODEL_ORGANISMS[organism_key]["name"]
-                scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
-                db_name = scientific_name.replace(' ', '_')
-                logger.info(f"Using database name: {db_name}")
-        
-        logger.debug("=== END BLAST DATABASE CREATION DEBUG ===")
-        return self.create_db(fasta_file, output_dir, db_name)
-    
     @staticmethod
     def create_db(fasta_file, output_dir=None, db_name=None):
         """
@@ -102,7 +61,7 @@ class BlastDBCreator:
             FileError: If FASTA file doesn't exist or output directory issues
             ExternalToolError: If makeblastdb execution fails
         """
-        logger.info(f"Creating BLAST database from {fasta_file}...")
+        logger.debug(f"Creating BLAST database from {fasta_file}...")
         
         # Handle path with spaces
         fasta_file = os.path.abspath(os.path.expanduser(fasta_file))
@@ -174,7 +133,7 @@ class BlastDBCreator:
                 logger.debug(f"makeblastdb stdout: {result.stdout}")
                 raise ExternalToolError(error_msg, tool_name="makeblastdb")
                 
-            logger.info(f"BLAST database created successfully at: {db_path}")
+            logger.info(f"\nBLAST database created successfully at: {db_path}")
             logger.info("")
             
             # Verify the database was created properly
