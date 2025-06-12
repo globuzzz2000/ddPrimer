@@ -8,8 +8,7 @@ Handles primer design through Primer3 including:
 2. Parsing primer3 output with comprehensive error handling
 3. Amplicon extraction and validation with coordinate correction
 4. Parallel processing for improved performance
-5. K-mer template masking integration using Primer3's masking functionality
-6. Result formatting and validation
+5. Result formatting and validation
 """
 
 import logging
@@ -23,7 +22,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 from ..config import Config, SequenceProcessingError, PrimerDesignError
-from ..utils import SequenceUtils, Selector
+from ..utils import SequenceUtils
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -34,12 +33,10 @@ class Primer3Processor:
     Handles Primer3 operations for primer design using the primer3-py package.
     
     This class provides comprehensive primer design capabilities including
-    parallel processing, result parsing, amplicon extraction, and k-mer
-    template masking integration with proper coordinate handling for various pipeline modes.
+    parallel processing, result parsing, and amplicon extraction for various pipeline modes.
     
     Attributes:
         config: Configuration object with primer3 settings
-        kmer_library_path: Path to k-mer library file for template masking
         
     Example:
         >>> processor = Primer3Processor()
@@ -49,178 +46,22 @@ class Primer3Processor:
     
     def __init__(self, config=None):
         """
-        Initialize Primer3Processor with configuration and k-mer template masking setup.
+        Initialize Primer3Processor with configuration.
         """
         self.config = config if config is not None else Config
-        
-        # Initialize k-mer masking attributes
-        self.kmer_folder_path = None
-        self.kmer_file_prefix = None
-        
-        # Initialize k-mer template masking if enabled
-        self._setup_kmer_masking()
-        
-        logger.debug("Initialized Primer3Processor with k-mer template masking integration")
+        logger.debug("Initialized Primer3Processor")
 
-    def _setup_kmer_masking(self):
+    def get_primer3_global_args(self) -> Dict:
         """
-        Set up k-mer masking parameters for Primer3.
+        Get Primer3 global arguments.
         
-        Loads folder path and file prefix from saved user settings.
-        """
-        logger.debug("=== K-MER MASKING SETUP DEBUG ===")
-        
-        try:
-            # Check if k-mer masking is enabled in config
-            if not getattr(self.config, 'KMER_MASKING_ENABLED', True):
-                logger.debug("K-mer masking disabled in configuration")
-                return
-            
-            # Load k-mer selection from user settings
-            from ..utils import Selector
-            kmer_config = Selector.load_kmer_selection()
-            
-            if kmer_config:
-                # Use saved folder path and file prefix
-                self.kmer_folder_path = kmer_config.get("folder_path")
-                self.kmer_file_prefix = kmer_config.get("file_prefix")
-                organism = kmer_config.get("organism", "unknown")
-                
-                if self.kmer_folder_path and self.kmer_file_prefix and os.path.exists(self.kmer_folder_path):
-                    logger.debug(f"Using saved k-mer selection: {organism}")
-                    logger.debug(f"K-mer folder: {self.kmer_folder_path}")
-                    logger.debug(f"K-mer prefix: {self.kmer_file_prefix}")
-                    logger.info(f"K-mer template masking enabled for: {organism}")
-                    return
-                else:
-                    logger.debug(f"Saved k-mer folder path invalid or missing: {self.kmer_folder_path}")
-            
-            # Try to auto-select from available k-mer lists
-            kmer_lists_by_organism = Selector.find_kmer_lists()
-            
-            if kmer_lists_by_organism:
-                folder_path, file_prefix, organism = self._auto_select_kmer_settings(kmer_lists_by_organism)
-                
-                if folder_path and file_prefix:
-                    self.kmer_folder_path = folder_path
-                    self.kmer_file_prefix = file_prefix
-                    logger.debug(f"Auto-selected k-mer folder: {folder_path}")
-                    logger.debug(f"Auto-selected k-mer prefix: {file_prefix}")
-                    logger.info(f"K-mer template masking enabled using: {organism} ({file_prefix})")
-                    return
-            
-            # No k-mer libraries available
-            logger.debug("No k-mer libraries available - primer design will proceed without k-mer masking")
-            logger.info("K-mer masking disabled - no k-mer libraries found")
-            
-        except Exception as e:
-            error_msg = f"Error setting up k-mer masking: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            # Don't raise exception - k-mer masking is optional
-            self.kmer_folder_path = None
-            self.kmer_file_prefix = None
-            logger.warning("K-mer masking will be disabled due to setup error")
-        
-        logger.debug("=== END K-MER MASKING SETUP DEBUG ===")
-
-    def _auto_select_kmer_settings(self, kmer_lists_by_organism: Dict) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """
-        Automatically select k-mer folder, prefix, and organism from available options.
-        
-        Args:
-            kmer_lists_by_organism: Dictionary of k-mer lists grouped by organism
-            
-        Returns:
-            Tuple of (folder_path, file_prefix, organism_name) or (None, None, None)
-        """
-        logger.debug("Auto-selecting k-mer settings")
-        
-        # Priority-based organism selection
-        priority_organisms = [
-            'arabidopsis thaliana', 'homo sapiens', 'mus musculus',
-            'drosophila melanogaster', 'saccharomyces cerevisiae',
-            'escherichia coli', 'caenorhabditis elegans'
-        ]
-        
-        selected_organism = None
-        for priority_org in priority_organisms:
-            for organism in kmer_lists_by_organism.keys():
-                if priority_org in organism.lower():
-                    selected_organism = organism
-                    break
-            if selected_organism:
-                break
-        
-        # If no priority organism found, use the first available
-        if not selected_organism:
-            selected_organism = list(kmer_lists_by_organism.keys())[0]
-        
-        organism_kmers = kmer_lists_by_organism[selected_organism]
-        logger.debug(f"Auto-selected organism: {selected_organism}")
-        
-        if organism_kmers:
-            # Get folder and prefix from first file
-            first_file_info = organism_kmers[0]
-            first_file_path = first_file_info['path']
-            
-            folder_path = str(Path(first_file_path).parent)
-            
-            # Extract prefix from filename (e.g., "thaliana_11.list" -> "thaliana")
-            filename = Path(first_file_path).stem
-            prefix_parts = filename.split('_')[:-1]  # Remove the size part
-            file_prefix = '_'.join(prefix_parts)
-            
-            logger.debug(f"Selected folder: {folder_path}")
-            logger.debug(f"Selected prefix: {file_prefix}")
-            
-            return folder_path, file_prefix, selected_organism
-        
-        return None, None, None
-
-    def get_primer3_global_args_with_kmer(self) -> Dict:
-        """
-        Get Primer3 global arguments with k-mer template masking integration.
-        
-        Uses the saved folder path and file prefix for k-mer masking.
+        Returns standard Primer3 arguments from configuration.
         
         Returns:
-            Dictionary of Primer3 arguments including k-mer template masking settings
+            Dictionary of Primer3 arguments
         """
-        # Get base arguments
+        # Get base arguments from config
         args = self.config.get_primer3_global_args()
-        
-        # Early exit if k-mer masking is disabled
-        if not getattr(self.config, 'KMER_MASKING_ENABLED', True):
-            logger.info("K-mer masking is DISABLED - using base Primer3 settings only")
-            return args
-        
-        # Add k-mer template masking if folder and prefix are available
-        if (self.kmer_folder_path and self.kmer_file_prefix and 
-            os.path.exists(self.kmer_folder_path)):
-            
-            logger.debug(f"Adding k-mer template masking to Primer3 args:")
-            logger.debug(f"  Folder: {self.kmer_folder_path}")
-            logger.debug(f"  Prefix: {self.kmer_file_prefix}")
-            
-            # Primer3 k-mer masking parameters
-            template_masking_args = {
-                'PRIMER_MASK_TEMPLATE': 1,
-                'PRIMER_MASK_KMERLIST_PATH': self.kmer_folder_path,
-                'PRIMER_MASK_KMERLIST_PREFIX': self.kmer_file_prefix,
-            }
-            
-            # Debug: Print template masking arguments being added
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("Adding template masking arguments:")
-                for key, value in template_masking_args.items():
-                    logger.debug(f"  {key} = {value}")
-            
-            args.update(template_masking_args)
-            logger.info(f"Template masking enabled: {Path(self.kmer_folder_path).name}/{self.kmer_file_prefix}_*")
-        else:
-            logger.debug("No k-mer folder/prefix available - using standard Primer3 arguments")
-        
         return args
     
     def run_primer3_batch(self, input_blocks):
@@ -229,7 +70,7 @@ class Primer3Processor:
         
         Processes multiple primer design requests sequentially using the
         primer3-py package, formatting results to maintain compatibility
-        with existing parsing code. Now includes k-mer template masking if available.
+        with existing parsing code.
         
         Args:
             input_blocks: List of dictionaries containing primer3 parameters
@@ -250,17 +91,11 @@ class Primer3Processor:
             logger.warning("No input blocks provided for Primer3 processing")
             return ""
         
-        # Log k-mer masking status
-        if self._is_kmer_masking_available():
-            logger.debug(f"K-mer template masking enabled with folder: {self.kmer_folder_path}")
-        else:
-            logger.debug("K-mer template masking disabled")
-        
         results = []
         
         try:
-            # Get global arguments with k-mer template masking settings
-            global_args = self.get_primer3_global_args_with_kmer()
+            # Get global arguments
+            global_args = self.get_primer3_global_args()
             
             # Process each input block using primer3-py
             for block in input_blocks:
@@ -303,7 +138,6 @@ class Primer3Processor:
         
         Distributes primer design tasks across multiple processes for
         improved performance, with progress tracking and error handling.
-        Now includes k-mer template masking support.
         
         Args:
             input_blocks: List of dictionaries containing primer3 parameters
@@ -322,10 +156,6 @@ class Primer3Processor:
             max_workers = min(multiprocessing.cpu_count(), len(input_blocks))
         
         logger.debug(f"Running Primer3 in parallel: {max_workers} workers for {len(input_blocks)} blocks")
-        
-        # Log k-mer masking status - FIXED: use correct attributes
-        if self._is_kmer_masking_available():
-            logger.info(f"K-mer template masking enabled using: {self.kmer_file_prefix}")
         
         # Log input statistics in debug mode
         if logger.isEnabledFor(logging.DEBUG):
@@ -375,18 +205,6 @@ class Primer3Processor:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise PrimerDesignError(error_msg) from e
-        
-    def _is_kmer_masking_available(self):
-        """
-        Check if k-mer masking is available and properly configured.
-        
-        Returns:
-            bool: True if k-mer masking is available
-        """
-        return (getattr(self.config, 'KMER_MASKING_ENABLED', True) and 
-                self.kmer_folder_path and 
-                self.kmer_file_prefix and 
-                os.path.exists(self.kmer_folder_path))
     
     def _log_input_statistics(self, input_blocks):
         """
@@ -408,12 +226,6 @@ class Primer3Processor:
             medium_count = sum(1 for length in seq_lengths if 150 <= length < 500)
             long_count = sum(1 for length in seq_lengths if length >= 500)
             logger.debug(f"  Length distribution: <150bp={short_count}, 150-500bp={medium_count}, ≥500bp={long_count}")
-            
-            # K-mer masking status - FIXED: use helper method
-            if self._is_kmer_masking_available():
-                logger.debug(f"  K-mer template masking: ENABLED ({self.kmer_file_prefix})")
-            else:
-                logger.debug(f"  K-mer template masking: DISABLED")
 
     def _log_output_statistics(self, output, input_count):
         """
@@ -465,12 +277,6 @@ class Primer3Processor:
         # Count total primer pairs found
         total_pairs = output.count("PRIMER_PAIR_0_PENALTY=")
         logger.debug(f"Total primer pairs generated: {total_pairs}")
-        
-        # Log k-mer masking status - FIXED: use helper method
-        if self._is_kmer_masking_available():
-            logger.debug(f"  K-mer template masking: ACTIVE ({self.kmer_file_prefix})")
-        else:
-            logger.debug(f"  K-mer template masking: INACTIVE")
             
         logger.debug("=== END PRIMER3 OUTPUT ANALYSIS ===")
     
@@ -742,10 +548,6 @@ class Primer3Processor:
                 logger.debug(f"  Blocks with primers: {blocks_with_pairs}")
                 logger.debug(f"  Blocks without primers: {blocks_without_pairs}")
                 logger.debug(f"  Total primer pairs: {total_pairs_found}")
-                
-                # Log k-mer masking impact if enabled - FIXED: use helper method
-                if self._is_kmer_masking_available():
-                    logger.debug(f"  K-mer template masking: ACTIVE ({self.kmer_file_prefix})")
             
             logger.debug(f"Successfully parsed {len(records)} primer records from Primer3 output")
             logger.debug("=== END PRIMER3 BATCH PARSING ===")

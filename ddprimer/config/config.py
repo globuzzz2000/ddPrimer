@@ -8,11 +8,10 @@ Contains functionality for:
 2. JSON and Primer3 format configuration file loading/saving
 3. BLAST database path management and auto-detection
 4. Comprehensive Primer3 settings configuration
-5. K-mer masking configuration and integration
 
 This module provides centralized configuration management for the ddPrimer
 pipeline, supporting both simple parameter overrides and complete
-Primer3 settings customization including k-mer library integration.
+Primer3 settings customization.
 """
 
 import os
@@ -31,15 +30,13 @@ class Config:
     
     This class manages all configuration settings for the ddPrimer pipeline,
     providing a singleton pattern for consistent settings access across
-    all modules and comprehensive configuration file support including
-    k-mer masking integration.
+    all modules and comprehensive configuration file support.
     
     Attributes:
         DEBUG_MODE: Enable debug logging mode
         NUM_PROCESSES: Number of parallel processes to use
         PRIMER_MIN_SIZE: Minimum primer length
         PRIMER_MAX_SIZE: Maximum primer length
-        KMER_MASKING_ENABLED: Enable k-mer based masking
         
     Example:
         >>> config = Config.get_instance()
@@ -149,34 +146,6 @@ class Config:
     # --gappedthresh=3000 : Threshold for gapped alignments
 
         
-    #############################################################################
-    #                           K-mer Parameter
-    #############################################################################
-    # Core k-mer masking control
-    KMER_MASKING_ENABLED = False            # Enable automatic k-mer template masking
-    KMER_SIZES = [11, 16]                   # Standard k-mer sizes for primer design
-    KMER_MIN_FREQUENCY = 2                  # Minimum frequency threshold for k-mer inclusion
-
-    @classmethod
-    def get_kmer_lists_dir(cls) -> str:
-        """
-        Get the k-mer lists directory, creating it if necessary.
-        
-        Returns:
-            Path to k-mer lists directory
-        """
-        if cls.KMER_LISTS_PATH is None:
-            cls.KMER_LISTS_PATH = os.path.join(cls.get_user_config_dir(), "kmer_lists")
-        
-        try:
-            os.makedirs(cls.KMER_LISTS_PATH, exist_ok=True)
-            return cls.KMER_LISTS_PATH
-        except OSError as e:
-            logger.warning(f"Failed to create k-mer lists directory: {str(e)}")
-            # Fallback to user config directory
-            return cls.get_user_config_dir()
-
-
     #############################################################################
     #                           Unified Configuration Storage
     #############################################################################
@@ -503,7 +472,7 @@ class Config:
         
         This combines the simplified settings with the complete settings,
         allowing for easy parameter override while maintaining full
-        Primer3 compatibility. Now includes k-mer library integration.
+        Primer3 compatibility.
         
         Returns:
             dict: Dictionary of primer3 settings ready for use
@@ -540,7 +509,7 @@ class Config:
                 settings["PRIMER_PRODUCT_SIZE_RANGE"] = size_range_str
                 logger.debug(f"Converted product size range to: {size_range_str}")
             
-            logger.debug(f"Generated {len(settings)} Primer3 arguments (including k-mer settings)")
+            logger.debug(f"Generated {len(settings)} Primer3 arguments")
             return settings
             
         except Exception as e:
@@ -549,7 +518,7 @@ class Config:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
         
-        logger.debug("=== END PRIMER3 ARGS DEBUG ===")
+    logger.debug("=== END PRIMER3 ARGS DEBUG ===")
     
     @classmethod
     def format_settings_for_file(cls) -> str:
@@ -744,20 +713,6 @@ class Config:
                 if primer3_key in settings:
                     setattr(cls, config_attr, settings[primer3_key])
                     logger.debug(f"Updated {config_attr} = {settings[primer3_key]}")
-            
-            # Handle k-mer settings
-            kmer_settings_map = {
-                "PRIMER_MAX_LIBRARY_MISPRIMING": "KMER_MAX_LIBRARY_MISPRIMING",
-                "PRIMER_INTERNAL_MAX_LIBRARY_MISHYB": "KMER_MAX_INTERNAL_MISHYB",
-                "PRIMER_PAIR_MAX_LIBRARY_MISPRIMING": "KMER_PAIR_MAX_LIBRARY_MISPRIMING",
-                "PRIMER_WT_LIBRARY_MISPRIMING": "KMER_WT_LIBRARY_MISPRIMING",
-                "PRIMER_PAIR_WT_LIBRARY_MISPRIMING": "KMER_PAIR_WT_LIBRARY_MISPRIMING",
-            }
-            
-            for primer3_key, config_attr in kmer_settings_map.items():
-                if primer3_key in settings:
-                    setattr(cls, config_attr, settings[primer3_key])
-                    logger.debug(f"Updated k-mer setting {config_attr} = {settings[primer3_key]}")
             
             # Handle product size range
             if "PRIMER_PRODUCT_SIZE_RANGE" in settings:
