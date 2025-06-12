@@ -116,6 +116,16 @@ class AnnotationProcessor:
             List of gene dictionaries with extracted information
         """
         chunk_genes = []
+        
+        # Parse RETAIN_TYPES - handle both string and list formats
+        if isinstance(Config.RETAIN_TYPES, str):
+            # Split by comma and clean whitespace
+            retain_types = [t.strip().lower() for t in Config.RETAIN_TYPES.split(',')]
+        elif isinstance(Config.RETAIN_TYPES, list):
+            retain_types = [t.lower() for t in Config.RETAIN_TYPES]
+        else:
+            retain_types = [str(Config.RETAIN_TYPES).lower()]
+        
         for line in chunk:
             if line.startswith('#'):
                 continue
@@ -124,11 +134,12 @@ class AnnotationProcessor:
             if len(parts) < 9:
                 continue
 
-            ftype = parts[2].lower()
-            if ftype not in Config.RETAIN_TYPES:
+            seqname, _, ftype, start, end, _, strand, _, attributes = parts
+            
+            # Check if feature type is in our retain list
+            if ftype.lower() not in retain_types:
                 continue
 
-            seqname, _, _, start, end, _, strand, _, attributes = parts
             attr_dict = cls.parse_gff_attributes(attributes)
 
             name = attr_dict.get('name')
@@ -144,7 +155,7 @@ class AnnotationProcessor:
                     "start": int(start),
                     "end": int(end),
                     "strand": strand,
-                    "id": name
+                    "id": name or gene_id or locus_tag or f"feature_{start}_{end}"
                 })
             except ValueError as e:
                 logger.debug(f"Error converting position data: {e}")

@@ -814,28 +814,28 @@ class SNPMaskingProcessor:
             Dictionary of processed sequences with fixed SNPs substituted and variable SNPs masked
         """
         mask_type = "soft" if use_soft_masking else "hard"
-        logger.info(f"Processing variants in sequences using {mask_type} masking and fixed SNP substitution...")
+        logger.info(f"\nProcessing variants from VCF file...")
         
         if flanking_size > 0:
-            logger.info(f"Using flanking region size: {flanking_size} bases")
+            logger.debug(f"Using flanking region size: {flanking_size} bases")
         if min_af is not None:
-            logger.info(f"AF filter: variants with AF >= {min_af}")
+            logger.debug(f"AF filter: variants with AF >= {min_af}")
         if min_qual is not None:
-            logger.info(f"QUAL filter: variants with QUAL >= {min_qual}")
+            logger.debug(f"QUAL filter: variants with QUAL >= {min_qual}")
         
         # Log fixed SNP criteria
-        logger.info(f"Fixed SNP criteria: AF=1.0 always substituted")
+        logger.debug(f"Fixed SNP criteria: AF=1.0 always substituted")
         if Config.SNP_ALLELE_FREQUENCY_THRESHOLD is not None:
             fixed_af_threshold = 1.0 - Config.SNP_ALLELE_FREQUENCY_THRESHOLD
             if Config.SNP_QUALITY_THRESHOLD is not None:
-                logger.info(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f} AND QUAL > {Config.SNP_QUALITY_THRESHOLD}")
+                logger.debug(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f} AND QUAL > {Config.SNP_QUALITY_THRESHOLD}")
             else:
-                logger.info(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f}")
+                logger.debug(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f}")
         
         processed_sequences = {}
         
         if Config.SHOW_PROGRESS:
-            sequence_iter = tqdm(sequences.items(), desc=f"Processing sequences ({mask_type})")
+            sequence_iter = tqdm(sequences.items(), desc=f"Processing sequences:")
         else:
             sequence_iter = sequences.items()
         
@@ -866,9 +866,9 @@ class SNPMaskingProcessor:
                 processed_sequences[seq_id] = sequence
                 logger.debug(f"No variants found for sequence {seq_id}, using original")
         
-        logger.info(f"Completed variant processing for {len(processed_sequences)} sequences:")
-        logger.info(f"  Fixed SNPs substituted: {total_substitutions}")
-        logger.info(f"  Variable SNPs masked: {total_maskings}")
+        logger.debug(f"Completed variant processing for {len(processed_sequences)} sequences:")
+        logger.info(f"Fixed SNPs substituted: {total_substitutions}")
+        logger.info(f"SNPs masked: {total_maskings}")
         
         return processed_sequences
     

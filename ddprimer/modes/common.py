@@ -86,11 +86,15 @@ def run_primer_design_workflow(masked_sequences, output_dir, reference_file, mod
             genes, 
             skip_annotation_filtering
         )
-        logger.debug(f"CHECKPOINT 2: {len(filtered_fragments)} filtered fragments")
         
-        if not filtered_fragments:
+        # Check if filtering returned empty list or None
+        if not filtered_fragments:  # This handles both None and empty list
             logger.warning("No fragments passed filtering. Exiting.")
+            if mode in ['standard', 'alignment'] and not skip_annotation_filtering:
+                logger.info("Suggestion: Try using --noannotation flag to skip gene filtering")
             return False
+        
+        logger.debug(f"CHECKPOINT 2: {len(filtered_fragments)} filtered fragments")
         
         # Step 3: Design primers with Primer3
         primer_results = design_primers_with_primer3(filtered_fragments, mode)
@@ -202,8 +206,9 @@ def filter_fragments_by_mode(restriction_fragments, mode, genes, skip_annotation
     else:
         # Extract ALL gene overlaps for standard/alignment modes
         if not genes:
-            logger.warning("Gene annotations not provided for standard/alignment mode. Exiting.")
-            return None
+            logger.error("Gene annotations not provided for standard/alignment mode.")
+            logger.info("Hint: Use --noannotation flag to skip gene filtering, or provide a GFF file")
+            return []  # Return empty list instead of None
                 
         logger.info("Extracting gene-overlapping regions...")
         try:

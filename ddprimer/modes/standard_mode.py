@@ -146,7 +146,7 @@ def run(args):
             return False
         
         # Process variants in sequences (masking + substitution)
-        logger.info("\nProcessing variants in sequences (masking + fixed SNP substitution)...")
+        logger.debug("\nProcessing variants in sequences (masking + fixed SNP substitution)...")
         try:
             masked_sequences = snp_processor.mask_sequences_for_primer_design(
                 sequences=sequences,

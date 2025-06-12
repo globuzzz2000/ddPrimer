@@ -82,7 +82,7 @@ class Config:
     
     # Pipeline parameters
     MIN_SEGMENT_LENGTH = 90
-    RETAIN_TYPES = "gene"  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
+    RETAIN_TYPES = ["gene", "mRNA"]  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
     FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
     COUNT_AMBIGUOUS_AS_MISMATCH = False
     GENE_OVERLAP_MARGIN = 25
@@ -97,7 +97,7 @@ class Config:
     #############################################################################
     #                           SNP Masking Parameters
     #############################################################################
-    SNP_ALLELE_FREQUENCY_THRESHOLD = 0.05    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
+    SNP_ALLELE_FREQUENCY_THRESHOLD = None    # Minimum allele frequency (AF) to mask (e.g., None, 0.05 for 5%)
     SNP_QUALITY_THRESHOLD = None             # Minimum QUAL score to include variants (e.g., None, 30.0)
     SNP_FLANKING_MASK_SIZE = 0               # Number of bases to mask around each SNP (0 = just the SNP)
     SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
