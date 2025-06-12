@@ -45,14 +45,6 @@ class AnnotationProcessor:
         >>> gene_fragments = processor.extract_all_gene_overlaps(fragments, genes)
     """
     
-    # Patterns for general placeholder detection across species
-    PLACEHOLDER_PATTERNS = [
-        re.compile(r'^AT\dG\d{5}$', re.IGNORECASE),   # Arabidopsis
-        re.compile(r'^LOC_.*$', re.IGNORECASE),       # NCBI-style, rice, etc.
-        re.compile(r'^GRMZM.*$', re.IGNORECASE),      # Maize
-        re.compile(r'^ENS.*$', re.IGNORECASE)         # Ensembl IDs (humans, etc.)
-    ]
-    
     @staticmethod
     def parse_gff_attributes(attribute_str: str) -> dict:
         """
@@ -71,37 +63,6 @@ class AnnotationProcessor:
                 attr_dict[key.strip().lower()] = value.strip()
         return attr_dict
     
-    @classmethod
-    def is_meaningful_name(cls, name: str, gene_id: str = None, locus_tag: str = None) -> bool:
-        """
-        Determine whether the 'name' is a meaningful gene symbol.
-        
-        Excludes placeholders, technical locus tags, or accessions.
-        
-        Args:
-            name: Gene name to check
-            gene_id: Gene ID for comparison
-            locus_tag: Locus tag for comparison
-            
-        Returns:
-            True if name is meaningful, False otherwise
-        """
-        if not name:
-            return False
-
-        name_lower = name.lower()
-
-        if gene_id and name_lower == gene_id.lower():
-            return False
-
-        if locus_tag and name_lower == locus_tag.lower():
-            return False
-
-        for pattern in cls.PLACEHOLDER_PATTERNS:
-            if pattern.match(name):
-                return False
-
-        return True
     
     @classmethod
     def process_gff_chunk(cls, chunk: List[str]) -> List[Dict]:
@@ -142,12 +103,13 @@ class AnnotationProcessor:
 
             attr_dict = cls.parse_gff_attributes(attributes)
 
+            # Get the best available identifier - no meaningfulness filtering
             name = attr_dict.get('name')
             gene_id = attr_dict.get('id')
             locus_tag = attr_dict.get('locus_tag')
-
-            if Config.FILTER_MEANINGFUL_NAMES and not cls.is_meaningful_name(name, gene_id, locus_tag):
-                continue
+            
+            # Use the first available identifier (prefer name, then id, then locus_tag)
+            identifier = name or gene_id or locus_tag or f"feature_{start}_{end}"
 
             try:
                 chunk_genes.append({
@@ -155,7 +117,7 @@ class AnnotationProcessor:
                     "start": int(start),
                     "end": int(end),
                     "strand": strand,
-                    "id": name or gene_id or locus_tag or f"feature_{start}_{end}"
+                    "id": identifier
                 })
             except ValueError as e:
                 logger.debug(f"Error converting position data: {e}")
@@ -167,7 +129,7 @@ class AnnotationProcessor:
         """
         Extract gene information from a GFF file.
         
-        Uses global RETAIN_TYPES and FILTER_MEANINGFUL_NAMES for filtering.
+        Uses global RETAIN_TYPES for filtering.
         Optimized version that processes the file in parallel chunks.
         
         Args:

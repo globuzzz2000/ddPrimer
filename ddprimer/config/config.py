@@ -79,8 +79,7 @@ class Config:
     
     # Pipeline parameters
     MIN_SEGMENT_LENGTH = 90
-    RETAIN_TYPES = ["gene", "mRNA"]  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
-    FILTER_MEANINGFUL_NAMES = True  # only use named genes from gff
+    RETAIN_TYPES = ["mRNA"]  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
     COUNT_AMBIGUOUS_AS_MISMATCH = False
     GENE_OVERLAP_MARGIN = 25
     RESTRICTION_SITE = "GGCC"
