@@ -47,6 +47,9 @@ class SequenceProcessor:
         and generating fragments suitable for primer design, with proper
         coordinate tracking and length validation.
         
+        Internal processing uses 0-based coordinates.
+        Output coordinates are 1-based for display.
+        
         Args:
             sequences: Dictionary mapping sequence IDs to DNA sequences
             restriction_site: Restriction site pattern, defaults to Config.RESTRICTION_SITE
@@ -62,145 +65,96 @@ class SequenceProcessor:
             >>> fragments = SequenceProcessor.cut_at_restriction_sites(sequences, "GAATTC")
             >>> print(f"Generated {len(fragments)} fragments")
         """
-        logger.debug(f"=== RESTRICTION SITE CUTTING ===")
-        logger.debug(f"Processing {len(sequences)} sequences for restriction site cutting")
+        logger.debug(f"=== RESTRICTION SITE CUTTING (UNIFIED COORDINATES) ===")
         
         if restriction_site is None:
             restriction_site = Config.RESTRICTION_SITE
         
-        # Handle case where no restriction site is defined
         if not restriction_site:
-            logger.debug("No restriction site pattern defined - keeping sequences intact")
+            logger.debug("No restriction site - keeping sequences intact")
             fragments = []
             
             for seq_id, sequence in sequences.items():
                 fragment = {
                     "id": seq_id,
                     "chr": seq_id,
-                    "start": 1,  # 1-based genomic coordinates
-                    "end": len(sequence),
-                    "sequence": sequence
+                    "start": 1,  # 1-based for output
+                    "end": len(sequence),  # 1-based for output
+                    "sequence": sequence,
+                    # Internal coordinates for processing (0-based)
+                    "_internal_start": 0,
+                    "_internal_end": len(sequence)
                 }
                 fragments.append(fragment)
-                logger.debug(f"Created intact fragment: {seq_id} ({len(sequence)} bp)")
             
-            logger.debug(f"Created {len(fragments)} intact fragments")
             return fragments
-            
-        # Compile and validate restriction site pattern
+        
+        # Compile restriction pattern
         try:
             restriction_pattern = re.compile(restriction_site, re.IGNORECASE)
-            logger.debug(f"Using restriction site pattern: {restriction_site}")
         except re.error as e:
-            error_msg = f"Invalid restriction site regex pattern: {restriction_site}"
-            logger.error(error_msg)
-            logger.debug(f"Regex compilation error: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(error_msg) from e
+            raise SequenceProcessingError(f"Invalid restriction site regex: {restriction_site}") from e
         
-        # Process each sequence for restriction site cutting
         fragments = []
-        total_sites_found = 0
         
         for seq_id, sequence in sequences.items():
-            try:
-                logger.debug(f"Processing sequence {seq_id} ({len(sequence)} bp)")
+            matches = list(restriction_pattern.finditer(sequence))
+            
+            if not matches:
+                # No restriction sites - keep entire sequence
+                fragment = {
+                    "id": seq_id,
+                    "chr": seq_id,
+                    "start": 1,  # 1-based for output
+                    "end": len(sequence),  # 1-based for output
+                    "sequence": sequence,
+                    "_internal_start": 0,  # 0-based for internal use
+                    "_internal_end": len(sequence)  # 0-based for internal use
+                }
+                fragments.append(fragment)
+                continue
+            
+            # Generate fragments between restriction sites
+            fragment_count = 0
+            last_end = 0  # 0-based position
+            
+            for match in matches:
+                start_pos = last_end  # 0-based
+                end_pos = match.start()  # 0-based
+                fragment_length = end_pos - start_pos
                 
-                # Find all restriction sites in sequence
-                matches = list(restriction_pattern.finditer(sequence))
-                sites_in_sequence = len(matches)
-                total_sites_found += sites_in_sequence
-                
-                if not matches:
-                    # No restriction sites found - keep entire sequence
-                    logger.debug(f"No restriction sites found in {seq_id} - keeping entire sequence")
-                    fragment = {
-                        "id": seq_id,
-                        "chr": seq_id,
-                        "start": 1,
-                        "end": len(sequence),
-                        "sequence": sequence
-                    }
-                    fragments.append(fragment)
-                    continue
-                
-                logger.debug(f"Found {sites_in_sequence} restriction sites in {seq_id}")
-                
-                # Generate fragments between restriction sites
-                fragment_count = 0
-                last_end = 0
-                
-                for i, match in enumerate(matches):
-                    start_pos = last_end
-                    end_pos = match.start()
-                    fragment_length = end_pos - start_pos
-                    
-                    # Check minimum fragment length requirement
-                    if fragment_length >= Config.MIN_SEGMENT_LENGTH:
-                        fragment = {
-                            "id": f"{seq_id}_frag{fragment_count}",
-                            "chr": seq_id,
-                            "start": start_pos + 1,  # Convert to 1-based coordinates
-                            "end": end_pos,
-                            "sequence": sequence[start_pos:end_pos]
-                        }
-                        fragments.append(fragment)
-                        fragment_count += 1
-                        
-                        logger.debug(f"Created fragment {fragment['id']}: {fragment_length} bp "
-                                   f"({fragment['start']}-{fragment['end']})")
-                    else:
-                        logger.debug(f"Skipped fragment {i} in {seq_id}: {fragment_length} bp < {Config.MIN_SEGMENT_LENGTH} bp minimum")
-                    
-                    last_end = match.end()
-                
-                # Handle final fragment after last restriction site
-                final_start = last_end
-                final_length = len(sequence) - final_start
-                
-                if final_length >= Config.MIN_SEGMENT_LENGTH:
+                if fragment_length >= Config.MIN_SEGMENT_LENGTH:
                     fragment = {
                         "id": f"{seq_id}_frag{fragment_count}",
                         "chr": seq_id,
-                        "start": final_start + 1,  # Convert to 1-based coordinates
-                        "end": len(sequence),
-                        "sequence": sequence[final_start:]
+                        "start": start_pos + 1,  # Convert to 1-based for output
+                        "end": end_pos,  # Convert to 1-based for output (end_pos is exclusive in 0-based)
+                        "sequence": sequence[start_pos:end_pos],
+                        "_internal_start": start_pos,  # Keep 0-based for internal use
+                        "_internal_end": end_pos  # Keep 0-based for internal use
                     }
                     fragments.append(fragment)
                     fragment_count += 1
-                    
-                    logger.debug(f"Created final fragment {fragment['id']}: {final_length} bp "
-                               f"({fragment['start']}-{fragment['end']})")
-                else:
-                    logger.debug(f"Skipped final fragment in {seq_id}: {final_length} bp < {Config.MIN_SEGMENT_LENGTH} bp minimum")
                 
-                logger.debug(f"Generated {fragment_count} valid fragments from {seq_id}")
-                    
-            except Exception as e:
-                error_msg = f"Error processing sequence {seq_id} for restriction sites"
-                logger.error(error_msg)
-                logger.debug(f"Processing error: {str(e)}", exc_info=True)
-                # Continue with other sequences rather than failing completely
-                continue
+                last_end = match.end()  # 0-based
+            
+            # Handle final fragment
+            final_start = last_end  # 0-based
+            final_length = len(sequence) - final_start
+            
+            if final_length >= Config.MIN_SEGMENT_LENGTH:
+                fragment = {
+                    "id": f"{seq_id}_frag{fragment_count}",
+                    "chr": seq_id,
+                    "start": final_start + 1,  # Convert to 1-based for output
+                    "end": len(sequence),  # 1-based for output
+                    "sequence": sequence[final_start:],
+                    "_internal_start": final_start,  # 0-based for internal use
+                    "_internal_end": len(sequence)  # 0-based for internal use
+                }
+                fragments.append(fragment)
         
-        # Log comprehensive cutting results
-        logger.debug(f"=== RESTRICTION SITE CUTTING RESULTS ===")
-        logger.debug(f"Input sequences: {len(sequences)}")
-        logger.debug(f"Total restriction sites found: {total_sites_found}")
-        logger.debug(f"Output fragments: {len(fragments)}")
-        logger.debug(f"Minimum fragment length: {Config.MIN_SEGMENT_LENGTH} bp")
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            # Fragment length statistics
-            fragment_lengths = [len(frag['sequence']) for frag in fragments]
-            if fragment_lengths:
-                avg_length = sum(fragment_lengths) / len(fragment_lengths)
-                min_length = min(fragment_lengths)
-                max_length = max(fragment_lengths)
-                logger.debug(f"Fragment length statistics: avg={avg_length:.0f}, min={min_length}, max={max_length}")
-        
-        logger.info(f"Restriction site cutting completed: {len(fragments)} fragments generated")
-        logger.debug(f"=== END RESTRICTION SITE CUTTING ===")
-        
+        logger.debug(f"Generated {len(fragments)} fragments with unified coordinates")
         return fragments
     
     @staticmethod

@@ -837,8 +837,8 @@ class FileIO:
         
         try:
             # Use SequenceAnalyzer to analyze the file structure
-            from ..helpers import SequenceAnalyzer
-            analysis = SequenceAnalyzer.analyze_file(file_path)
+            from ..utils.direct_mode_utils import DirectModeUtils
+            analysis = DirectModeUtils.analyze_sequence_file(file_path)
             
             if "error" in analysis:
                 error_msg = f"Error analyzing file: {analysis['error']}"
@@ -846,7 +846,7 @@ class FileIO:
                 raise FileFormatError(error_msg)
                 
             # Get recommended columns from analysis
-            name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
+            name_col, seq_col = DirectModeUtils.get_recommended_columns(analysis)
             logger.debug(f"Recommended columns: name='{name_col}', sequence='{seq_col}'")
             
             # Determine file type and load with pandas

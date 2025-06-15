@@ -68,6 +68,7 @@ class AnnotationProcessor:
     def process_gff_chunk(cls, chunk: List[str]) -> List[Dict]:
         """
         Process a chunk of GFF file lines.
+        GFF uses 1-based coordinates - convert to 0-based for internal processing.
         Used for parallel processing.
         
         Args:
@@ -78,49 +79,37 @@ class AnnotationProcessor:
         """
         chunk_genes = []
         
-        # Parse RETAIN_TYPES - handle both string and list formats
-        if isinstance(Config.RETAIN_TYPES, str):
-            # Split by comma and clean whitespace
-            retain_types = [t.strip().lower() for t in Config.RETAIN_TYPES.split(',')]
-        elif isinstance(Config.RETAIN_TYPES, list):
-            retain_types = [t.lower() for t in Config.RETAIN_TYPES]
-        else:
-            retain_types = [str(Config.RETAIN_TYPES).lower()]
-        
         for line in chunk:
             if line.startswith('#'):
                 continue
-
+            
             parts = line.strip().split('\t')
             if len(parts) < 9:
                 continue
-
-            seqname, _, ftype, start, end, _, strand, _, attributes = parts
             
-            # Check if feature type is in our retain list
-            if ftype.lower() not in retain_types:
-                continue
-
-            attr_dict = cls.parse_gff_attributes(attributes)
-
-            # Get the best available identifier - no meaningfulness filtering
-            name = attr_dict.get('name')
-            gene_id = attr_dict.get('id')
-            locus_tag = attr_dict.get('locus_tag')
+            seqname, _, ftype, start_1based, end_1based, _, strand, _, attributes = parts
             
-            # Use the first available identifier (prefer name, then id, then locus_tag)
-            identifier = name or gene_id or locus_tag or f"feature_{start}_{end}"
-
+            # Convert from 1-based GFF coordinates to 0-based internal coordinates
             try:
+                start_0based = int(start_1based) - 1  # Convert to 0-based
+                end_0based = int(end_1based)  # GFF end is inclusive, so this becomes exclusive 0-based
+                
+                attr_dict = cls.parse_gff_attributes(attributes)
+                identifier = attr_dict.get('name') or attr_dict.get('id') or f"feature_{start_1based}_{end_1based}"
+                
                 chunk_genes.append({
                     "chr": seqname,
-                    "start": int(start),
-                    "end": int(end),
+                    "start": start_0based,  # 0-based for internal use
+                    "end": end_0based,      # 0-based exclusive for internal use
+                    "start_1based": int(start_1based),  # Keep original for reference
+                    "end_1based": int(end_1based),      # Keep original for reference
                     "strand": strand,
                     "id": identifier
                 })
+                
             except ValueError as e:
-                logger.debug(f"Error converting position data: {e}")
+                logger.debug(f"Error converting coordinates: {e}")
+                continue
         
         return chunk_genes
     
@@ -331,26 +320,25 @@ class AnnotationProcessor:
         overlapping_genes = []
         
         for gene in genes:
-            # Check if gene is on the same chromosome/sequence
             if gene.get("chr") != fragment_chr:
                 continue
             
-            gene_start = gene.get("start")
-            gene_end = gene.get("end")
+            gene_start = gene.get("start")  # 0-based
+            gene_end = gene.get("end")      # 0-based exclusive
             
             if gene_start is None or gene_end is None:
                 continue
             
-            # Apply overlap margin to gene coordinates
-            gene_start_with_margin = max(1, gene_start - overlap_margin)
+            # Apply margin (all 0-based)
+            gene_start_with_margin = max(0, gene_start - overlap_margin)
             gene_end_with_margin = gene_end + overlap_margin
             
-            # Check for overlap: genes overlap if they don't NOT overlap
-            # No overlap if: fragment_end < gene_start OR fragment_start > gene_end
-            if not (fragment_end < gene_start_with_margin or fragment_start > gene_end_with_margin):
+            # Check for overlap (all 0-based)
+            if not (fragment_end <= gene_start_with_margin or fragment_start >= gene_end_with_margin):
                 overlapping_genes.append(gene)
         
         return overlapping_genes
+
 
     @classmethod
     def create_gene_fragment(cls, fragment: Dict, gene: Dict, gene_idx: int, 
