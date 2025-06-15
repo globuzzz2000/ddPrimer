@@ -18,7 +18,7 @@ import subprocess
 from ..config import SequenceProcessingError
 
 # Set up logger
-logger = logging.getLogger("ddPrimer.helpers")
+logger = logging.getLogger(__name__)
 
 
 class DirectMasking:
@@ -70,25 +70,39 @@ class DirectMasking:
             
             # Process BLAST output
             if blast_output:
-                fields = blast_output.split('\t')
-                if len(fields) >= 9:
-                    _, chrom, percent_identity, query_coverage, _, _, start, end, _ = fields
-                    
-                    # Convert to appropriate types
-                    percent_identity = float(percent_identity)
-                    query_coverage = float(query_coverage)
-                    start = int(start)
-                    end = int(end)
-                    
-                    # Ensure start is always less than end (BLAST might report them reversed)
-                    if start > end:
-                        start, end = end, start
-                    
-                    # Check if the alignment meets our criteria
-                    if percent_identity >= min_identity and query_coverage >= min_coverage:
-                        logger.debug(f"Found sequence match on {chrom} at positions {start}-{end}, "
-                                    f"identity: {percent_identity}%, coverage: {query_coverage}%")
-                        return chrom, start, end, percent_identity
+                # Split by lines first, then process each line
+                lines = blast_output.strip().split('\n')
+                for line in lines:
+                    if not line.strip():
+                        continue
+                        
+                    fields = line.strip().split('\t')
+                    if len(fields) >= 9:
+                        try:
+                            # Extract fields by index to handle variable number of fields
+                            qseqid = fields[0]
+                            chrom = fields[1]
+                            percent_identity = float(fields[2])
+                            query_coverage = float(fields[3])
+                            qstart = int(fields[4])
+                            qend = int(fields[5])
+                            start = int(fields[6])
+                            end = int(fields[7])
+                            length = int(fields[8])
+                            
+                            # Ensure start is always less than end (BLAST might report them reversed)
+                            if start > end:
+                                start, end = end, start
+                            
+                            # Check if the alignment meets our criteria
+                            if percent_identity >= min_identity and query_coverage >= min_coverage:
+                                logger.debug(f"Found sequence match on {chrom} at positions {start}-{end}, "
+                                            f"identity: {percent_identity}%, coverage: {query_coverage}%")
+                                return chrom, start, end, percent_identity
+                                
+                        except ValueError as parse_error:
+                            logger.debug(f"Error parsing BLAST output line '{line}': {str(parse_error)}")
+                            continue  # Try next line if this one is malformed
             
             logger.debug("No significant matches found in BLAST search")
             return None, None, None, None
@@ -112,14 +126,14 @@ class DirectMasking:
                     logger.warning(f"Could not remove temporary file {temp_file_path}: {str(e)}")
 
     @staticmethod
-    def add_missing_sequences(df, masked_sequences, matching_status=None):
+    def add_missing_sequences(df, all_sequences, matching_status=None):
         """
         Check for sequences that didn't get primers and add them to the results.
         Also add rows for sequences that failed to match to reference genome.
         
         Args:
             df (pandas.DataFrame): DataFrame with primer results
-            masked_sequences (dict): Dictionary of masked sequences
+            all_sequences (dict): Dictionary of all original sequences (including those that failed matching)
             matching_status (dict, optional): Dictionary with reference matching status for sequences
                 
         Returns:
@@ -140,7 +154,7 @@ class DirectMasking:
         sequences_with_primers.update(df.loc[valid, "Gene"].astype(str).unique())
         
         # 2) All the input sequence IDs
-        all_input = set(masked_sequences.keys())
+        all_input = set(all_sequences.keys())
         
         # 3) Which ones were matched but yielded no primers?
         no_primer = all_input - sequences_with_primers

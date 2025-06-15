@@ -21,7 +21,7 @@ from ..helpers import run_alignment_workflow, LastZRunner
 from . import common
 
 # Set up logger
-logger = logging.getLogger("ddPrimer")
+logger = logging.getLogger(__name__)
 
 
 def run(args):
@@ -62,7 +62,7 @@ def run(args):
         return False
     except Exception as e:
         logger.error(f"Error in alignment mode workflow: {e}")
-        logger.debug("Error details:", exc_info=True)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
 
 
@@ -135,7 +135,7 @@ def _run_lastz_only_mode(args):
         
     except Exception as e:
         logger.error(f"Error running LastZ alignment: {e}")
-        logger.debug("Error details:", exc_info=True)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise AlignmentError(f"LastZ alignment failed: {e}")
 
 
@@ -396,5 +396,5 @@ def _setup_and_run_alignment_workflow(args, reference_file):
             
         except Exception as e:
             logger.error(f"Error in alignment workflow: {e}")
-            logger.debug("Error details:", exc_info=True)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Alignment workflow failed: {e}")

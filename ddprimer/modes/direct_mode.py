@@ -21,7 +21,7 @@ from . import common
 from ..helpers import DirectMasking, SequenceAnalyzer
 
 # Set up logger
-logger = logging.getLogger("ddPrimer")
+logger = logging.getLogger(__name__)
 
 
 def run(args):
@@ -303,23 +303,45 @@ def _mask_sequences_with_snps(sequences, ref_fasta, ref_vcf, all_sequences):
                 logger.debug(f"Matched sequence {seq_id} to {source_chrom}:{start_pos}-{end_pos} "
                            f"with {identity}% identity")
                 
-                # Extract only the variants for this specific region using SNPMaskingProcessor
-                region_variants = snp_processor.get_region_variants(ref_vcf, source_chrom, start_pos, end_pos)
-                
-                # Adjust variant positions to sequence coordinates
-                adjusted_variants = set()
-                for var_pos in region_variants:
-                    # Convert 1‑based genome coordinate to 1‑based sequence coordinate
-                    seq_pos = (var_pos - start_pos) + 1
-                    adjusted_variants.add(seq_pos)
-                
-                # Mask the sequence with adjusted variants
-                if adjusted_variants:
-                    logger.debug(f"Masking sequence {seq_id} with {len(adjusted_variants)} variants")
-                    masked_sequence = snp_processor.mask_variants(sequence, adjusted_variants)
-                    masked_sequences[seq_id] = masked_sequence
-                else:
-                    logger.debug(f"No variants found in region, using original sequence")
+                # Extract variants for this specific region
+                try:
+                    # Get all variants from the VCF file for this chromosome
+                    chrom_variants = snp_processor.get_variants(
+                        ref_vcf, 
+                        chromosome=source_chrom,
+                        min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
+                        min_qual=Config.SNP_QUALITY_THRESHOLD
+                    )
+                    
+                    # Filter variants to only those in our region
+                    region_variants = []
+                    if source_chrom in chrom_variants:
+                        for variant in chrom_variants[source_chrom]:
+                            if start_pos <= variant.position <= end_pos:
+                                region_variants.append(variant)
+                    
+                    # Create a temporary sequences dict and variants dict for masking
+                    temp_sequences = {seq_id: sequence}
+                    temp_variants = {source_chrom: region_variants} if region_variants else {}
+                    
+                    # Apply masking using the standard method
+                    if temp_variants:
+                        logger.debug(f"Masking sequence {seq_id} with {len(region_variants)} variants in region")
+                        masked_result = snp_processor.mask_sequences_for_primer_design(
+                            sequences=temp_sequences,
+                            variants=temp_variants,
+                            flanking_size=Config.SNP_FLANKING_MASK_SIZE,
+                            use_soft_masking=Config.SNP_USE_SOFT_MASKING
+                        )
+                        masked_sequences[seq_id] = masked_result[seq_id]
+                    else:
+                        logger.debug(f"No variants found in region, using original sequence")
+                        masked_sequences[seq_id] = sequence
+                        
+                except Exception as variant_error:
+                    logger.warning(f"Error extracting variants for sequence {seq_id}: {str(variant_error)}")
+                    logger.debug(f"Variant extraction error details: {str(variant_error)}", exc_info=True)
+                    # Use original sequence if variant extraction fails
                     masked_sequences[seq_id] = sequence
             else:
                 # Sequence could not be matched to reference

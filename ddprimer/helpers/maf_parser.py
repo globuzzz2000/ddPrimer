@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # MAFParser module for ddPrimer pipeline
 # For parsing MAF alignment files and masking sequences
 # Integrated with ddPrimer by Jakob (2025)
@@ -21,6 +23,9 @@ from tqdm import tqdm
 # Import package modules
 from ..config import Config, AlignmentError
 
+# Set up logger
+logger = logging.getLogger(__name__)
+
 
 class MAFParser:
     """
@@ -36,7 +41,6 @@ class MAFParser:
             config: Configuration object (defaults to global Config)
         """
         self.config = config if config else Config
-        self.logger = logging.getLogger("ddPrimer.helpers")
         self.alignments = defaultdict(list)  # Store alignments by reference sequence
         self.masked_regions = defaultdict(list)  # Store regions to mask
     
@@ -53,10 +57,10 @@ class MAFParser:
         Raises:
             AlignmentError: If there's an error parsing the MAF file
         """
-        self.logger.debug(f"Parsing MAF file: {maf_file}")
+        logger.debug(f"Parsing MAF file: {maf_file}")
         
         if not os.path.exists(maf_file):
-            self.logger.error(f"MAF file not found: {maf_file}")
+            logger.error(f"MAF file not found: {maf_file}")
             raise AlignmentError(f"MAF file not found: {maf_file}")
             
         try:
@@ -91,12 +95,12 @@ class MAFParser:
                 if current_alignment:
                     self._process_alignment_block(current_alignment)
             
-            self.logger.debug(f"Parsed {len(self.alignments)} reference sequences with alignments")
+            logger.debug(f"Parsed {len(self.alignments)} reference sequences with alignments")
             return self.alignments
             
         except Exception as e:
-            self.logger.error(f"Error parsing MAF file: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error parsing MAF file: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to parse MAF file: {str(e)}")
     
     def _process_alignment_block(self, alignment_lines):
@@ -202,10 +206,10 @@ class MAFParser:
             AlignmentError: If no alignments are loaded or conservation analysis fails
         """
         if not self.alignments:
-            self.logger.error("No alignments loaded. Call parse_maf_file() first.")
+            logger.error("No alignments loaded. Call parse_maf_file() first.")
             raise AlignmentError("No alignments loaded. Call parse_maf_file() first.")
             
-        self.logger.debug(f"Identifying conserved regions (min identity: {min_identity}%, min length: {min_length}bp)")
+        logger.debug(f"Identifying conserved regions (min identity: {min_identity}%, min length: {min_length}bp)")
         
         try:
             conserved_regions = defaultdict(list)
@@ -251,13 +255,13 @@ class MAFParser:
                         })
             
             total_regions = sum(len(regions) for regions in conserved_regions.values())
-            self.logger.debug(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
+            logger.debug(f"Identified {total_regions} conserved regions across {len(conserved_regions)} chromosomes")
             
             return conserved_regions
             
         except Exception as e:
-            self.logger.error(f"Error identifying conserved regions: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error identifying conserved regions: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to identify conserved regions: {str(e)}")
     
     def _find_conserved_blocks(self, ref_seq, qry_seq, ref_start, min_length):
@@ -364,10 +368,10 @@ class MAFParser:
         Raises:
             AlignmentError: If no alignments are loaded or extraction fails
         """
-        self.logger.debug("Extracting reference sequences from MAF file")
+        logger.debug("Extracting reference sequences from MAF file")
         
         if not self.alignments:
-            self.logger.error("No alignments loaded. Call parse_maf_file() first.")
+            logger.error("No alignments loaded. Call parse_maf_file() first.")
             raise AlignmentError("No alignments loaded. Call parse_maf_file() first.")
         
         try:
@@ -379,7 +383,7 @@ class MAFParser:
             
             # For each chromosome/reference sequence in the alignments
             for chrom, alignments in self.alignments.items():
-                self.logger.debug(f"Processing reference sequence: {chrom}")
+                logger.debug(f"Processing reference sequence: {chrom}")
                 
                 # Find the maximum coordinate to determine sequence length
                 max_end = 0
@@ -407,19 +411,19 @@ class MAFParser:
                 # Convert to string and store
                 reference_sequences[chrom] = ''.join(sequence)
                 
-                self.logger.debug(f"Extracted reference sequence {chrom}: {len(reference_sequences[chrom])} bp")
+                logger.debug(f"Extracted reference sequence {chrom}: {len(reference_sequences[chrom])} bp")
             
             # Check if we have empty sequences
             for chrom, seq in reference_sequences.items():
                 if set(seq) == {'N'}:
-                    self.logger.warning(f"Reference sequence {chrom} contains only N's")
+                    logger.warning(f"Reference sequence {chrom} contains only N's")
             
-            self.logger.debug(f"Extracted {len(reference_sequences)} reference sequences from MAF file")
+            logger.debug(f"Extracted {len(reference_sequences)} reference sequences from MAF file")
             return reference_sequences
             
         except Exception as e:
-            self.logger.error(f"Error extracting reference sequences from MAF: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error extracting reference sequences from MAF: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to extract reference sequences: {str(e)}")
     
     def mask_non_conserved_regions(self, input_file_or_dict, output_file, conserved_regions, min_identity=80):
@@ -438,7 +442,7 @@ class MAFParser:
         Raises:
             AlignmentError: If masking fails
         """
-        self.logger.debug(f"Masking non-conserved regions in reference genome")
+        logger.debug(f"Masking non-conserved regions in reference genome")
         
         try:
             # Get sequences either from file or from provided dictionary
@@ -450,16 +454,16 @@ class MAFParser:
             # Get the list of alignment chromosome names
             align_chroms = list(conserved_regions.keys())
             
-            self.logger.debug(f"FASTA IDs ({len(fasta_ids)}): {', '.join(list(fasta_ids.keys())[:5])}...")
-            self.logger.debug(f"Alignment sequence IDs ({len(align_chroms)}): {', '.join(align_chroms[:5])}...")
+            logger.debug(f"FASTA IDs ({len(fasta_ids)}): {', '.join(list(fasta_ids.keys())[:5])}...")
+            logger.debug(f"Alignment sequence IDs ({len(align_chroms)}): {', '.join(align_chroms[:5])}...")
             
             # Create chromosome mapping between alignment and FASTA sequences
             chrom_map = self._map_chromosomes(align_chroms, fasta_ids.keys())
             
             # Log the mapping results
-            self.logger.debug("Chromosome mapping results:")
+            logger.debug("Chromosome mapping results:")
             for ac, fid in chrom_map.items():
-                self.logger.debug(f"  Mapped: '{ac}' => '{fid}'")
+                logger.debug(f"  Mapped: '{ac}' => '{fid}'")
             
             # Initialize masks with all positions masked (value of 0)
             masks = {}
@@ -490,21 +494,21 @@ class MAFParser:
             mask_percent = (total_n_count / total_bases) * 100 if total_bases > 0 else 0
             unmask_percent = 100 - mask_percent
             
-            self.logger.debug(f"Created masked FASTA file: {output_file}")
-            self.logger.debug(f"Total statistics: {applied_regions}/{total_regions} regions applied")
-            self.logger.debug(f"Masking summary: {total_n_count}/{total_bases} bases masked to N ({mask_percent:.2f}%)")
-            self.logger.debug(f"Conserved bases: {total_bases - total_n_count}/{total_bases} bases kept ({unmask_percent:.2f}%)")
+            logger.debug(f"Created masked FASTA file: {output_file}")
+            logger.debug(f"Total statistics: {applied_regions}/{total_regions} regions applied")
+            logger.debug(f"Masking summary: {total_n_count}/{total_bases} bases masked to N ({mask_percent:.2f}%)")
+            logger.debug(f"Conserved bases: {total_bases - total_n_count}/{total_bases} bases kept ({unmask_percent:.2f}%)")
             
             # Check if everything was masked
             if total_n_count == total_bases:
-                self.logger.warning("ALL bases in output FASTA are masked (100% Ns)")
-                self.logger.warning("This indicates no regions were successfully mapped between alignment and FASTA")
+                logger.warning("ALL bases in output FASTA are masked (100% Ns)")
+                logger.warning("This indicates no regions were successfully mapped between alignment and FASTA")
             
             return output_file
             
         except Exception as e:
-            self.logger.error(f"Error masking non-conserved regions: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error masking non-conserved regions: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to mask non-conserved regions: {str(e)}")
     
     def _load_input_sequences(self, input_file_or_dict):
@@ -522,11 +526,11 @@ class MAFParser:
             sequences = {}
             for record in SeqIO.parse(input_file_or_dict, "fasta"):
                 sequences[record.id] = str(record.seq)
-            self.logger.debug(f"Loaded {len(sequences)} sequences from {input_file_or_dict}")
+            logger.debug(f"Loaded {len(sequences)} sequences from {input_file_or_dict}")
             return sequences
         else:
             # Use provided dictionary
-            self.logger.debug(f"Using provided dictionary with {len(input_file_or_dict)} sequences")
+            logger.debug(f"Using provided dictionary with {len(input_file_or_dict)} sequences")
             return input_file_or_dict
             
     def _apply_region_masks(self, sequences, masks, reverse_map, conserved_regions, min_identity):
@@ -554,10 +558,10 @@ class MAFParser:
             corresponding_align_chroms = reverse_map.get(fasta_id, [])
             
             if not corresponding_align_chroms:
-                self.logger.debug(f"No alignment chromosomes map to FASTA ID '{fasta_id}'")
+                logger.debug(f"No alignment chromosomes map to FASTA ID '{fasta_id}'")
                 continue
                 
-            self.logger.debug(f"Processing FASTA ID '{fasta_id}', mapped to alignment chromosomes: {corresponding_align_chroms}")
+            logger.debug(f"Processing FASTA ID '{fasta_id}', mapped to alignment chromosomes: {corresponding_align_chroms}")
             
             # Apply all relevant conserved regions
             regions_applied = 0
@@ -565,7 +569,7 @@ class MAFParser:
             
             for align_chrom in corresponding_align_chroms:
                 regions = conserved_regions.get(align_chrom, [])
-                self.logger.debug(f"  - Applying {len(regions)} regions from alignment chromosome '{align_chrom}'")
+                logger.debug(f"  - Applying {len(regions)} regions from alignment chromosome '{align_chrom}'")
                 
                 # Use progress bar for large numbers of regions
                 region_iter = regions
@@ -589,7 +593,7 @@ class MAFParser:
             
             applied_regions += regions_applied
             unmasked_bases += bases_unmasked
-            self.logger.debug(f"Applied {regions_applied} conserved regions to {fasta_id}, unmasked {bases_unmasked} bases")
+            logger.debug(f"Applied {regions_applied} conserved regions to {fasta_id}, unmasked {bases_unmasked} bases")
         
         # Create masked sequences
         masked_records = []
@@ -613,7 +617,7 @@ class MAFParser:
                 total_n_count += n_count
                 n_percent = (n_count / len(sequence)) * 100 if len(sequence) > 0 else 0
                 
-                self.logger.debug(f"Sequence {seq_id}: {n_count}/{len(sequence)} bases masked to N ({n_percent:.2f}%)")
+                logger.debug(f"Sequence {seq_id}: {n_count}/{len(sequence)} bases masked to N ({n_percent:.2f}%)")
                 
                 # Create new record with masked sequence
                 masked_record = SeqRecord(
@@ -625,7 +629,7 @@ class MAFParser:
                 masked_records.append(masked_record)
             else:
                 # No mask for this chromosome - include unmasked
-                self.logger.debug(f"No mask created for {seq_id}, adding unmasked sequence")
+                logger.debug(f"No mask created for {seq_id}, adding unmasked sequence")
                 masked_record = SeqRecord(
                     Seq(sequence),
                     id=seq_id,
@@ -654,7 +658,7 @@ class MAFParser:
         Returns:
             dict: Coordinate mapping from reference to query
         """
-        self.logger.debug("Generating coordinate map between reference and query genomes")
+        logger.debug("Generating coordinate map between reference and query genomes")
         
         coordinate_map = {}
         
@@ -683,7 +687,7 @@ class MAFParser:
         
         # Log statistics
         total_mappings = sum(len(pos_map) for pos_map in coordinate_map.values())
-        self.logger.debug(f"Generated coordinate map with {total_mappings} position mappings across {len(coordinate_map)} chromosomes")
+        logger.debug(f"Generated coordinate map with {total_mappings} position mappings across {len(coordinate_map)} chromosomes")
         
         return coordinate_map
     
@@ -692,7 +696,7 @@ class MAFParser:
         Map variant positions from second genome to reference genome coordinates.
         
         Args:
-            second_variants (dict): Dictionary mapping second genomme chromosomes to sets of variant positions
+            second_variants (dict): Dictionary mapping second genome chromosomes to sets of variant positions
             coordinate_map (dict): Coordinate mapping from reference to second genome
             
         Returns:
@@ -701,7 +705,7 @@ class MAFParser:
         Raises:
             AlignmentError: If mapping fails
         """
-        self.logger.debug("Mapping second genome variants to reference genome coordinates")
+        logger.debug("Mapping second genome variants to reference genome coordinates")
         
         try:
             # Dictionary to store mapped variants for each reference chromosome
@@ -711,17 +715,18 @@ class MAFParser:
             reverse_map = self._create_reverse_coordinate_map(coordinate_map)
             
             # Count statistics
-            total_second_variants = sum(len(pos_set) for pos_set in second_variants.values())
+            total_second_variants = sum(len(variant_list) for variant_list in second_variants.values())
             mapped_count = 0
             
             # For each second genome chromosome and its variants
-            for qry_chrom, positions in second_variants.items():
+            for qry_chrom, variant_list in second_variants.items():
                 if qry_chrom not in reverse_map:
-                    self.logger.debug(f"No mapping found for second genome chromosome: {qry_chrom}")
+                    logger.debug(f"No mapping found for second genome chromosome: {qry_chrom}")
                     continue
                     
-                # For each variant position
-                for pos in positions:
+                # For each variant 
+                for variant in variant_list:
+                    pos = variant.position
                     # Check if this position is in our mapping
                     if pos in reverse_map[qry_chrom]:
                         # Get the corresponding reference position
@@ -731,21 +736,23 @@ class MAFParser:
                         
                         # Add to mapped variants
                         if ref_chrom not in mapped_variants:
-                            mapped_variants[ref_chrom] = set()
+                            mapped_variants[ref_chrom] = []
                             
-                        mapped_variants[ref_chrom].add(ref_pos)
+                        # Create new variant with mapped position
+                        mapped_variant = variant._replace(position=ref_pos)
+                        mapped_variants[ref_chrom].append(mapped_variant)
                         mapped_count += 1
             
             # Log mapping statistics
-            self.logger.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second genome variants to reference genome")
+            logger.debug(f"Successfully mapped {mapped_count}/{total_second_variants} second genome variants to reference genome")
             for ref_chrom, variants in mapped_variants.items():
-                self.logger.debug(f"Reference chromosome {ref_chrom}: {len(variants)} mapped variants")
+                logger.debug(f"Reference chromosome {ref_chrom}: {len(variants)} mapped variants")
             
             return mapped_variants
             
         except Exception as e:
-            self.logger.error(f"Error mapping second genome variants: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error mapping second genome variants: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to map second genome variants: {str(e)}")
     
     
@@ -794,10 +801,10 @@ class MAFParser:
         Raises:
             AlignmentError: If analysis fails
         """
-        self.logger.debug(f"Analyzing MAF file structure: {maf_file}")
+        logger.debug(f"Analyzing MAF file structure: {maf_file}")
         
         if not os.path.exists(maf_file):
-            self.logger.error(f"MAF file not found: {maf_file}")
+            logger.error(f"MAF file not found: {maf_file}")
             raise AlignmentError(f"MAF file not found: {maf_file}")
             
         try:
@@ -863,10 +870,10 @@ class MAFParser:
                                 seq_ids.add(query_id)
             
             # Log results
-            self.logger.debug(f"MAF file contains {alignment_count} alignment blocks")
-            self.logger.debug(f"Found {len(seq_ids)} unique sequence IDs: {', '.join(list(seq_ids)[:5])}...")
-            self.logger.debug(f"Reference sequences ({len(ref_seq_ids)}): {', '.join(list(ref_seq_ids)[:5])}...")
-            self.logger.debug(f"Query sequences ({len(query_seq_ids)}): {', '.join(list(query_seq_ids)[:5])}...")
+            logger.debug(f"MAF file contains {alignment_count} alignment blocks")
+            logger.debug(f"Found {len(seq_ids)} unique sequence IDs: {', '.join(list(seq_ids)[:5])}...")
+            logger.debug(f"Reference sequences ({len(ref_seq_ids)}): {', '.join(list(ref_seq_ids)[:5])}...")
+            logger.debug(f"Query sequences ({len(query_seq_ids)}): {', '.join(list(query_seq_ids)[:5])}...")
             
             return {
                 'alignment_count': alignment_count,
@@ -876,8 +883,8 @@ class MAFParser:
             }
             
         except Exception as e:
-            self.logger.error(f"Error analyzing MAF file: {str(e)}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error analyzing MAF file: {str(e)}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"MAF file analysis failed: {str(e)}")
     
     def _map_chromosomes(self, align_chroms, fasta_ids):
@@ -936,7 +943,7 @@ class MAFParser:
             unmapped_fasta = [fid for fid in fasta_ids if fid not in chrom_map.values()]
             
             if unmapped_align and unmapped_fasta:
-                self.logger.debug("Using fallback positional mapping for unmapped chromosomes")
+                logger.debug("Using fallback positional mapping for unmapped chromosomes")
                 
                 # Try to sort both lists in a meaningful way
                 if all(c.isdigit() for c in unmapped_align):

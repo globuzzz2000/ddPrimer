@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # This code is based on PLastZ.py, originally created by Antoine Ho (AntoineHo)
 # and obtained from GitHub (https://github.com/AntoineHo/PLastZ).
 # It has been modified and integrated into ddPrimer for direct integration
@@ -27,6 +29,9 @@ from Bio import SeqIO
 # Import package modules
 from ..config import Config, AlignmentError
 
+# Set up logger
+logger = logging.getLogger(__name__)
+
 
 class LastZRunner:
     """
@@ -42,7 +47,6 @@ class LastZRunner:
             config: Configuration object (defaults to global Config)
         """
         self.config = config if config else Config
-        self.logger = logging.getLogger("ddPrimer.helpers")
     
     def create_directory(self, path):
         """
@@ -62,8 +66,8 @@ class LastZRunner:
             return os.path.abspath(path)
         except OSError as e:
             if e.errno != errno.EEXIST:
-                self.logger.error(f"Cannot create directory: {path}")
-                self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.error(f"Cannot create directory: {path}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 raise AlignmentError(f"Cannot create directory: {path}")
             else:
                 return os.path.abspath(path)
@@ -83,14 +87,14 @@ class LastZRunner:
             stdout, _ = proc.communicate()
             
             if proc.returncode != 0:
-                self.logger.warning(f"Command returned non-zero exit code: {proc.returncode}")
-                self.logger.debug(f"Command: {cmd}")
-                self.logger.debug(f"Output: {stdout.decode() if stdout else 'No output'}")
+                logger.warning(f"Command returned non-zero exit code: {proc.returncode}")
+                logger.debug(f"Command: {cmd}")
+                logger.debug(f"Output: {stdout.decode() if stdout else 'No output'}")
             
             return proc.returncode
         except Exception as e:
-            self.logger.error(f"Error executing command: {cmd}")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error executing command: {cmd}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             return -1
     
     def run_commands_parallel(self, commands, processes=None):
@@ -105,13 +109,13 @@ class LastZRunner:
             AlignmentError: If commands fail to execute
         """
         if not commands:
-            self.logger.warning("No commands to execute")
+            logger.warning("No commands to execute")
             return
             
         if processes is None:
             processes = self.config.NUM_PROCESSES
         
-        self.logger.debug(f"Running {len(commands)} commands in parallel using {processes} processes")
+        logger.debug(f"Running {len(commands)} commands in parallel using {processes} processes")
         
         try:
             with Pool(processes=processes) as pool:
@@ -120,13 +124,13 @@ class LastZRunner:
             # Check for failures
             failed = sum(1 for r in results if r != 0)
             if failed > 0:
-                self.logger.warning(f"{failed}/{len(commands)} commands failed")
+                logger.warning(f"{failed}/{len(commands)} commands failed")
             else:
-                self.logger.debug(f"All {len(commands)} commands completed successfully")
+                logger.debug(f"All {len(commands)} commands completed successfully")
                 
         except Exception as e:
-            self.logger.error(f"Error in parallel command execution")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error in parallel command execution")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Parallel command execution failed: {str(e)}")
     
     def create_alignment_jobs(self, query_path, target_path, temp_dir, lastz_options=None):
@@ -150,7 +154,7 @@ class LastZRunner:
         extracted_sequences = []
         pairs_done = []
         
-        self.logger.debug(f"Creating alignment jobs for {query_path} vs {target_path}")
+        logger.debug(f"Creating alignment jobs for {query_path} vs {target_path}")
         
         try:
             # Extract unique sequence IDs from query and target
@@ -162,7 +166,7 @@ class LastZRunner:
             for tgt in SeqIO.parse(target_path, "fasta"):
                 target_contigs.append(tgt.id)
             
-            self.logger.debug(f"Found {len(query_contigs)} query sequences and {len(target_contigs)} target sequences")
+            logger.debug(f"Found {len(query_contigs)} query sequences and {len(target_contigs)} target sequences")
             
             # Create jobs for each sequence pair
             for query_id in query_contigs:
@@ -209,12 +213,12 @@ class LastZRunner:
                     
                     align_jobs.append(cmd)
             
-            self.logger.debug(f"Created {len(extract_jobs)} extraction jobs and {len(align_jobs)} alignment jobs")
+            logger.debug(f"Created {len(extract_jobs)} extraction jobs and {len(align_jobs)} alignment jobs")
             return extract_jobs, align_jobs
             
         except Exception as e:
-            self.logger.error(f"Error creating alignment jobs")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error creating alignment jobs")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise AlignmentError(f"Failed to create alignment jobs: {str(e)}")
     
     def run_parallel_alignment(self, ref_path, qry_path, output_dir, lastz_options=None, processes=None, keep_temp=False):
@@ -260,18 +264,18 @@ class LastZRunner:
             fai_files = [f"{ref_path}.fai"]
         
         try:
-            self.logger.debug("\nPreparing LastZ alignment...")
+            logger.debug("\nPreparing LastZ alignment...")
             extract_jobs, align_jobs = self.create_alignment_jobs(ref_path, qry_path, temp_dir, lastz_options)
             
-            self.logger.debug(f"Extracting sequences from reference and query genomes...")
+            logger.debug(f"Extracting sequences from reference and query genomes...")
             self.run_commands_parallel(extract_jobs, processes)
             
-            self.logger.info("Running LastZ alignments...")
+            logger.info("Running LastZ alignments...")
             self.run_commands_parallel(align_jobs, processes)
             
             # Combine all alignment results with new naming format
             output_file = os.path.join(alignments_dir, f"{ref_basename}_vs_{qry_basename}.maf")
-            self.logger.debug(f"Combining alignment results to {output_file}...")
+            logger.debug(f"Combining alignment results to {output_file}...")
             
             # Use Python's file I/O capabilities for a more elegant solution
             with open(output_file, 'w') as outfile:
@@ -285,19 +289,19 @@ class LastZRunner:
             if not keep_temp:
                 self._clean_up_temp_files(temp_dir, fai_files)
             
-            self.logger.debug(f"LastZ alignment completed successfully: {output_file}")
+            logger.debug(f"LastZ alignment completed successfully: {output_file}")
             return output_file
             
         except Exception as e:
-            self.logger.error(f"Error in LastZ alignment")
-            self.logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.error(f"Error in LastZ alignment")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
             
             # Attempt to clean up even if there was an error
             if not keep_temp:
                 try:
                     self._clean_up_temp_files(temp_dir, fai_files)
                 except Exception as cleanup_error:
-                    self.logger.warning(f"Error during cleanup after alignment failure: {str(cleanup_error)}")
+                    logger.warning(f"Error during cleanup after alignment failure: {str(cleanup_error)}")
             
             raise AlignmentError(f"LastZ alignment failed: {str(e)}")
     
@@ -310,21 +314,21 @@ class LastZRunner:
             temp_dir (str): Temporary directory to remove
             fai_files (list): List of .fai index files to remove
         """
-        self.logger.debug("Cleaning up temporary files...")
+        logger.debug("Cleaning up temporary files...")
         
         # Remove temp directory
         if os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
-                self.logger.debug(f"Removed temporary directory: {temp_dir}")
+                logger.debug(f"Removed temporary directory: {temp_dir}")
             except Exception as e:
-                self.logger.warning(f"Could not remove temporary directory {temp_dir}: {str(e)}")
+                logger.warning(f"Could not remove temporary directory {temp_dir}: {str(e)}")
         
         # Clean up .fai files
         for fai_file in fai_files:
             if os.path.exists(fai_file):
                 try:
                     os.remove(fai_file)
-                    self.logger.debug(f"Removed index file: {fai_file}")
+                    logger.debug(f"Removed index file: {fai_file}")
                 except Exception as e:
-                    self.logger.warning(f"Could not remove index file {fai_file}: {str(e)}")
+                    logger.warning(f"Could not remove index file {fai_file}: {str(e)}")

@@ -67,9 +67,3 @@ logs/
 output/
 results/
 ~*
-# Keep test data
-!ddprimer/tests/*.fna
-!ddprimer/tests/*.vcf.gz
-!ddprimer/tests/*.gff
-!ddprimer/tests/*.maf
-!ddprimer/tests/*.xlsx

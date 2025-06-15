@@ -389,7 +389,7 @@ class AnnotationProcessor:
         overlap_end = min(fragment_end, gene_end_with_margin)
         
         if overlap_start >= overlap_end:
-            logger.warning(f"Invalid overlap region for gene {gene_id}")
+            logger.debug(f"Invalid overlap region for gene {gene_id}")
             return None
         
         # Calculate positions within the fragment sequence

@@ -23,7 +23,7 @@ from .lastz_runner import LastZRunner
 from .maf_parser import MAFParser
 
 # Set up logger
-logger = logging.getLogger("ddPrimer.helpers")
+logger = logging.getLogger(__name__)
 
 
 def run_alignment_workflow(args, output_dir):
@@ -232,12 +232,15 @@ def _extract_variant_positions(args, snp_processor, conserved_regions, coordinat
     if args.snp and args.vcf:
         logger.info("Extracting variants from reference genome VCF...")
         try:
-            # Use region-specific variant extraction
-            ref_variants = snp_processor.extract_variants_by_regions(
-                args.vcf, conserved_regions
+            # Use process_vcf_with_chromosome_mapping method from standard_mode
+            ref_variants = snp_processor.process_vcf_with_chromosome_mapping(
+                args.vcf, 
+                args.fasta if hasattr(args, 'fasta') and args.fasta else None,
+                min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
+                min_qual=Config.SNP_QUALITY_THRESHOLD
             )
-            total_ref_variants = sum(len(positions) for positions in ref_variants.values())
-            logger.debug(f"Extracted {total_ref_variants} variants from reference genome for conserved regions")
+            total_ref_variants = sum(len(variant_list) for variant_list in ref_variants.values())
+            logger.debug(f"Extracted {total_ref_variants} variants from reference genome")
         except Exception as e:
             logger.error(f"Error extracting reference variants: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
@@ -247,49 +250,21 @@ def _extract_variant_positions(args, snp_processor, conserved_regions, coordinat
     if args.snp and args.second_vcf:
         logger.info("Extracting variants from second genome VCF...")
         try:
-            # Extract variants from the second genome
-            # Create a mapping of conserved regions in the second genome's coordinates
-            second_genome_regions = _map_regions_to_second_genome(conserved_regions)
-            
-            # Extract variants for these regions in the second genome
-            second_variants = snp_processor.extract_variants_by_regions(
-                args.second_vcf, second_genome_regions
+            # Use process_vcf_with_chromosome_mapping method
+            second_variants = snp_processor.process_vcf_with_chromosome_mapping(
+                args.second_vcf,
+                args.second_fasta if hasattr(args, 'second_fasta') and args.second_fasta else None,
+                min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
+                min_qual=Config.SNP_QUALITY_THRESHOLD
             )
-            total_second_variants = sum(len(positions) for positions in second_variants.values())
-            logger.debug(f"Extracted {total_second_variants} variants from second genome for conserved regions")
+            total_second_variants = sum(len(variant_list) for variant_list in second_variants.values())
+            logger.debug(f"Extracted {total_second_variants} variants from second genome")
         except Exception as e:
             logger.error(f"Error extracting second genome variants: {str(e)}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.warning("Continuing without second genome variants")
     
     return ref_variants, second_variants
-
-
-def _map_regions_to_second_genome(conserved_regions):
-    """
-    Create a mapping of conserved regions in the second genome's coordinates.
-    
-    Args:
-        conserved_regions (dict): Conserved regions with mapping information
-        
-    Returns:
-        dict: Conserved regions mapped to second genome coordinates
-    """
-    second_genome_regions = {}
-    
-    for chrom, regions in conserved_regions.items():
-        for region in regions:
-            qry_src = region['qry_src']
-            if qry_src not in second_genome_regions:
-                second_genome_regions[qry_src] = []
-            
-            # Add the region in second genome coordinates
-            second_genome_regions[qry_src].append({
-                'start': region['qry_start'],
-                'end': region['qry_end']
-            })
-    
-    return second_genome_regions
 
 
 def _load_reference_sequences(args, maf_parser, ref_fasta_required, output_dir):
@@ -456,10 +431,12 @@ def _apply_snp_masking(snp_processor, alignment_masked_sequences,
         
         # Apply SNP masking from reference genome variants
         if ref_variants:
-            logger.info(f"Masking {sum(len(positions) for positions in ref_variants.values())} variants from reference genome")
+            logger.info(f"Masking {sum(len(variant_list) for variant_list in ref_variants.values())} variants from reference genome")
             ref_masked_sequences = snp_processor.mask_sequences_for_primer_design(
                 alignment_masked_sequences, 
-                ref_variants
+                ref_variants,
+                flanking_size=Config.SNP_FLANKING_MASK_SIZE,
+                use_soft_masking=Config.SNP_USE_SOFT_MASKING
             )
         else:
             ref_masked_sequences = alignment_masked_sequences
@@ -473,11 +450,13 @@ def _apply_snp_masking(snp_processor, alignment_masked_sequences,
             
             # Apply masking from second genome variants
             if mapped_variants:
-                total_mapped = sum(len(positions) for positions in mapped_variants.values())
+                total_mapped = sum(len(variant_list) for variant_list in mapped_variants.values())
                 logger.info(f"Applying {total_mapped} mapped variants from second genome")
                 second_masked_sequences = snp_processor.mask_sequences_for_primer_design(
                     alignment_masked_sequences,
-                    mapped_variants
+                    mapped_variants,
+                    flanking_size=Config.SNP_FLANKING_MASK_SIZE,
+                    use_soft_masking=Config.SNP_USE_SOFT_MASKING
                 )
             else:
                 second_masked_sequences = alignment_masked_sequences
@@ -485,7 +464,7 @@ def _apply_snp_masking(snp_processor, alignment_masked_sequences,
             second_masked_sequences = alignment_masked_sequences
         
         # Combine masking from both genomes
-        final_masked_sequences = snp_processor.combine_masked_sequences(
+        final_masked_sequences = _combine_masked_sequences(
             ref_masked_sequences, 
             second_masked_sequences
         )
@@ -496,6 +475,52 @@ def _apply_snp_masking(snp_processor, alignment_masked_sequences,
         logger.error(f"Error applying SNP masking: {str(e)}")
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise AlignmentError(f"Failed to apply SNP masking: {str(e)}")
+
+
+def _combine_masked_sequences(ref_masked_sequences, second_masked_sequences):
+    """
+    Combine masking from both genomes.
+    
+    Args:
+        ref_masked_sequences (dict): Sequences masked with reference variants
+        second_masked_sequences (dict): Sequences masked with second genome variants
+        
+    Returns:
+        dict: Combined masked sequences
+    """
+    combined_sequences = {}
+    
+    # Use the intersection of sequence IDs
+    common_seq_ids = set(ref_masked_sequences.keys()) & set(second_masked_sequences.keys())
+    
+    for seq_id in common_seq_ids:
+        ref_seq = ref_masked_sequences[seq_id]
+        second_seq = second_masked_sequences[seq_id]
+        
+        # Combine masking: if either sequence has an 'N' at a position, use 'N'
+        combined_seq = ""
+        min_len = min(len(ref_seq), len(second_seq))
+        
+        for i in range(min_len):
+            if ref_seq[i] == 'N' or second_seq[i] == 'N':
+                combined_seq += 'N'
+            elif ref_seq[i].islower() or second_seq[i].islower():
+                # If either is soft masked (lowercase), use lowercase
+                combined_seq += ref_seq[i].lower()
+            else:
+                # Use the reference sequence base
+                combined_seq += ref_seq[i]
+        
+        # Add any remaining bases from the longer sequence
+        if len(ref_seq) > min_len:
+            combined_seq += ref_seq[min_len:]
+        elif len(second_seq) > min_len:
+            combined_seq += second_seq[min_len:]
+        
+        combined_sequences[seq_id] = combined_seq
+    
+    logger.debug(f"Combined masking for {len(combined_sequences)} sequences")
+    return combined_sequences
 
 
 def _map_second_variants_to_reference(second_variants, coordinate_map):
@@ -513,7 +538,7 @@ def _map_second_variants_to_reference(second_variants, coordinate_map):
     
     # Process each sequence
     for seq_id, sequence_mappings in coordinate_map.items():
-        mapped_variants[seq_id] = set()
+        mapped_variants[seq_id] = []
         
         # Skip if no coordinate map for this sequence
         if not sequence_mappings:
@@ -521,16 +546,18 @@ def _map_second_variants_to_reference(second_variants, coordinate_map):
             continue
             
         # Process each variant from second genome
-        for second_chrom, positions in second_variants.items():
+        for second_chrom, variant_list in second_variants.items():
             # Find mappings from second genome to reference
-            for pos in positions:
+            for variant in variant_list:
                 for ref_pos, mapping in sequence_mappings.items():
-                    if mapping["qry_src"] == second_chrom and mapping["qry_pos"] == pos:
+                    if mapping["qry_src"] == second_chrom and mapping["qry_pos"] == variant.position:
                         # Found a mapping from second genome variant to reference
-                        mapped_variants[seq_id].add(ref_pos)
+                        # Create a new variant object for the mapped position
+                        mapped_variant = variant._replace(position=ref_pos)
+                        mapped_variants[seq_id].append(mapped_variant)
     
     # Count mapped variants
-    total_mapped = sum(len(positions) for positions in mapped_variants.values())
+    total_mapped = sum(len(variant_list) for variant_list in mapped_variants.values())
     logger.debug(f"Mapped {total_mapped} variants from second genome to reference coordinates")
     
     return mapped_variants
