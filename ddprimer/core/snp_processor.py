@@ -769,30 +769,29 @@ class SNPMaskingProcessor:
             if original_base.upper() in 'ATCG':
                 masked_positions.add(idx)
         
-        # Better logging with 1-based coordinates
+        # FIXED: Better logging with 1-based coordinates
         logger.debug(f"Masked indel region {start_idx + 1}-{end_idx} for variant {variant.ref} -> {variant.alt} at position {variant.position}")
         logger.debug(f"  Reference length: {ref_len}, flanking: {flanking_size}, total masked: {end_idx - start_idx} bases")
 
-    def _apply_masking_at_position(self, sequence_list: list, center_pos: int, 
-                                   flanking_size: int, use_soft_masking: bool, 
-                                   masked_positions: set):
-        """
-        Apply masking at a specific position with flanking regions
-        """
-        # Calculate flanking region (all 0-based)
-        start_pos = max(0, center_pos - flanking_size)
-        end_pos = min(len(sequence_list), center_pos + flanking_size + 1)
-        
-        for pos in range(start_pos, end_pos):
-            original_base = sequence_list[pos]
-            
-            if use_soft_masking:
-                sequence_list[pos] = original_base.lower()
-            else:
-                sequence_list[pos] = 'N'
-            
-            if original_base.upper() in 'ATCG':
-                masked_positions.add(pos)
+    def _apply_masking_at_position(self, sequence_list: list, center_idx: int, 
+                                flanking_size: int, use_soft_masking: bool, 
+                                masked_positions: set):
+        """Apply masking at a specific position with flanking regions."""
+        # Add flanking positions
+        for offset in range(-flanking_size, flanking_size + 1):
+            mask_idx = center_idx + offset
+            if 0 <= mask_idx < len(sequence_list):
+                original_base = sequence_list[mask_idx]
+                
+                if use_soft_masking:
+                    # Convert to lowercase for soft masking
+                    sequence_list[mask_idx] = original_base.lower()
+                else:
+                    # Use 'N' for hard masking
+                    sequence_list[mask_idx] = 'N'
+                
+                if original_base.upper() in 'ATCG':  # Only count actual nucleotides as masked
+                    masked_positions.add(mask_idx)
     
     def mask_sequences_for_primer_design(self, sequences: dict, variants: dict, 
                                         flanking_size: int = 0, use_soft_masking: bool = False,

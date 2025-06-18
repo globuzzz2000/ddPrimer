@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Unified ddPrimer Pipeline
+Primer Design Pipeline
 
-A streamlined primer design pipeline that supports two workflows:
-1. Standard Mode: FASTA + VCF + GFF files for genome-based primer design
-2. Direct Mode: CSV/Excel files with target sequences
+A streamlined script that:
+1. Prompts the user to provide a FASTA and a VCF file
+2. Extracts variants from VCF and masks the FASTA file
+3. Filters sequences based on restriction sites and gene overlap
+4. Runs Primer3 on masked and filtered sequences
+5. Filters primers and oligos 
+6. Runs ViennaRNA for thermodynamic properties
+7. BLASTs primers and oligos for specificity
+8. Saves results to an Excel file
 
-Features:
-- SNP masking and substitution for both modes
-- Restriction site cutting and gene annotation filtering
-- Primer3 design with thermodynamic analysis
-- BLAST specificity checking
-- Comprehensive Excel output
+Now with support for automatic model organism database creation!
 
-This unified module replaces the previous multi-mode architecture
-for improved maintainability and reduced complexity.
+Contains functionality for:
+1. Command line argument parsing and validation
+2. Configuration management and display
+3. Database creation and verification
+4. Workflow factory pattern for mode selection
+5. Temporary directory management
+6. Main pipeline orchestration and error handling
+
+This module serves as the main entry point for the ddPrimer pipeline,
+coordinating all components to provide a complete primer design solution.
 """
 
 import sys
-import os
 import argparse
 import logging
 import traceback
-import pandas as pd
 from pathlib import Path
 from typing import Optional, Union
-from tqdm import tqdm
 
 # Import package modules
-from .config import (Config, setup_logging, display_config, display_primer3_settings, 
-                    DDPrimerError, FileError, ExternalToolError)
-from .utils import FileIO, BlastDBCreator, BlastVerification, DirectModeUtils
-from .core import (SNPMaskingProcessor, AnnotationProcessor, PrimerProcessor, 
-                   BlastProcessor, SequenceProcessor, Primer3Processor, ViennaRNAProcessor)
+from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, FileError, ExternalToolError
+from .utils import FileIO, BlastDBCreator, BlastVerification
+from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
 
 # Type alias for path inputs
 PathLike = Union[str, Path]
@@ -43,751 +47,510 @@ logger = logging.getLogger(__name__)
 
 
 def parse_arguments():
-    """Parse command line arguments for unified pipeline."""
+    """
+    Parse command line arguments with enhanced debug support.
+    
+    Validates argument combinations and provides comprehensive help
+    for all available options and modes.
+    
+    Returns:
+        Parsed arguments namespace
+        
+    Raises:
+        SystemExit: If arguments are invalid or conflicting
+    """
     parser = argparse.ArgumentParser(
-        description='ddPrimer: Unified pipeline for primer design and filtering',
+        description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='ddprimer [--direct [.csv, .xlsx]] [--debug [MODULE...]] [--config [.json]] \n'
-              '        [--cli] [--nooligo] [--snp] [--noannotation] [--db ...] \n'
-              '        [--fasta ...] [--vcf ...] [--gff ...] [--output ...]'
+        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug [MODULE...]] [--config [.json]] \n'
+            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
+            '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
+            '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
+            '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
     )
 
+    # Create argument groups for better organization
+    mode_group = parser.add_argument_group('modes')
+    option_group = parser.add_argument_group('options')
+    input_group = parser.add_argument_group('inputs (optional)')
+
     # Modes
-    parser.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
-                       help='Direct mode: design primers from target sequences in CSV/Excel')
+    mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
+                           help='Enable target-sequence based primer design workflow')
+    mode_group.add_argument("--alignment", action="store_true", 
+                           help="Enable alignment-based primer design workflow")
 
-    # Options
-    parser.add_argument('--debug', nargs='*', metavar='MODULE', 
-                       help='Enable debug mode (universal or specific modules)')
-    parser.add_argument('--output', metavar='<dir>', help='Output directory')
-    parser.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
-                       help='Configuration file or display mode')
-    parser.add_argument('--cli', action='store_true', help='Force CLI mode')
-    parser.add_argument('--nooligo', action='store_true', help='Disable probe design')
-    parser.add_argument('--snp', action='store_true', help='Enable SNP masking')
-    parser.add_argument('--noannotation', action='store_true', help='Skip gene filtering')
-    parser.add_argument('--db', nargs='*', metavar=('[.fasta]', '[name]'),
-                       help='Create/select BLAST database')
+    # Enhanced debug option
+    option_group.add_argument('--debug', nargs='*', metavar='MODULE', 
+                             help='Enable debug mode. Use without arguments for universal debug, '
+                                  'or specify module names (e.g., --debug standard_mode snp blast). '
+                                  'Available modules: standard_mode, direct_mode, alignment_mode, '
+                                  'snp, annotations, blast, vienna, primer3, utils')
+    
+    option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
+    option_group.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
+                      help='Configuration file path or special mode ("all", "basic", or "template")')
 
+    option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
+    option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
+    option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
+    option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
+    option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
+                    help='Create or select a BLAST database. With no arguments, shows model organism selection menu. '
+                        'With one argument, creates database from the specified FASTA file. '
+                        'With two arguments, creates database from the first argument and uses the second as the database name.')
+        
     # Input files
-    parser.add_argument('--fasta', metavar='[.fasta]', help='Reference genome FASTA')
-    parser.add_argument('--vcf', metavar='[.vcf]', help='Variant file')
-    parser.add_argument('--gff', metavar='[.gff]', help='Annotation file')
+    input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', help='Reference genome FASTA file')
+    input_group.add_argument('--second-fasta', metavar='[.fasta, .fna, .fa]', help='Second genome FASTA file')
+    input_group.add_argument('--vcf', metavar='[.vcf, .vcf.gz]', help='Variant Call Format (VCF) file with variants')
+    input_group.add_argument('--second-vcf', metavar='[.vcf, .vcf.gz]', help='VCF file for the second genome')
+    input_group.add_argument('--gff', metavar='[.gff, .gff3]', help='GFF annotation file')
+    input_group.add_argument('--maf', metavar='[.maf]', nargs='?', const=True, help="For alignment mode: Pre-computed MAF alignment file (skips LastZ alignment)")
     
     args = parser.parse_args()
 
     # Process debug argument
     if args.debug is not None:
-        args.debug = True if len(args.debug) == 0 else args.debug
+        if len(args.debug) == 0:
+            # --debug with no arguments: universal debug
+            args.debug = True
+        else:
+            # --debug with module names: specific debug
+            args.debug = args.debug  # Keep as list of module names
     else:
+        # --debug not specified
         args.debug = False
 
-    # Validate SNP requirements
-    if args.snp and args.cli and (not args.fasta or not args.vcf):
-        parser.error("SNP masking requires --fasta and --vcf")
-
-    # Process database arguments
+    # Check for conflicting modes (only check actual modes, not utility flags)
+    mode_count = sum([bool(args.direct), bool(args.alignment)])
+    if mode_count > 1:
+        parser.error("Only one mode can be specified: --direct or --alignment")
+    
+    # If --maf is used, automatically activate alignment mode
+    if args.maf:
+        args.alignment = True
+    
+    # Handle --snp requirements
+    if args.snp and args.cli:
+        if not args.fasta or not args.vcf:
+            parser.error("SNP masking (--snp) requires --fasta and --vcf")
+    
+    # Extra validation for lastzonly mode
+    if args.lastzonly:
+        # Force alignment mode when lastzonly is specified
+        args.alignment = True
+        
+        # Only need reference FASTA and second FASTA for lastzonly mode
+        if args.cli and not args.fasta:
+            parser.error("--lastzonly requires --fasta (reference genome)")
+        if args.cli and not args.second_fasta:
+            parser.error("--lastzonly requires --second-fasta (second genome)")
+        # These flags are incompatible with lastzonly
+        if args.snp:
+            parser.error("--lastzonly cannot be used with --snp")
+        if args.direct:
+            parser.error("--lastzonly cannot be used with --direct")
+        if args.noannotation:
+            parser.error("--lastzonly cannot be used with --noannotation")
+    
+    # Alignment mode validation (only in CLI mode)
+    if args.cli and args.alignment and not args.lastzonly:
+        if not (args.maf or args.second_fasta):
+            parser.error("Alignment mode requires either --maf or --second-fasta")
+        if not args.maf and not args.fasta:
+            parser.error("Reference genome FASTA (--fasta) is required for alignment")
+        if args.snp:
+            # Only require VCF files if SNP masking is enabled
+            if args.second_fasta and not args.second_vcf:
+                parser.error("Second VCF file (--second-vcf) is required for SNP masking")
+    
+    # Process --db arguments
     if args.db is not None:
-        args.dboutdir = args.output
+        # Set the db output directory if provided
+        args.dboutdir = args.output if args.output else None
+        
         if len(args.db) == 0:
-            args.db_action, args.db_fasta, args.db_name = 'select', None, None
-        else:
+            # User ran "--db" without any arguments, show the selection menu
+            args.db_action = 'select'
+            args.db_fasta = None
+            args.db_name = None
+        elif len(args.db) >= 1:
+            # User provided a specific file path: "--db path/to/file.fasta"
             args.db_action = 'file'
             args.db_fasta = args.db[0]
-            args.db_name = args.db[1] if len(args.db) > 1 else None
+            
+            # Check for optional database name
+            if len(args.db) >= 2:
+                args.db_name = args.db[1]
+            else:
+                args.db_name = None
     else:
-        args.db_action = args.db_fasta = args.db_name = None
-
+        args.db_action = None
+        args.db_fasta = None
+        args.db_name = None
+    
     return args
 
 
-def setup_pipeline(args):
-    """Set up logging, configuration, and database."""
-    # Setup logging
-    setup_logging(debug=args.debug)
+class WorkflowFactory:
+    """
+    Factory for creating the appropriate workflow based on command line arguments.
     
-    logger.debug("Initializing unified ddPrimer pipeline")
-    Config.get_instance()
+    This class provides a factory method to determine and return the correct
+    workflow function based on the command line arguments provided by the user.
     
-    # Handle configuration display/loading
-    if args.config in ['DISPLAY', 'all', 'basic', 'template']:
-        if args.config == 'template':
-            from .config import generate_config_template
-            generate_config_template(Config, output_dir=args.output)
+    Example:
+        >>> args = parse_arguments()
+        >>> workflow = WorkflowFactory.create_workflow(args)
+        >>> success = workflow(args)
+    """
+    
+    @staticmethod
+    def create_workflow(args):
+        """
+        Create and return the appropriate workflow based on command line arguments.
+        
+        Args:
+            args: Command line arguments namespace
+            
+        Returns:
+            Workflow function to execute
+        """
+        # For both lastzonly and alignment, use alignment mode
+        if args.alignment or args.lastzonly:
+            # Alignment mode (also handles lastzonly)
+            return run_alignment_mode
+        elif args.direct:
+            # Direct mode
+            return run_direct_mode
         else:
-            display_config(Config)
-            if args.config == 'all':
-                display_primer3_settings(Config)
-        return False  # Exit after display
+            # Standard mode
+            return run_standard_mode
+
+
+class TempDirectoryManager:
+    """
+    Context manager for temporary directory creation and cleanup.
     
-    # Load custom configuration
-    if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
+    Provides a safe way to create and automatically clean up temporary
+    directories used during pipeline execution.
+    
+    Attributes:
+        temp_dir: Path to the created temporary directory
+        base_dir: Base directory for temporary directory creation
+        
+    Example:
+        >>> with TempDirectoryManager() as temp_dir:
+        ...     # Use temp_dir for operations
+        ...     pass
+        # temp_dir is automatically cleaned up
+    """
+    
+    def __init__(self, base_dir: Optional[PathLike] = None):
+        """
+        Initialize the temporary directory manager.
+        
+        Args:
+            base_dir: Base directory to create the temp directory in
+        """
+        self.temp_dir = None
+        self.base_dir = str(base_dir) if base_dir else None
+        
+    def __enter__(self):
+        """
+        Create and return the temporary directory path.
+        
+        Returns:
+            Path to the temporary directory
+            
+        Raises:
+            FileError: If temporary directory creation fails
+        """
         try:
-            Config.load_from_file(args.config)
-            logger.debug(f"Loaded configuration from {args.config}")
-        except Exception as e:
-            raise FileError(f"Error loading configuration: {e}")
-    
-    # Apply CLI and probe settings
-    if args.cli:
-        FileIO.use_cli = True
-        logger.debug("CLI mode enabled")
-    
-    if args.nooligo:
-        Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
-        Config.DISABLE_INTERNAL_OLIGO = True
-        logger.info("Probe design disabled")
-    
-    # Handle database operations
-    if args.db is not None:
-        handle_database_operations(args)
-        if not args.fasta and not args.direct:
-            return False  # Exit after database-only operations
-    
-    # Verify BLAST database
-    if not BlastVerification.verify_blast_database():
-        raise ExternalToolError("BLAST database verification failed", tool_name="blastn")
-    
-    return True
-
-
-def handle_database_operations(args):
-    """Handle database creation and selection."""
-    logger.debug("Processing BLAST database operations")
-    
-    blast_db_creator = BlastDBCreator()
-    
-    if args.db_action == 'select':
-        # Model organism selection
-        from .utils import ModelOrganismManager as MOManager
-        organism_key, organism_name, fasta_file = MOManager.select_model_organism()
-        
-        if organism_key is None and fasta_file is None:
-            logger.info("Database selection canceled")
-            return
-        
-        if organism_key == 'existing_db':
-            # Select existing database
-            Config.DB_PATH = fasta_file
-            Config.save_database_config(fasta_file)
-            Config.USE_CUSTOM_DB = True
-            logger.info(f"Selected database: {fasta_file}")
-            return
-        
-        # Create from model organism
-        if organism_key and not args.db_name:
-            scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
-            db_name = scientific_name.replace(' ', '_')
-        else:
-            db_name = args.db_name
-    
-    elif args.db_action == 'file':
-        # Create from specified file
-        fasta_file = args.db_fasta
-        if not Path(fasta_file).exists():
-            raise FileError(f"FASTA file not found: {fasta_file}")
-        organism_key = None
-        db_name = args.db_name
-    
-    # Create database
-    if 'fasta_file' in locals() and organism_key != 'existing_db':
-        db_path = blast_db_creator.create_db(fasta_file, db_name, args.output)
-        
-        # Clean up model organism file
-        if organism_key:
-            from .utils import ModelOrganismManager
-            ModelOrganismManager.cleanup_genome_file(fasta_file, logger)
-        
-        # Update configuration
-        if (not Config.DB_PATH or 
-            Config.DB_PATH == "/Library/Application Support/Blast_DBs/Tair DB/TAIR10"):
-            Config.DB_PATH = db_path
-            Config.save_database_config(db_path)
-            Config.USE_CUSTOM_DB = True
-            logger.info(f"BLAST database created: {db_path}")
-        else:
-            # Ask user if they want to use new database
-            use_new = input(f"Current database: {Config.DB_PATH}\n"
-                          f"Use new database instead? [Y/n]: ").strip().lower()
-            if use_new == "" or use_new.startswith("y"):
-                Config.DB_PATH = db_path
-                Config.save_database_config(db_path)
-                Config.USE_CUSTOM_DB = True
-                logger.info(f"Now using: {db_path}")
-
-
-def load_sequences_and_variants(args):
-    """Load sequences and variants based on mode."""
-    if args.direct:
-        return load_direct_mode_data(args)
-    else:
-        return load_standard_mode_data(args)
-
-
-def load_direct_mode_data(args):
-    """Load data for direct mode."""
-    logger.info("=== Direct Mode: Target Sequence Design ===")
-    
-    # Get sequence file
-    if args.direct is True:
-        sequence_file = FileIO.select_sequences_file()
-    else:
-        sequence_file = args.direct
-    
-    # Set up output directory
-    output_dir = setup_output_directory(args, sequence_file)
-    
-    # Analyze file structure
-    analysis = DirectModeUtils.analyze_sequence_file(sequence_file)
-    DirectModeUtils.print_analysis(analysis)
-    
-    # Initialize tracking variables
-    matching_status = {}
-    all_sequences = {}
-    
-    if args.snp:
-        # SNP masking workflow for direct mode
-        logger.debug("SNP masking enabled for direct mode")
-        
-        # Get reference files
-        ref_fasta = args.fasta or FileIO.select_fasta_file("Select reference FASTA")
-        ref_vcf = args.vcf or FileIO.select_file("Select VCF file", 
-                                               [("VCF Files", "*.vcf"), ("VCF.gz Files", "*.vcf.gz")])
-        
-        FileIO.mark_selection_complete()
-        
-        # Load target sequences
-        sequences = FileIO.load_sequences_from_table(sequence_file)
-        all_sequences = sequences.copy()
-        
-        # Apply SNP masking with location finding
-        masked_sequences = apply_direct_snp_masking(sequences, ref_fasta, ref_vcf, 
-                                                  matching_status, all_sequences)
-    else:
-        # No SNP masking
-        logger.debug("SNP masking disabled")
-        FileIO.mark_selection_complete()
-        
-        sequences = FileIO.load_sequences_from_table(sequence_file)
-        all_sequences = sequences.copy()
-        masked_sequences = sequences.copy()
-        
-        # Mark all as not attempted
-        for seq_id in sequences:
-            matching_status[seq_id] = "Not attempted"
-    
-    return {
-        'sequences': masked_sequences,
-        'genes': None,  # No gene filtering in direct mode
-        'output_dir': output_dir,
-        'reference_file': sequence_file,
-        'mode': 'direct',
-        'matching_status': matching_status,
-        'all_sequences': all_sequences
-    }
-
-
-def load_standard_mode_data(args):
-    """Load data for standard mode."""
-    logger.info("=== Standard Mode: Genome-Based Design ===")
-    
-    # Get input files
-    fasta_file = args.fasta or FileIO.select_fasta_file("Select reference FASTA")
-    vcf_file = args.vcf or FileIO.select_file("Select VCF file", 
-                                            [("VCF Files", "*.vcf"), ("VCF.gz Files", "*.vcf.gz")])
-    
-    gff_file = None
-    if not args.noannotation:
-        gff_file = args.gff or FileIO.select_file("Select GFF annotation file",
-                                                [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3")])
-    
-    FileIO.mark_selection_complete()
-    
-    # Set up output directory
-    output_dir = setup_output_directory(args, fasta_file)
-    
-    # Process variants and sequences
-    logger.info("Extracting variants from VCF...")
-    snp_processor = SNPMaskingProcessor()
-    variants = snp_processor.process_vcf_with_chromosome_mapping(
-        vcf_file, fasta_file,
-        min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
-        min_qual=Config.SNP_QUALITY_THRESHOLD
-    )
-    
-    # Count variants
-    total_variants = sum(len(v_list) for v_list in variants.values())
-    fixed_variants = sum(sum(1 for v in v_list if v.is_fixed) for v_list in variants.values())
-    logger.info(f"Extracted {total_variants} variants ({fixed_variants} fixed)")
-    
-    # Load sequences
-    logger.info("Loading sequences from FASTA...")
-    sequences = FileIO.load_fasta(fasta_file)
-    
-    # Apply SNP processing
-    logger.info("Processing variants in sequences...")
-    masked_sequences = snp_processor.mask_sequences_for_primer_design(
-        sequences=sequences,
-        variants=variants,
-        flanking_size=Config.SNP_FLANKING_MASK_SIZE,
-        use_soft_masking=Config.SNP_USE_SOFT_MASKING,
-        min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
-        min_qual=Config.SNP_QUALITY_THRESHOLD
-    )
-    
-    # Load gene annotations
-    genes = None
-    if not args.noannotation:
-        logger.info("Loading gene annotations...")
-        genes = AnnotationProcessor.load_genes_from_gff(gff_file)
-        logger.info(f"Loaded {len(genes)} gene annotations")
-    
-    return {
-        'sequences': masked_sequences,
-        'genes': genes,
-        'output_dir': output_dir,
-        'reference_file': fasta_file,
-        'mode': 'standard',
-        'matching_status': None,
-        'all_sequences': None
-    }
-
-
-def apply_direct_snp_masking(sequences, ref_fasta, ref_vcf, matching_status, all_sequences):
-    """Apply SNP masking for direct mode with location finding."""
-    logger.info("Applying SNP masking with reference genome location finding...")
-    
-    snp_processor = SNPMaskingProcessor()
-    
-    # Find genomic locations
-    sequence_locations = {}
-    for seq_id, sequence in sequences.items():
-        logger.debug(f"Finding location for sequence {seq_id}")
-        
-        source_chrom, start_pos, end_pos, identity = DirectModeUtils.find_sequence_location(
-            sequence, ref_fasta
-        )
-        
-        if source_chrom:
-            matching_status[seq_id] = "Success"
-            sequence_locations[seq_id] = {
-                'chrom': source_chrom,
-                'start': start_pos,
-                'end': end_pos,
-                'identity': identity
-            }
-            logger.debug(f"Located {seq_id} at {source_chrom}:{start_pos}-{end_pos}")
-        else:
-            matching_status[seq_id] = "Failure"
-            logger.debug(f"Could not locate {seq_id} in reference genome")
-    
-    # Get successfully located sequences
-    located_sequences = {seq_id: seq for seq_id, seq in sequences.items() 
-                        if seq_id in sequence_locations}
-    
-    if not located_sequences:
-        logger.warning("No sequences could be located in reference genome")
-        return sequences
-    
-    # Extract all variants from VCF
-    all_variants = snp_processor.process_vcf_with_chromosome_mapping(
-        ref_vcf, ref_fasta,
-        min_af=Config.SNP_ALLELE_FREQUENCY_THRESHOLD,
-        min_qual=Config.SNP_QUALITY_THRESHOLD
-    )
-    
-    # Apply variants to located sequences
-    from .core.snp_processor import Variant
-    
-    masked_sequences = {}
-    for seq_id, sequence in sequences.items():
-        if seq_id not in sequence_locations:
-            # Keep original sequence if not located
-            masked_sequences[seq_id] = sequence
-            continue
-        
-        location = sequence_locations[seq_id]
-        chrom = location['chrom']
-        start = location['start']
-        
-        # Get variants for this chromosome and adjust positions
-        seq_variants = []
-        if chrom in all_variants:
-            for variant in all_variants[chrom]:
-                if start <= variant.position <= location['end']:
-                    adjusted_position = variant.position - start + 1
-                    adjusted_variant = Variant(
-                        position=adjusted_position,
-                        ref=variant.ref,
-                        alt=variant.alt,
-                        qual=variant.qual,
-                        af=variant.af,
-                        is_fixed=variant.is_fixed
-                    )
-                    seq_variants.append(adjusted_variant)
-        
-        # Apply masking
-        if seq_variants:
-            masked_sequence = snp_processor.mask_and_substitute_variants(
-                sequence, seq_variants,
-                flanking_size=Config.SNP_FLANKING_MASK_SIZE,
-                use_soft_masking=Config.SNP_USE_SOFT_MASKING
+            import tempfile
+            self.temp_dir = tempfile.mkdtemp(
+                prefix=Config.BLAST_TEMP_FILE_PREFIX,
+                dir=self.base_dir
             )
-            masked_sequences[seq_id] = masked_sequence
-        else:
-            masked_sequences[seq_id] = sequence
-    
-    logger.info(f"Applied SNP masking to {len(located_sequences)} located sequences")
-    return masked_sequences
-
-
-def setup_output_directory(args, reference_file):
-    """Set up output directory based on arguments and reference file."""
-    if args.output:
-        output_dir = args.output
-    else:
-        input_dir = os.path.dirname(os.path.abspath(reference_file))
-        output_dir = os.path.join(input_dir, "Primers")
-    
-    os.makedirs(output_dir, exist_ok=True)
-    logger.debug(f"Output directory: {output_dir}")
-    return output_dir
-
-
-def process_restriction_sites(sequences):
-    """Cut sequences at restriction sites."""
-    logger.info("Processing restriction sites...")
-    logger.debug(f"Using restriction site pattern: {Config.RESTRICTION_SITE}")
-    
-    fragments = SequenceProcessor.cut_at_restriction_sites(sequences)
-    logger.info(f"Generated {len(fragments)} restriction fragments")
-    return fragments
-
-
-def filter_fragments(fragments, genes, mode, skip_annotation_filtering):
-    """Filter fragments based on mode and gene overlap."""
-    if mode == 'direct' or skip_annotation_filtering:
-        # Direct mode or no annotation filtering
-        logger.info("Preparing fragments for direct processing...")
-        filtered = []
-        for fragment in fragments:
-            base_id = fragment["id"].split("_frag")[0]
-            simplified = {
-                "id": fragment["id"],
-                "sequence": fragment["sequence"],
-                "Gene": base_id
-            }
-            filtered.append(simplified)
-        logger.info(f"Prepared {len(filtered)} fragments")
-        return filtered
-    else:
-        # Standard mode with gene filtering
-        if not genes:
-            logger.error("Gene annotations required for standard mode")
-            logger.info("Use --noannotation to skip gene filtering")
-            return []
+            logger.debug(f"Created temporary directory: {self.temp_dir}")
+            return self.temp_dir
+        except OSError as e:
+            error_msg = f"Failed to create temporary directory: {str(e)}"
+            logger.error(error_msg)
+            raise FileError(error_msg) from e
         
-        logger.info("Extracting gene-overlapping regions...")
-        filtered = AnnotationProcessor.filter_by_gene_overlap_enhanced(fragments, genes)
-        logger.info(f"Extracted {len(filtered)} gene fragments")
-        return filtered
-
-
-def design_primers(fragments):
-    """Design primers using Primer3."""
-    logger.info("Designing primers with Primer3...")
-    
-    primer3_processor = Primer3Processor(Config)
-    
-    # Prepare Primer3 inputs
-    primer3_inputs = []
-    fragment_info = {}
-    
-    for fragment in fragments:
-        primer3_inputs.append({
-            "SEQUENCE_ID": fragment["id"],
-            "SEQUENCE_TEMPLATE": fragment["sequence"]
-        })
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Clean up the temporary directory.
         
-        # Store fragment metadata
-        if "chr" in fragment and "start" in fragment:
-            # Standard mode with coordinates
-            fragment_info[fragment["id"]] = {
-                "chr": fragment.get("chr", ""),
-                "start": fragment.get("start", 1),
-                "end": fragment.get("end", len(fragment["sequence"])),
-                "gene": fragment.get("Gene", fragment["id"])
-            }
-        else:
-            # Direct mode without coordinates
-            fragment_info[fragment["id"]] = {
-                "gene": fragment.get("Gene", fragment["id"])
-            }
-    
-    # Run Primer3
-    primer3_output = primer3_processor.run_primer3_batch_parallel(primer3_inputs)
-    
-    # Parse results
-    primer_results = primer3_processor.parse_primer3_batch(primer3_output, fragment_info)
-    logger.info(f"Designed primers for {len(primer_results)} fragments")
-    
-    return primer_results
-
-
-def filter_and_analyze_primers(primer_results):
-    """Filter primers and calculate properties."""
-    logger.info("Filtering and analyzing primers...")
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(primer_results)
-    initial_count = len(df)
-    
-    if initial_count == 0:
-        logger.warning("No primer results to process")
-        return df
-    
-    # Apply filters
-    logger.debug("Applying penalty filter...")
-    df = PrimerProcessor.filter_by_penalty(df)
-    
-    logger.debug("Applying repeat filter...")
-    df = PrimerProcessor.filter_by_repeats(df)
-    
-    logger.debug("Applying GC content filter...")
-    df = PrimerProcessor.filter_by_gc_content(df)
-    
-    if len(df) == 0:
-        logger.warning("No primers passed filtering")
-        return df
-    
-    logger.info(f"Filtered primers: {len(df)}/{initial_count} passed")
-    
-    # Process internal oligos
-    df = PrimerProcessor.process_internal_oligos(df)
-    
-    # Calculate thermodynamic properties
-    logger.info("Calculating thermodynamic properties...")
-    df = calculate_thermodynamics(df)
-    
-    # Run BLAST analysis
-    logger.info("Running BLAST specificity analysis...")
-    df = run_blast_analysis(df)
-    
-    return df
-
-
-def calculate_thermodynamics(df):
-    """Calculate thermodynamic properties using ViennaRNA."""
-    # Add empty columns
-    df["Primer F dG"] = None
-    df["Primer R dG"] = None
-    if "Probe" in df.columns:
-        df["Probe dG"] = None
-    df["Amplicon dG"] = None
-    
-    # Calculate ΔG values
-    if Config.SHOW_PROGRESS:
-        tqdm.pandas(desc="Forward primers")
-        df["Primer F dG"] = df["Primer F"].progress_apply(ViennaRNAProcessor.calc_deltaG)
-        
-        tqdm.pandas(desc="Reverse primers")
-        df["Primer R dG"] = df["Primer R"].progress_apply(ViennaRNAProcessor.calc_deltaG)
-        
-        if "Probe" in df.columns:
-            tqdm.pandas(desc="Probes")
-            df["Probe dG"] = df["Probe"].progress_apply(
-                lambda x: ViennaRNAProcessor.calc_deltaG(x) if pd.notnull(x) and x else None
-            )
-        
-        tqdm.pandas(desc="Amplicons")
-        df["Amplicon dG"] = df["Amplicon"].progress_apply(ViennaRNAProcessor.calc_deltaG)
-    else:
-        df["Primer F dG"] = df["Primer F"].apply(ViennaRNAProcessor.calc_deltaG)
-        df["Primer R dG"] = df["Primer R"].apply(ViennaRNAProcessor.calc_deltaG)
-        
-        if "Probe" in df.columns:
-            df["Probe dG"] = df["Probe"].apply(
-                lambda x: ViennaRNAProcessor.calc_deltaG(x) if pd.notnull(x) and x else None
-            )
-        
-        df["Amplicon dG"] = df["Amplicon"].apply(ViennaRNAProcessor.calc_deltaG)
-    
-    return df
-
-
-def run_blast_analysis(df):
-    """Run BLAST analysis for primer specificity."""
-    # BLAST forward primers
-    blast_results_f = []
-    primers_f = df["Primer F"].tolist()
-    if Config.SHOW_PROGRESS:
-        primers_f = tqdm(primers_f, desc="BLAST forward primers")
-    
-    for primer_f in primers_f:
-        blast1, blast2 = BlastProcessor.blast_short_seq(primer_f)
-        blast_results_f.append((blast1, blast2))
-    
-    df["Primer F BLAST1"], df["Primer F BLAST2"] = zip(*blast_results_f)
-    
-    # BLAST reverse primers
-    blast_results_r = []
-    primers_r = df["Primer R"].tolist()
-    if Config.SHOW_PROGRESS:
-        primers_r = tqdm(primers_r, desc="BLAST reverse primers")
-    
-    for primer_r in primers_r:
-        blast1, blast2 = BlastProcessor.blast_short_seq(primer_r)
-        blast_results_r.append((blast1, blast2))
-    
-    df["Primer R BLAST1"], df["Primer R BLAST2"] = zip(*blast_results_r)
-    
-    # BLAST probes if present
-    if "Probe" in df.columns:
-        blast_results_p = []
-        probes = df["Probe"].tolist()
-        if Config.SHOW_PROGRESS:
-            probes = tqdm(probes, desc="BLAST probes")
-        
-        for probe in probes:
-            if pd.notnull(probe) and probe:
-                blast1, blast2 = BlastProcessor.blast_short_seq(probe)
-            else:
-                blast1, blast2 = None, None
-            blast_results_p.append((blast1, blast2))
-        
-        df["Probe BLAST1"], df["Probe BLAST2"] = zip(*blast_results_p)
-    
-    # Filter by BLAST specificity
-    initial_count = len(df)
-    df = PrimerProcessor.filter_by_blast(df)
-    logger.info(f"BLAST filtering: {len(df)}/{initial_count} primers passed")
-    
-    return df
-
-
-def save_results(df, data_info):
-    """Save results to Excel file."""
-    if len(df) == 0:
-        logger.warning("No results to save")
-        return None
-    
-    # Add missing sequences for direct mode
-    if data_info['mode'] == 'direct' and data_info['matching_status'] and data_info['all_sequences']:
-        df = DirectModeUtils.add_missing_sequences(
-            df, data_info['all_sequences'], data_info['matching_status']
-        )
-    
-    # Save to Excel
-    output_path = FileIO.save_results(
-        df, 
-        data_info['output_dir'], 
-        data_info['reference_file'], 
-        mode=data_info['mode']
-    )
-    
-    if output_path:
-        logger.info(f"Results saved to: {output_path}")
-        return output_path
-    else:
-        logger.error("Failed to save results")
-        return None
-
-
-def run_unified_workflow(args):
-    """Main unified workflow for both standard and direct modes."""
-    try:
-        # Load sequences and variants
-        data_info = load_sequences_and_variants(args)
-        
-        if not data_info['sequences']:
-            logger.error("No sequences loaded")
-            return False
-        
-        # Process restriction sites
-        fragments = process_restriction_sites(data_info['sequences'])
-        if not fragments:
-            logger.error("No valid restriction fragments generated")
-            return False
-        
-        # Filter fragments
-        filtered_fragments = filter_fragments(
-            fragments, 
-            data_info['genes'], 
-            data_info['mode'], 
-            args.noannotation
-        )
-        
-        if not filtered_fragments:
-            logger.error("No fragments passed filtering")
-            if data_info['mode'] == 'standard' and not args.noannotation:
-                logger.info("Try using --noannotation to skip gene filtering")
-            return False
-        
-        # Design primers
-        primer_results = design_primers(filtered_fragments)
-        if not primer_results:
-            logger.error("No primers designed")
-            return False
-        
-        # Filter and analyze primers
-        df = filter_and_analyze_primers(primer_results)
-        if len(df) == 0:
-            logger.error("No primers passed analysis")
-            return False
-        
-        # Save results
-        output_path = save_results(df, data_info)
-        return output_path is not None
-        
-    except Exception as e:
-        logger.error(f"Workflow error: {e}")
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
-        return False
+        Args:
+            exc_type: Exception type if an exception was raised
+            exc_val: Exception value if an exception was raised
+            exc_tb: Exception traceback if an exception was raised
+        """
+        if self.temp_dir and Path(self.temp_dir).exists():
+            try:
+                import shutil
+                logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
+                shutil.rmtree(self.temp_dir)
+            except OSError as e:
+                logger.warning(f"Error cleaning up temporary files: {str(e)}")
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
 
 
 def run_pipeline():
-    """Main pipeline entry point."""
-    logger_instance = None
+    """
+    Run the primer design pipeline.
     
+    Main entry point for pipeline execution. Handles argument parsing,
+    configuration loading, database verification, and workflow execution.
+    
+    Returns:
+        True if the pipeline completed successfully, False otherwise
+        
+    Raises:
+        DDPrimerError: For application-specific errors
+        FileError: For file-related operations
+        ExternalToolError: For external tool failures
+    """
+    # Initialize logger first to handle any early errors
+    logger_instance = None
+
     try:
-        # Parse arguments and setup
+        # Parse command line arguments
         args = parse_arguments()
         
-        # Setup pipeline (returns False if should exit early)
-        if not setup_pipeline(args):
-            return True
+        # Setup logging
+        log_file = setup_logging(debug=args.debug if args is not None else False)
         
         logger_instance = logging.getLogger(__name__)
-        logger_instance.info("=== ddPrimer Unified Pipeline ===")
+        logger_instance.debug("Initializing Config settings")
+        Config.get_instance()
+        logger_instance.debug(f"Initial DB_PATH: {Config.DB_PATH}")
+        logger_instance.debug("Starting pipeline execution")
+        logger_instance.debug(f"Arguments: {args}")
+        logger_instance.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
-        # Run workflow
-        success = run_unified_workflow(args)
+        # Display configuration if --config is provided with special values
+        if args.config in ['DISPLAY', 'all', 'basic', 'template']:
+            if args.config == 'template':
+                # Generate template configuration file
+                from .config import generate_config_template
+                # Use the output directory if provided
+                output_dir = args.output if hasattr(args, 'output') and args.output else None
+                generate_config_template(Config, output_dir=output_dir)
+            else:
+                # Display configuration
+                display_config(Config)
+                # Show Primer3 settings only for 'all' mode
+                if args.config == 'all':
+                    display_primer3_settings(Config)
+            return True
+
+            
+        # Force CLI mode if specified
+        if args.cli:
+            FileIO.use_cli = True
+            logger_instance.debug("CLI mode enforced via command line argument")
+
+        # Load custom configuration if provided
+        if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
+            logger_instance.debug(f"Loading custom configuration from {args.config}")
+            try:
+                Config.load_from_file(args.config)
+            except FileNotFoundError as e:
+                error_msg = f"Configuration file not found: {args.config}"
+                logger_instance.error(error_msg)
+                raise FileError(error_msg) from e
+            except Exception as e:
+                error_msg = f"Error loading configuration file {args.config}: {str(e)}"
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+                raise FileError(error_msg) from e
+            
+        # Apply nooligo setting if specified
+        if args.nooligo:
+            logger_instance.info("Internal oligo (probe) design is disabled")
+            # Modify settings
+            Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
+            Config.DISABLE_INTERNAL_OLIGO = True
+        
+        # Process BLAST database arguments - simplified handling
+        if args.db is not None:
+            logger_instance.debug("BLAST database operation requested")
+            try:
+                blast_db_creator = BlastDBCreator()
+                
+                # Handle model organism / existing db selection
+                if args.db_action == 'select':
+                    logger_instance.info("=== Blast Database selection menu ===")
+                    from .utils import ModelOrganismManager as MOManager
+                    # Fix: Remove the logger_instance argument
+                    organism_key, organism_name, fasta_file = MOManager.select_model_organism()
+                    
+                    if organism_key is None and fasta_file is None:
+                        logger_instance.info("Database selection canceled. Exiting...")
+                        return False
+                    
+                    # Handle the case of selecting an existing database
+                    if organism_key == 'existing_db':
+                        # fasta_file actually contains the database path in this case
+                        selected_db_path = fasta_file
+                        Config.DB_PATH = selected_db_path
+                        Config.save_database_config(selected_db_path)
+                        Config.USE_CUSTOM_DB = True
+                        logger_instance.info(f"\n=== Selected database: {selected_db_path} ===")
+                        
+                        # If only running database operations, exit successfully
+                        if not args.fasta:
+                            return True
+                        else:
+                            # Continue with other operations using the selected database
+                            pass
+                    
+                    # For model organism or custom file cases, continue with database creation
+                    if organism_key is not None and args.db_name is None:
+                        # For model organism, use scientific name as the database name
+                        organism_name = MOManager.MODEL_ORGANISMS[organism_key]["name"]
+                        scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
+                        db_name = scientific_name.replace(' ', '_')
+                        logger_instance.info(f"Using database name: {db_name}")
+                    else:
+                        db_name = args.db_name
+                
+                # Handle direct file path
+                elif args.db_action == 'file':
+                    fasta_file = args.db_fasta
+                    if not Path(fasta_file).exists():
+                        error_msg = f"FASTA file not found: {fasta_file}"
+                        logger_instance.error(error_msg)
+                        raise FileError(error_msg)
+                    organism_key = None  # Not a model organism
+                    db_name = args.db_name
+                    
+                # If we have a file to create a database from
+                if fasta_file and organism_key != 'existing_db':
+                    
+                    # Use the output directory if provided, otherwise use default
+                    output_dir = args.output if args.output else None
+                    
+                    # Create the database
+                    db_path = blast_db_creator.create_db(
+                        fasta_file,
+                        db_name,  # Custom database name
+                        output_dir
+                    )
+                    
+                    # Clean up genome file if it was from a model organism
+                    if organism_key is not None and organism_key != 'existing_db':
+                        from .utils import ModelOrganismManager
+                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger_instance)
+
+                    # Check if there's already a database path set
+                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                        # If there's already a non-default database, ask if we should use the new one
+                        logger_instance.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
+                        if use_new_db == "" or use_new_db.startswith("y"):
+                            Config.DB_PATH = db_path
+                            Config.save_database_config(db_path)
+                            Config.USE_CUSTOM_DB = True
+                            logger_instance.info(f"\n=== Now using: {db_path} ===")
+                        else:
+                            logger_instance.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                    else:
+                        # If no database or default database, automatically use the new one
+                        Config.DB_PATH = db_path
+                        Config.save_database_config(db_path)
+                        Config.USE_CUSTOM_DB = True
+                        logger_instance.info(f"BLAST database created and set as active: {db_path}")
+                        
+                    # If only running database operations, exit successfully
+                    if not args.fasta:
+                        return True
+                        
+            except FileError:
+                # Re-raise FileError without modification
+                raise
+            except ExternalToolError:
+                # Re-raise ExternalToolError without modification
+                raise
+            except Exception as e:
+                error_msg = f"Unexpected error during database operation: {str(e)}"
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+                # Mark file selection as complete
+                FileIO.mark_selection_complete()
+                raise DDPrimerError(error_msg) from e
+                
+        # Skip BLAST verification for lastzonly mode
+        if not args.lastzonly:
+            # Verify BLAST database
+            logger_instance.debug("Verifying BLAST database...")
+            
+            try:
+                if not BlastVerification.verify_blast_database():
+                    error_msg = "BLAST database verification failed, and no new database created."
+                    logger_instance.error(error_msg)
+                    # Mark file selection as complete
+                    FileIO.mark_selection_complete()
+                    raise ExternalToolError(error_msg, tool_name="blastn")
+            except Exception as e:
+                error_msg = f"Error during BLAST verification: {str(e)}"
+                logger_instance.error(error_msg)
+                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+                # Mark file selection as complete
+                FileIO.mark_selection_complete()
+                raise ExternalToolError(error_msg, tool_name="blastn") from e
+        
+        logger_instance.debug("=== Primer Design Pipeline ===")
+        
+        # Use factory pattern to get the appropriate workflow
+        workflow = WorkflowFactory.create_workflow(args)
+        
+        # Execute the workflow
+        success = workflow(args)
         
         if success:
-            logger_instance.info("=== Pipeline completed successfully! ===")
+            logger_instance.info("\n=== Pipeline execution completed successfully! ===")
+            logger_instance.info("")
             return True
         else:
             logger_instance.error("Pipeline execution failed")
             return False
             
     except DDPrimerError as e:
+        # Handle application-specific exceptions
         if logger_instance:
-            logger_instance.error(f"Pipeline error: {e}")
-        else:
-            print(f"Pipeline error: {e}")
-        return False
-    except Exception as e:
-        if logger_instance:
-            logger_instance.error(f"Unexpected error: {e}")
+            error_msg = f"Pipeline error: {str(e)}"
+            logger_instance.error(error_msg)
             logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
         else:
-            print(f"Unexpected error: {e}")
+            print(f"Pipeline error: {str(e)}")
+            print(f"Run with --debug for more detailed error information")
+        return False
+    except Exception as e:
+        # Handle unexpected exceptions
+        if logger_instance:
+            error_msg = f"Unhandled exception during pipeline execution: {str(e)}"
+            logger_instance.error(error_msg)
+            logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+        else:
+            print(f"Unhandled exception during pipeline execution: {str(e)}")
+            print(f"Run with --debug for more detailed error information")
             print(traceback.format_exc())
         return False
 
 
 def main():
-    """Entry point for direct execution."""
+    """
+    Entry point when running the script directly.
+    
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
     success = run_pipeline()
     sys.exit(0 if success else 1)
 

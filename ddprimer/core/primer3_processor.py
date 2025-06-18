@@ -381,7 +381,6 @@ class Primer3Processor:
         Returns the substring from the 5' end of the forward primer
         to the 3' end of the reverse primer, addressing systematic
         coordinate alignment issues with Primer3.
-        All inputs are 0-based coordinates from Primer3.
         
         Args:
             seq: Template sequence
@@ -413,28 +412,36 @@ class Primer3Processor:
         except (TypeError, ValueError) as e:
             error_msg = f"Invalid numerical values for amplicon extraction"
             logger.error(error_msg)
+            logger.debug(f"Parameter conversion error: {str(e)}", exc_info=True)
             raise ValueError(error_msg) from e
         
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Amplicon extraction (0-based): left={left_start},{left_len}, right={right_start},{right_len}")
+            logger.debug(f"Amplicon extraction: left={left_start},{left_len}, right={right_start},{right_len}")
+            
+        # Adjust coordinates to address off-by-one issues
+        adj_left_start = max(1, left_start - 1)
         
-        # Calculate amplicon boundaries (all 0-based)
-        # Start: beginning of forward primer
-        # End: end of reverse primer (start + length)
-        amp_start = left_start
-        amp_end = right_start + right_len
+        # Handle edge cases
+        if right_start > len(seq):
+            logger.debug(f"Adjusting right_start from {right_start} to {len(seq)} (sequence length)")
+            right_start = len(seq)
+        
+        # Calculate amplicon boundaries
+        amp_start = adj_left_start
+        amp_end = right_start
         
         # Validate coordinates
-        if amp_start < 0 or amp_end > len(seq) or amp_start >= amp_end:
+        if amp_start < 1 or amp_end > len(seq) or amp_start > amp_end:
             logger.warning(f"Invalid amplicon coordinates: start={amp_start}, end={amp_end}, seq_len={len(seq)}")
             return ""
         
-        # Extract amplicon sequence (already 0-based)
-        amplicon = seq[amp_start:amp_end]
+        # Extract amplicon sequence (convert to 0-based for Python)
+        amplicon = seq[amp_start - 1 : amp_end]
         
-        # Debug validation
+        # Debug validation in debug mode
         if logger.isEnabledFor(logging.DEBUG):
-            self._validate_amplicon_extraction_fixed(seq, left_start, left_len, right_start, right_len, amplicon)
+            self._validate_amplicon_extraction(seq, left_start, left_len, right_start, right_len, 
+                                             adj_left_start, amplicon)
         
         return amplicon
     
@@ -452,26 +459,23 @@ class Primer3Processor:
             adj_left_start: Adjusted left start position
             amplicon: Extracted amplicon sequence
         """
-        # Extract primer sequences using 0-based coordinates
-        forward_primer = seq[left_start:left_start + left_len]
-        reverse_primer = seq[right_start:right_start + right_len]
+        # Extract primer sequences for validation
+        forward_original = seq[left_start - 1 : left_start - 1 + left_len]
+        forward_adjusted = seq[adj_left_start - 1 : adj_left_start - 1 + left_len]
+        reverse_primer = seq[right_start - right_len : right_start]
         
-        logger.debug(f"Primer validation (0-based coordinates):")
-        logger.debug(f"  Forward primer: {forward_primer}")
-        logger.debug(f"  Reverse primer: {reverse_primer}")
+        logger.debug(f"Primer validation:")
+        logger.debug(f"  Forward (original pos): {forward_original}")
+        logger.debug(f"  Forward (adjusted pos): {forward_adjusted}")
         logger.debug(f"  Amplicon start: {amplicon[:left_len] if len(amplicon) >= left_len else amplicon}")
+        logger.debug(f"  Reverse primer: {reverse_primer}")
         logger.debug(f"  Amplicon end: {amplicon[-right_len:] if len(amplicon) >= right_len else amplicon}")
         
-        # Check forward primer alignment
-        if len(amplicon) >= left_len and amplicon[:left_len] == forward_primer:
-            logger.debug("✓ Forward primer alignment correct")
-        else:
-            logger.debug("WARNING: Amplicon start does not match forward primer")
+        # Check alignment
+        if len(amplicon) >= left_len and amplicon[:left_len] != forward_adjusted:
+            logger.debug("WARNING: Amplicon start does not match adjusted forward primer")
         
-        # Check reverse primer alignment
-        if len(amplicon) >= right_len and amplicon[-right_len:] == reverse_primer:
-            logger.debug("✓ Reverse primer alignment correct")
-        else:
+        if len(amplicon) >= right_len and amplicon[-right_len:] != reverse_primer:
             logger.debug("WARNING: Amplicon end does not match reverse primer")
     
     def parse_primer3_batch(self, stdout_data: str, fragment_info: Optional[Dict] = None) -> List[Dict]:
@@ -615,7 +619,6 @@ class Primer3Processor:
     def _parse_primer_data_line(self, line: str, block: Dict) -> None:
         """
         Parse a single line of primer data into the sequence block.
-        Primer3 returns 0-based coordinates - keeps them as 0-based internally.
         
         Args:
             line: Line to parse
@@ -644,15 +647,14 @@ class Primer3Processor:
             else:
                 pair[attr_key] = val.upper()
                 
-        # Keep 0-based coordinates from Primer3 internally
+        # Primer positions
         elif match := re.match(r'^PRIMER_(LEFT|RIGHT|INTERNAL)_(\d+)=(\d+),(\d+)', line):
             side, idx, start, length = match.groups()
             idx = int(idx)
-            start = int(start)  # Keep 0-based from Primer3
+            start = int(start) + 1  # Convert to 1-based coordinates
             length = int(length)
             pair = self._get_or_create_primer_pair(block, idx)
             
-            # Store as 0-based coordinates internally
             pair[f"{side.lower()}_start"] = start
             pair[f"{side.lower()}_len"] = length
 
@@ -1020,14 +1022,13 @@ class Primer3Processor:
         # Get chromosome
         chromosome = frag_info.get("chr", "")
         
-        # Calculate absolute genomic position for output (convert to 1-based)
+        # Calculate absolute genomic position if possible
         location = ""
-        left_start = pair.get("left_start")  # This is 0-based from Primer3
-        if left_start is not None and "start" in frag_info:
+        ls = pair.get("left_start")
+        if ls is not None and "start" in frag_info:
             try:
-                fragment_start = frag_info.get("start", 1)  # Fragment start is 1-based
-                # Convert to absolute 1-based position for output
-                abs_left_start = fragment_start + left_start  # fragment_start (1-based) + left_start (0-based offset)
+                fragment_start = frag_info.get("start", 1)
+                abs_left_start = fragment_start + ls - 1
                 location = str(abs_left_start)
             except (TypeError, ValueError):
                 logger.debug(f"Could not calculate absolute position for {sequence_id}")
