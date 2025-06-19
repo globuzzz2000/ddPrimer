@@ -226,10 +226,11 @@ class EnhancedDebugFilter(logging.Filter):
 
 def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
     """
-    Configure logging with filename-based debug control.
+    Configure logging with filename-based debug control and automatic log rotation.
     
     Sets up comprehensive logging configuration with support for module-specific
     debug levels, colored console output, and automatic log file management.
+    Automatically rotates logs daily and keeps only the last 10 log files.
     
     Args:
         debug: Debug configuration options:
@@ -282,7 +283,7 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         # Set up log directory
         log_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer", "logs")
         os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"ddPrimer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+        log_file = os.path.join(log_dir, "ddPrimer.log")
         
         # Configure root logger
         root_logger = logging.getLogger()
@@ -292,9 +293,16 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # File handler (detailed, no colors)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+        # File handler with rotation (rotates daily, keeps last 10 files)
+        from logging.handlers import TimedRotatingFileHandler
+        file_handler = TimedRotatingFileHandler(
+            log_file,
+            when='midnight',
+            interval=1,
+            backupCount=10,
+            encoding='utf-8'
+        )
+        file_handler.setLevel(logging.DEBUG)  # Always save debug logs to file
         file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
         )
@@ -333,6 +341,7 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         if debug_enabled:
             main_logger.debug("Debug logging enabled")
             main_logger.debug(f"Log file: {log_file}")
+            main_logger.debug("Log rotation: daily, keeping last 10 files")
             if debug_modules:
                 resolved_modules = []
                 unresolved_modules = []
@@ -362,7 +371,7 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         print(f"ERROR: {error_msg}: {str(e)}")  # Can't use logger here since setup failed
         raise LoggingConfigError(error_msg) from e
     
-    logger.debug("=== END LOGGING SETUP DEBUG ===")
+logger.debug("=== END LOGGING SETUP DEBUG ===")
 
 
 def _normalize_debug_input(debug: Union[bool, List[str], str]) -> tuple[bool, Optional[List[str]]]:

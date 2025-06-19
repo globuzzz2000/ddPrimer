@@ -61,46 +61,51 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='ddprimer [--direct [.csv, .xlsx]] [-h] [--debug [MODULE...]] [--config [.json]] \n'
-            '                [--cli] [--nooligo] [--snp] [--noannotation] \n'
-            '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
+        usage='ddprimer [-h] [--debug [MODULE...]] [--config [.json]] [--db [.fasta, .fna, .fa] [DB_NAME]]\n'
+            '                [--cli]  [--nooligo] [--noannotation]\n'
+            '                [--direct [.csv, .xlsx]] [--snp]\n'        
             '                [--fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
             '                [--gff [.gff, .gff3]] [--output <output_dir>]'
     )
 
     # Create argument groups for better organization
-    mode_group = parser.add_argument_group('modes')
     option_group = parser.add_argument_group('options')
     input_group = parser.add_argument_group('inputs (optional)')
 
-    # Modes
-    mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
-                           help='Enable target-sequence based primer design workflow')
-
-    # Enhanced debug option
+    # Pipeline Help
     option_group.add_argument('--debug', nargs='*', metavar='MODULE', 
-                             help='Enable debug mode. Use without arguments for universal debug, '
-                                  'or specify module names (e.g., --debug standard_mode snp blast). '
-                                  'Available modules: standard_mode, direct_mode, '
-                                  'snp, annotations, blast, vienna, primer3, utils')
-    
-    option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
+                            help=   'Enable debug mode. Use without arguments for universal debug,'
+                                    'or specify module names (e.g. "--debug blast_processor").')
     option_group.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
-                      help='Configuration file path or special mode ("primer3", or "template")')
-
-    option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
-    option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    option_group.add_argument('--snp', action='store_true', help='For direct mode: Enable SNP masking in sequences (requires fasta and vcf file)')
-    option_group.add_argument('--noannotation', action='store_true', help='For standard mode: Disable gene annotation filtering')
+                            help=   'Configuration file path. With no arguments, shows config help mode. ')
     option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
-                    help='Create or select a BLAST database. With no arguments, shows model organism selection menu. '
-                        'With one argument, creates database from the specified FASTA file. '
-                        'With two arguments, creates database from the first argument and uses the second as the database name.')
-        
+                            help=   'Create or select a BLAST database. With no arguments, shows database selection menu.'
+                                    'Optionally use FASTA file path argument to create database,'
+                                    'optional second argument to determine database name.')
+    
+    # Pipeline Options
+    option_group.add_argument('--cli', action='store_true', 
+                            help=   'Force CLI mode.')
+    option_group.add_argument('--nooligo', action='store_true', 
+                            help=   'Disable internal oligo (probe) design.')
+    option_group.add_argument('--noannotation', action='store_true', 
+                            help=   'Disable gene annotation filtering.')
+    
+    # Direct Mode
+    option_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
+                            help=   'Enable target-sequence based primer design workflow.')
+    option_group.add_argument('--snp', action='store_true', 
+                            help=   'For direct mode: Enable SNP masking in sequences (requires fasta and vcf file).')
+
     # Input files
-    input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', help='Reference genome FASTA file')
-    input_group.add_argument('--vcf', metavar='[.vcf, .vcf.gz]', help='Variant Call Format (VCF) file with variants')
-    input_group.add_argument('--gff', metavar='[.gff, .gff3]', help='GFF annotation file')
+    input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', 
+                            help=   'Reference genome FASTA file')
+    input_group.add_argument('--vcf', metavar='[.vcf, .vcf.gz]', 
+                            help=   'Variant Call Format (VCF) file with variants')
+    input_group.add_argument('--gff', metavar='[.gff, .gff3]', 
+                            help=   'GFF annotation file')
+    input_group.add_argument('--output', metavar='<output_dir>', 
+                            help=   'Output directory')
     
     args = parser.parse_args()
 
