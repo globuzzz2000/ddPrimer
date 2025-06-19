@@ -289,11 +289,11 @@ def run_pipeline():
                 output_dir = args.output if hasattr(args, 'output') and args.output else None
                 generate_config_template(Config, output_dir=output_dir)
             else:
-                # Display configuration
-                display_config(Config)
-                # Show Primer3 settings only for 'primer3' mode
                 if args.config == 'primer3':
                     display_primer3_settings(Config)
+                else:
+                    # Display configuration
+                    display_config(Config)
             return True
 
         # Force CLI mode if specified

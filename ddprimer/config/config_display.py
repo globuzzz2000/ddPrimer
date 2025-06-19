@@ -164,6 +164,11 @@ def display_primer3_settings(config_cls):
         
         # Group Primer3 settings by categories
         categories = {
+            "Basic Primer3 Parameters": [
+                "PRIMER_MIN_SIZE", "PRIMER_OPT_SIZE", "PRIMER_MAX_SIZE",
+                "PRIMER_MIN_TM", "PRIMER_OPT_TM", "PRIMER_MAX_TM",
+                "PRIMER_MIN_GC", "PRIMER_MAX_GC", "PRIMER_PRODUCT_SIZE_RANGE",
+            ],
             "General Settings": [key for key in primer3_settings.keys() if key.startswith("P3_")],
             "Primer Name Settings": [key for key in primer3_settings.keys() if key.startswith("P3P_PRIMER_NAME")],
             "Primer Conditions": [key for key in primer3_settings.keys() if key.startswith("PRIMER_") and 
