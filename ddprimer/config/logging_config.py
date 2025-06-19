@@ -16,7 +16,7 @@ debugging capabilities with colored output.
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
@@ -231,6 +231,7 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
     Sets up comprehensive logging configuration with support for module-specific
     debug levels, colored console output, and automatic log file management.
     Automatically rotates logs daily and keeps only the last 10 log files.
+    Each run is clearly marked with timestamps for easy identification.
     
     Args:
         debug: Debug configuration options:
@@ -283,7 +284,10 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         # Set up log directory
         log_dir = os.path.join(os.path.expanduser("~"), ".ddPrimer", "logs")
         os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "ddPrimer.log")
+        
+        # Create timestamped filename for this run
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(log_dir, f"ddPrimer_{timestamp}.log")
         
         # Configure root logger
         root_logger = logging.getLogger()
@@ -293,15 +297,8 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # File handler with rotation (rotates daily, keeps last 10 files)
-        from logging.handlers import TimedRotatingFileHandler
-        file_handler = TimedRotatingFileHandler(
-            log_file,
-            when='midnight',
-            interval=1,
-            backupCount=10,
-            encoding='utf-8'
-        )
+        # File handler for this specific run (no rotation needed since each run gets its own file)
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)  # Always save debug logs to file
         file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
@@ -341,7 +338,6 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         if debug_enabled:
             main_logger.debug("Debug logging enabled")
             main_logger.debug(f"Log file: {log_file}")
-            main_logger.debug("Log rotation: daily, keeping last 10 files")
             if debug_modules:
                 resolved_modules = []
                 unresolved_modules = []
@@ -363,6 +359,9 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         Config.DEBUG_MODE = debug_enabled
         logger.debug("Updated Config.DEBUG_MODE")
         
+        # Clean up old log files (keep last 30 files)
+        _cleanup_old_logs()
+        
         logger.debug("Logging setup completed successfully")
         return log_file
         
@@ -370,8 +369,88 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         error_msg = f"Failed to setup logging configuration"
         print(f"ERROR: {error_msg}: {str(e)}")  # Can't use logger here since setup failed
         raise LoggingConfigError(error_msg) from e
+
+
+def _cleanup_old_logs(files_to_keep: int = 30):
+    """
+    Clean up old log files.
     
-logger.debug("=== END LOGGING SETUP DEBUG ===")
+    Removes old log files to prevent unlimited disk usage growth.
+    Keeps the most recent files based on filename timestamp.
+    
+    Args:
+        files_to_keep: Number of most recent log files to retain
+    """
+    try:
+        from pathlib import Path
+        
+        logs_dir = Path.home() / ".ddPrimer" / "logs"
+        if not logs_dir.exists():
+            return
+        
+        # Get all ddPrimer log files
+        log_files = list(logs_dir.glob("ddPrimer_*.log"))
+        
+        # Sort by filename (timestamp) - newest first
+        log_files.sort(reverse=True)
+        
+        # Remove old files beyond the keep limit
+        files_to_remove = log_files[files_to_keep:]
+        for log_file in files_to_remove:
+            log_file.unlink()
+            logger.debug(f"Cleaned up old log file: {log_file}")
+                    
+    except Exception as e:
+        logger.warning(f"Failed to clean up old logs: {e}")
+
+
+def get_current_log_file() -> Optional[str]:
+    """
+    Get the path to the current run's log file.
+    
+    Returns:
+        str: Path to current log file, or None if logging not set up
+        
+    Example:
+        >>> current_log = get_current_log_file()
+        >>> print(f"Current log: {current_log}")
+    """
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            return handler.baseFilename
+    return None
+
+
+def list_recent_logs(count: int = 10) -> List[str]:
+    """
+    List the most recent log files.
+    
+    Args:
+        count: Number of recent log files to return
+        
+    Returns:
+        List of log file paths, sorted by timestamp (newest first)
+        
+    Example:
+        >>> recent_logs = list_recent_logs(count=5)
+        >>> for log_file in recent_logs:
+        ...     print(log_file)
+    """
+    from pathlib import Path
+    
+    logs_dir = Path.home() / ".ddPrimer" / "logs"
+    if not logs_dir.exists():
+        return []
+    
+    # Get all ddPrimer log files
+    log_files = list(logs_dir.glob("ddPrimer_*.log"))
+    
+    # Sort by filename (timestamp) - newest first
+    log_files.sort(reverse=True)
+    
+    # Convert to strings and return the requested count
+    return [str(f) for f in log_files[:count]]
 
 
 def _normalize_debug_input(debug: Union[bool, List[str], str]) -> tuple[bool, Optional[List[str]]]:

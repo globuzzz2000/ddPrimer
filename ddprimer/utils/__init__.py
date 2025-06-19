@@ -9,12 +9,12 @@ This subpackage contains utility functions:
 
 from .file_io import FileIO, TempDirectoryManager
 from .blast_db_manager import BlastDatabaseManager
-from .chromosome_mapper import ChromosomeMapper
+from .file_preparator import FilePreparator, prepare_pipeline_files
 
 __all__ = [
-    'FileUtils',
     'BlastDatabaseManager',
     'FileIO',
     'TempDirectoryManager',
-    'ChromosomeMapper'
+    'FilePreparator',
+    'prepare_pipeline_files'
 ]

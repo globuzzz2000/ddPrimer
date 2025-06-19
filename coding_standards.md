@@ -1,5 +1,12 @@
 # ddPrimer Coding Standards
 
+## What NOT to Change
+
+- **Never modify existing `.info()` calls**
+- **Don't add new `.info()` calls** 
+- **Don't remove existing `.info()` calls**
+- **Don't change existing progress reporting**
+
 ## Logging Standards
 
 ### Logger Initialization
@@ -33,6 +40,24 @@ logger.debug(f"Processing {count} items with param={value}")
 logger.debug(f"Results: success={success_count}, failed={fail_count}")
 ```
 
+### Reducing Debug Redundancy Between Modules
+Avoid duplicating debug information across modules. The main pipeline module should focus on high-level workflow, while core modules provide detailed operation info:
+
+```python
+# MAIN PIPELINE - High-level workflow only
+logger.debug("Starting primer design workflow")
+logger.debug(f"CHECKPOINT 1: {len(restriction_fragments)} restriction fragments")
+
+# CORE MODULES - Detailed operation info
+logger.debug(f"=== RESTRICTION SITE CUTTING ===")
+logger.debug(f"Using restriction site pattern: {Config.RESTRICTION_SITE}")
+logger.debug(f"Generated {fragment_count} valid fragments from {seq_id}")
+
+# AVOID - Redundant logging in both main and core modules
+# Main: logger.debug("Processing sequences with VCF variants...")
+# Core: logger.debug("Processing sequences with VCF variants...")  # REDUNDANT
+```
+
 ### Performance Considerations
 ```python
 # Guard expensive debug operations
@@ -43,11 +68,20 @@ if logger.isEnabledFor(logging.DEBUG):
 # Avoid logging in tight loops unless critical
 ```
 
-### What NOT to Change
-- **Never modify existing `.info()` calls**
-- **Don't add new `.info()` calls** 
-- **Don't remove existing `.info()` calls**
-- **Don't change existing progress reporting**
+### Debug Message Cleanup
+Remove redundant debug statements that merely announce function entry/exit:
+```python
+# REMOVE - These add no value
+logger.debug("Starting function X")
+logger.debug("Function X completed")
+logger.debug("Entering method Y")
+logger.debug("Exiting method Y")
+
+# KEEP - These provide useful information
+logger.debug(f"Processing {len(sequences)} sequences")
+logger.debug(f"Found {variant_count} variants in chromosome {chr_name}")
+logger.debug(f"Analysis results: {summary_stats}")
+```
 
 ## Docstring Standards
 
@@ -162,6 +196,58 @@ def critical_function(data: str) -> bool:
     """
 ```
 
+## Code Comment Cleanup
+
+### Remove Implementation History Comments
+Remove comments that reference changes, fixes, or development history:
+
+```python
+# REMOVE these types of comments:
+# Fixed issue with coordinate mapping
+# Enhanced error handling for edge cases  
+# New implementation using bcftools
+# Improved performance in this section
+# Temporary fix for issue #123
+# TODO: Refactor this when time permits
+# Updated to handle new file format
+# Workaround for threading issue
+
+# KEEP functional comments:
+# Convert 1-based coordinates to 0-based for Python
+# Handle edge case where sequence ends before primer
+# Apply thermodynamic constraints from configuration
+```
+
+### Method and Variable Name Cleanup
+Remove "fix", "new", "enhanced", etc. from names:
+
+```python
+# CHANGE from descriptive of change to descriptive of purpose:
+def process_sequences_fixed() -> None:  # CHANGE TO: def process_sequences()
+def validate_input_enhanced() -> bool:  # CHANGE TO: def validate_input()
+def new_coordinate_mapper() -> Dict:    # CHANGE TO: def coordinate_mapper()
+
+# Variables:
+enhanced_results = {}     # CHANGE TO: results = {}
+fixed_coordinates = []    # CHANGE TO: coordinates = []
+new_algorithm_params = {} # CHANGE TO: algorithm_params = {}
+```
+
+### Comment Content Standards
+Focus on explaining WHY and WHAT, not WHEN or HOW it changed:
+
+```python
+# GOOD - Explains purpose and context
+# Use reverse complement for probe design to optimize C>G ratio
+# BLAST word size of 7 recommended for short primer sequences
+# Minimum segment length must accommodate primer product size range
+
+# BAD - Documents change history instead of purpose  
+# Fixed the reverse complement calculation
+# Updated BLAST parameters after testing
+# New validation logic added here
+```
+
 ## Migration Checklist
 
 ### Logging Updates
@@ -171,6 +257,7 @@ def critical_function(data: str) -> bool:
 - [ ] Add `exc_info=True` to debug logging for exceptions
 - [ ] Standardize debug section formatting
 - [ ] Guard expensive debug operations
+- [ ] Remove redundant debug entry/exit statements
 
 ### Docstring Updates  
 - [ ] Add missing function/method docstrings
@@ -187,6 +274,13 @@ def critical_function(data: str) -> bool:
 - [ ] Include relevant context in error messages
 - [ ] Document all exceptions in docstrings
 
+### Code Comment Cleanup
+- [ ] Remove implementation history references
+- [ ] Remove "fix", "new", "enhanced" from method names
+- [ ] Remove "TODO" and "FIXME" comments unless actionable
+- [ ] Focus comments on explaining purpose, not change history
+- [ ] Remove redundant comments that just restate the code
+
 ## Example Conversion
 
 ### Before
@@ -194,15 +288,21 @@ def critical_function(data: str) -> bool:
 class BlastProcessor:
     logger = logging.getLogger("ddPrimer.blast_processor")
     
-    def blast_short_seq(self, seq):
+    def blast_short_seq_enhanced(self, seq):
+        # New improved implementation
+        self.logger.debug("Starting BLAST operation")  # Redundant
         if not seq:
+            self.logger.debug("Entering validation branch")  # Redundant
             return None, None
         try:
+            # Fixed coordinate handling issue
             # process
             pass
         except Exception as e:
-            self.logger.error("BLAST Error")
+            self.logger.error("BLAST Error")  # No context
             return None, None
+        finally:
+            self.logger.debug("BLAST operation completed")  # Redundant
 ```
 
 ### After

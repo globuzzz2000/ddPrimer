@@ -1,606 +1,447 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-SNP processing using VCF normalization approach with intelligent chromosome mapping.
+SNP masking processor module for ddPrimer pipeline.
 
-This module implements the industry-standard approach for handling VCF variants:
-1. Normalize VCF using bcftools to eliminate coordinate ambiguity
-2. Apply sequence modifications in a single pass
-3. Handle both masking and substitution operations cleanly
-4. Intelligent chromosome name mapping between VCF and FASTA files
-5. Scalable processing using bcftools streaming for large files
+Contains functionality for:
+1. VCF-based sequence masking and substitution for primer design
+2. Fixed variant substitution (AF=1.0) vs variable variant masking (AF<1.0)
+3. Processing of prepared VCF files (bgzipped, normalized, indexed)
+4. Quality and allele frequency filtering with bcftools integration
 
-Requires bcftools to be installed and available in PATH.
+This module works with prepared VCF files from FilePreparator to provide
+streamlined variant processing for the ddPrimer pipeline. File preparation
+(compression, normalization, chromosome mapping) is handled upstream.
 """
 
-import subprocess
-import tempfile
 import os
+import subprocess
 import logging
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
-from Bio.Seq import Seq
-from Bio.SeqRecord import SeqRecord
+from typing import Dict, List, Optional
+from ..config import Config, FileError, ExternalToolError, SequenceProcessingError
 
-# Import from your exceptions module
-from ..config import VCFNormalizationError
-
+# Set up module logger
 logger = logging.getLogger(__name__)
 
 
 class SNPMaskingProcessor:
     """
-    SNP processor using VCF normalization approach with intelligent chromosome mapping.
+    Handles VCF-based sequence masking and substitution for primer design.
     
-    This class handles SNP processing using the industry-standard VCF normalization
-    workflow to eliminate coordinate drift issues, combined with intelligent
-    chromosome name mapping between VCF and FASTA files. Uses scalable bcftools
-    operations for efficient processing of large VCF files.
+    This class processes prepared VCF variants to either substitute fixed variants (AF=1.0)
+    into sequences or mask variable variants (AF<1.0) with 'N' or soft masking.
+    Works with VCF files that have been prepared by FilePreparator (bgzipped,
+    normalized, indexed, chromosome names harmonized).
+    
+    Attributes:
+        reference_file: Path to reference FASTA file
+        
+    Example:
+        >>> processor = SNPMaskingProcessor("genome.fasta")
+        >>> processed_seq = processor.process_sequence_with_vcf(
+        ...     sequence="ATCGATCG", 
+        ...     vcf_path="prepared_variants.vcf.gz",
+        ...     chromosome="chr1"
+        ... )
     """
     
-    def __init__(self, reference_fasta: str):
+    def __init__(self, reference_file: str):
         """
-        Initialize SNP processor.
+        Initialize SNP masking processor.
         
         Args:
-            reference_fasta: Path to reference FASTA file
+            reference_file: Path to reference FASTA file
             
         Raises:
-            FileNotFoundError: If reference FASTA not found
-            VCFNormalizationError: If bcftools not available
+            FileError: If reference file cannot be accessed
+            ExternalToolError: If bcftools is not available
         """
-        self.reference_fasta = Path(reference_fasta)
-        if not self.reference_fasta.exists():
-            raise FileNotFoundError(f"Reference FASTA not found: {reference_fasta}")
+        logger.debug("=== SNP PROCESSOR INITIALIZATION DEBUG ===")
+        logger.debug(f"Initializing SNPMaskingProcessor with reference: {reference_file}")
         
-        # Check if bcftools is available
-        try:
-            subprocess.run(['bcftools', '--version'], 
-                         capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise VCFNormalizationError(
-                "bcftools not found. Please install bcftools and ensure it's in PATH"
-            )
-        
-        # Initialize chromosome mapping (will be built when needed)
-        self.chromosome_mapping = None
-    
-    def build_chromosome_mapping(self, vcf_path: str):
-        """
-        Build chromosome mapping between VCF and FASTA using ChromosomeMapper.
-        
-        Args:
-            vcf_path: Path to VCF file for chromosome analysis
-            
-        Returns:
-            Dictionary mapping VCF chromosomes to FASTA sequence names
-        """
-        if self.chromosome_mapping is not None:
-            return self.chromosome_mapping
-        
-        try:
-            # Import the ChromosomeMapper from your existing module
-            from ..utils import ChromosomeMapper
-            
-            mapper = ChromosomeMapper()
-            
-            # Check compatibility and get mapping
-            analysis = mapper.check_chromosome_compatibility(
-                vcf_path, str(self.reference_fasta)
-            )
-            
-            if analysis['compatible'] and not analysis['needs_mapping']:
-                # Direct mapping (chromosome names match exactly)
-                logger.debug("VCF and FASTA chromosome names are compatible")
-                self.chromosome_mapping = {chrom: chrom for chrom in analysis['exact_matches']}
-            
-            elif analysis['needs_mapping'] and analysis['suggested_mapping']:
-                # Use suggested automatic mapping
-                self.chromosome_mapping = analysis['suggested_mapping']
-                logger.info(f"Using automatic chromosome mapping for {len(self.chromosome_mapping)} chromosomes")
-                
-                if logger.isEnabledFor(logging.DEBUG):
-                    for vcf_chr, fasta_chr in self.chromosome_mapping.items():
-                        logger.debug(f"  VCF '{vcf_chr}' -> FASTA '{fasta_chr}'")
-            
-            else:
-                logger.warning("No chromosome mapping could be established")
-                self.chromosome_mapping = {}
-            
-            return self.chromosome_mapping
-            
-        except Exception as e:
-            logger.error(f"Error building chromosome mapping: {e}")
-            # Fall back to empty mapping
-            self.chromosome_mapping = {}
-            return self.chromosome_mapping
-    
-    def map_chromosome_name(self, vcf_chromosome: str) -> Optional[str]:
-        """
-        Map VCF chromosome name to FASTA sequence name.
-        
-        Args:
-            vcf_chromosome: Chromosome name from VCF file
-            
-        Returns:
-            Corresponding FASTA sequence name, or None if no mapping exists
-        """
-        if self.chromosome_mapping is None:
-            logger.warning("Chromosome mapping not initialized")
-            return vcf_chromosome  # Fall back to original name
-        
-        return self.chromosome_mapping.get(vcf_chromosome, None)
-    
-    def _create_chromosome_mapping_file(self) -> str:
-        """
-        Create a chromosome mapping file for bcftools --rename-chrs.
-        
-        Format is "old_name new_name" separated by tab, one per line.
-        
-        Returns:
-            Path to the mapping file
-            
-        Raises:
-            VCFNormalizationError: If mapping file creation fails
-        """
-        try:
-            # Create temporary mapping file
-            fd, mapping_file = tempfile.mkstemp(suffix='.txt', prefix='chr_mapping_')
-            
-            with os.fdopen(fd, 'w') as f:
-                for vcf_chr, fasta_chr in self.chromosome_mapping.items():
-                    f.write(f"{vcf_chr}\t{fasta_chr}\n")
-                    logger.debug(f"Mapping: {vcf_chr} -> {fasta_chr}")
-            
-            logger.debug(f"Created chromosome mapping file with {len(self.chromosome_mapping)} mappings")
-            return mapping_file
-            
-        except Exception as e:
-            error_msg = f"Failed to create chromosome mapping file: {str(e)}"
+        if not os.path.exists(reference_file):
+            error_msg = f"Reference FASTA file not found: {reference_file}"
             logger.error(error_msg)
-            raise VCFNormalizationError(error_msg) from e
-    
-    def normalize_vcf(self, vcf_path: str, output_path: Optional[str] = None) -> str:
-        """
-        Normalize VCF file using bcftools with scalable chromosome mapping.
+            raise FileError(error_msg)
         
-        Uses bcftools annotate --rename-chrs for efficient chromosome mapping
-        and bcftools norm for variant normalization. This approach is scalable
-        for large VCF files but requires temporary disk space.
+        self.reference_file = reference_file
+        
+        # Validate bcftools availability
+        try:
+            Config.validate_vcf_dependencies()
+            logger.debug("VCF dependencies validated successfully")
+        except Exception as e:
+            error_msg = f"VCF processing dependencies not available: {str(e)}"
+            logger.error(error_msg)
+            raise ExternalToolError(error_msg, tool_name="bcftools") from e
+        
+        logger.debug("=== END SNP PROCESSOR INITIALIZATION DEBUG ===")
+    
+    def process_sequence_with_vcf(self, sequence: str, vcf_path: str, 
+                                chromosome: str, **kwargs) -> str:
+        """
+        Process sequence with prepared VCF variants.
+        
+        Main entry point for sequence processing. Handles both fixed variant
+        substitution (AF=1.0) and variable variant masking (AF<1.0) based on
+        configuration settings. Assumes VCF is already prepared (normalized,
+        bgzipped, indexed, chromosome names harmonized).
         
         Args:
-            vcf_path: Path to input VCF file
-            output_path: Path for output normalized VCF (if None, uses temp file)
+            sequence: DNA sequence to process
+            vcf_path: Path to prepared VCF file
+            chromosome: Chromosome/sequence identifier (should match VCF)
+            **kwargs: Additional processing settings from Config
             
         Returns:
-            Path to normalized VCF file
+            Processed sequence with variants applied
             
         Raises:
-            VCFNormalizationError: If normalization fails
+            SequenceProcessingError: If sequence processing fails
         """
-        if output_path is None:
-            # Create temporary file for normalized VCF
-            fd, output_path = tempfile.mkstemp(suffix='.vcf.gz', prefix='normalized_')
-            os.close(fd)
+        logger.debug("=== SEQUENCE PROCESSING DEBUG ===")
+        logger.debug(f"Processing sequence for chromosome: {chromosome}")
+        logger.debug(f"Original sequence length: {len(sequence)}")
         
-        # Build chromosome mapping if not already done
-        if self.chromosome_mapping is None:
-            self.build_chromosome_mapping(vcf_path)
+        if not sequence or not isinstance(sequence, str):
+            logger.warning("Empty or invalid sequence provided")
+            return sequence
         
         try:
-            logger.info(f"Normalizing VCF with scalable approach: {vcf_path}")
+            # Get processing settings
+            settings = {
+                'snp_allele_frequency_threshold': kwargs.get('snp_allele_frequency_threshold', Config.VCF_ALLELE_FREQUENCY_THRESHOLD),
+                'snp_quality_threshold': kwargs.get('snp_quality_threshold', Config.VCF_QUALITY_THRESHOLD),
+                'snp_flanking_mask_size': kwargs.get('snp_flanking_mask_size', Config.VCF_FLANKING_MASK_SIZE),
+                'snp_use_soft_masking': kwargs.get('snp_use_soft_masking', Config.VCF_USE_SOFT_MASKING),
+            }
             
-            # Step 1: Create chromosome mapping file for bcftools
-            mapping_file = None
-            intermediate_vcf = None
+            logger.debug(f"Processing settings: {settings}")
             
-            if self.chromosome_mapping:
-                mapping_file = self._create_chromosome_mapping_file()
-                logger.debug(f"Created chromosome mapping file: {mapping_file}")
-                
-                # Create intermediate file with renamed chromosomes
-                fd, intermediate_vcf = tempfile.mkstemp(suffix='.vcf.gz', prefix='renamed_')
-                os.close(fd)
-                
-                # Rename chromosomes using bcftools (memory-efficient)
-                rename_cmd = [
-                    'bcftools', 'annotate',
-                    '--rename-chrs', mapping_file,
-                    '--output-type', 'z',  # Compressed output
-                    '--output', intermediate_vcf,
-                    vcf_path
-                ]
-                
-                logger.debug(f"Running chromosome rename: {' '.join(rename_cmd)}")
-                result = subprocess.run(rename_cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    raise VCFNormalizationError(
-                        f"Chromosome renaming failed:\n"
-                        f"STDOUT: {result.stdout}\n"
-                        f"STDERR: {result.stderr}"
-                    )
-                
-                input_for_norm = intermediate_vcf
-                logger.debug("Chromosome renaming completed successfully")
-            else:
-                logger.warning("No chromosome mapping available - using original VCF")
-                input_for_norm = vcf_path
+            # Parse variants from prepared VCF file
+            variants = self._parse_variants_from_prepared_vcf(vcf_path, chromosome, **settings)
+            logger.debug(f"Found {len(variants)} applicable variants for chromosome {chromosome}")
             
-            # Step 2: Normalize the VCF (now with correct chromosome names)
-            norm_cmd = [
-                'bcftools', 'norm',
-                '-m-both',  # Split multiallelic sites into biallelic records
-                '-f', str(self.reference_fasta),  # Reference FASTA
-                '--output-type', 'z',  # Compressed output
-                '--output', output_path,
-                input_for_norm
-            ]
+            if not variants:
+                logger.debug("No variants to process - returning original sequence")
+                return sequence
             
-            logger.debug(f"Running normalization: {' '.join(norm_cmd)}")
-            result = subprocess.run(norm_cmd, capture_output=True, text=True)
+            # Apply variants to sequence
+            processed_sequence = self._apply_variants_to_sequence(sequence, variants, **settings)
             
-            if result.returncode != 0:
-                raise VCFNormalizationError(
-                    f"bcftools normalization failed:\n"
-                    f"STDOUT: {result.stdout}\n"
-                    f"STDERR: {result.stderr}"
-                )
+            # Log processing statistics
+            original_len = len(sequence)
+            processed_len = len(processed_sequence)
+            n_count = processed_sequence.count('N')
+            soft_count = sum(1 for c in processed_sequence if c.islower())
             
-            # Index the output file for efficient access
-            try:
-                index_cmd = ['bcftools', 'index', output_path]
-                subprocess.run(index_cmd, capture_output=True)
-                logger.debug(f"Indexed normalized VCF: {output_path}")
-            except:
-                logger.debug("Could not index VCF (non-critical)")
+            logger.debug(f"Processing complete: {original_len} -> {processed_len} bp")
+            logger.debug(f"Hard masked (N): {n_count}, Soft masked (lowercase): {soft_count}")
+            logger.debug("=== END SEQUENCE PROCESSING DEBUG ===")
             
-            logger.info(f"VCF normalized successfully: {output_path}")
-            return output_path
+            return processed_sequence
             
-        except subprocess.CalledProcessError as e:
-            raise VCFNormalizationError(f"bcftools execution failed: {e}")
         except Exception as e:
-            # Clean up output file if we created it and there was an error
-            if output_path and os.path.exists(output_path):
-                try:
-                    os.unlink(output_path)
-                except:
-                    pass
-            raise VCFNormalizationError(f"Normalization failed: {e}")
-        finally:
-            # Clean up intermediate files
-            if intermediate_vcf and os.path.exists(intermediate_vcf):
-                try:
-                    os.unlink(intermediate_vcf)
-                    # Also clean up index if it exists
-                    if os.path.exists(intermediate_vcf + '.csi'):
-                        os.unlink(intermediate_vcf + '.csi')
-                    logger.debug(f"Cleaned up intermediate VCF: {intermediate_vcf}")
-                except:
-                    pass
-            
-            if mapping_file and os.path.exists(mapping_file):
-                try:
-                    os.unlink(mapping_file)
-                    logger.debug(f"Cleaned up mapping file: {mapping_file}")
-                except:
-                    pass
+            error_msg = f"Error processing sequence for chromosome {chromosome}: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END SEQUENCE PROCESSING DEBUG ===")
+            raise SequenceProcessingError(error_msg) from e
     
-    def parse_normalized_vcf(self, vcf_path: str, 
-                           chromosome: str) -> List[Dict]:
+    def _parse_variants_from_prepared_vcf(self, vcf_path: str, chromosome: str, **kwargs) -> List[Dict]:
         """
-        Parse normalized VCF file and extract variants for a specific chromosome.
+        Parse variants from prepared VCF file for specific chromosome.
         
-        Since we now remap chromosomes before normalization, the normalized VCF
-        already contains the correct FASTA chromosome names. Uses bcftools query
-        for memory-efficient extraction of variants.
+        Uses bcftools to extract variants from prepared VCF file (already
+        bgzipped, normalized, indexed). No additional preparation needed.
         
         Args:
-            vcf_path: Path to normalized VCF file
-            chromosome: FASTA chromosome name to extract variants for
+            vcf_path: Path to prepared VCF file
+            chromosome: Chromosome to extract variants for
+            **kwargs: Processing settings for filtering
             
         Returns:
-            List of variant dictionaries with keys: pos, ref, alt, qual, info
+            List of variant dictionaries
+            
+        Raises:
+            ExternalToolError: If bcftools execution fails
         """
-        logger.debug(f"Parsing normalized VCF for chromosome: {chromosome}")
+        logger.debug(f"=== PARSING VARIANTS FROM PREPARED VCF DEBUG ===")
+        logger.debug(f"Extracting variants for chromosome {chromosome} from {vcf_path}")
         
         try:
-            # Use bcftools query for memory-efficient variant extraction
-            query_cmd = [
-                'bcftools', 'query',
-                '-r', chromosome,  # Only this chromosome
-                '-f', '%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t%INFO\n',
+            # Use bcftools query to extract variants for specific chromosome
+            cmd = [
+                'bcftools', 'query', 
+                '-r', chromosome,  # Restrict to chromosome
+                '-f', '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%AF\\n',
                 vcf_path
             ]
             
-            logger.debug(f"Querying variants: {' '.join(query_cmd)}")
-            result = subprocess.run(query_cmd, capture_output=True, text=True)
+            logger.debug(f"Running command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
-                logger.warning(f"bcftools query failed for {chromosome}: {result.stderr}")
-                return []
+                error_msg = f"bcftools query failed: {result.stderr}"
+                logger.error(error_msg)
+                raise ExternalToolError(error_msg, tool_name="bcftools")
             
+            # Parse variants from output
             variants = []
-            for line in result.stdout.strip().split('\n'):
-                if not line:
-                    continue
-                    
-                fields = line.split('\t')
-                if len(fields) < 6:
-                    continue
-                
-                chrom, pos_str, ref, alt, qual_str, info = fields
-                
-                # Skip if alt is '.' (no alternative)
-                if alt == '.':
-                    continue
-                
-                # Parse position and quality
-                try:
-                    pos = int(pos_str)
-                except ValueError:
-                    continue
-                
-                qual_value = None
-                if qual_str != "." and qual_str != "":
+            for line_num, line in enumerate(result.stdout.strip().split('\n'), 1):
+                if line.strip():
                     try:
-                        qual_value = float(qual_str)
-                    except ValueError:
-                        qual_value = None
-                
-                variants.append({
-                    'pos': pos,
-                    'ref': ref,
-                    'alt': alt,
-                    'qual': qual_value,
-                    'info': info
-                })
+                        variant = self._parse_variant_line(line.strip())
+                        if self._should_process_variant(variant, **kwargs):
+                            variants.append(variant)
+                    except Exception as e:
+                        logger.debug(f"Error parsing variant line {line_num}: {str(e)}")
+                        continue
             
-            logger.info(f"Parsed {len(variants)} variants for chromosome {chromosome}")
+            logger.debug(f"Parsed {len(variants)} applicable variants for chromosome {chromosome}")
+            logger.debug("=== END PARSING VARIANTS FROM PREPARED VCF DEBUG ===")
             return variants
             
+        except ExternalToolError:
+            # Re-raise ExternalToolError without modification
+            raise
         except Exception as e:
-            logger.error(f"Error parsing VCF file {vcf_path} for chromosome {chromosome}: {e}")
+            error_msg = f"Error parsing variants from prepared VCF: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return []
+            logger.debug("=== END PARSING VARIANTS FROM PREPARED VCF DEBUG ===")
+            raise ExternalToolError(error_msg, tool_name="bcftools") from e
     
-    def apply_variants_to_sequence(self, 
-                                 sequence: str, 
-                                 variants: List[Dict],
-                                 snp_allele_frequency_threshold: Optional[float] = None,
-                                 snp_quality_threshold: Optional[float] = None,
-                                 snp_flanking_mask_size: int = 0,
-                                 snp_use_soft_masking: bool = False) -> str:
+    def _parse_variant_line(self, line: str) -> Dict:
         """
-        Apply variants to sequence using single-pass approach.
-        
-        Since the VCF is normalized, we can apply all variants in a single pass
-        without coordinate drift issues.
+        Parse single variant line from bcftools query output.
         
         Args:
-            sequence: Input DNA sequence
-            variants: List of normalized variants
-            snp_allele_frequency_threshold: Minimum AF to apply masking
-            snp_quality_threshold: Minimum QUAL to include variants
-            snp_flanking_mask_size: Bases to mask around each variant
-            snp_use_soft_masking: Use lowercase instead of 'N'
+            line: Tab-separated variant line (CHROM POS REF ALT QUAL AF)
+            
+        Returns:
+            Dictionary containing variant information
+            
+        Raises:
+            ValueError: If line format is invalid
+        """
+        try:
+            parts = line.split('\t')
+            if len(parts) < 6:
+                raise ValueError(f"Invalid variant line format: expected 6 fields, got {len(parts)}")
+            
+            # Parse basic fields
+            chrom, pos, ref, alt, qual, af = parts[:6]
+            
+            # Convert types
+            pos = int(pos)
+            qual = float(qual) if qual != '.' else None
+            
+            # Parse AF field (can be comma-separated for multiallelic)
+            if af == '.' or af == '':
+                af_value = None
+            else:
+                # Take first AF value for multiallelic sites
+                af_value = float(af.split(',')[0])
+            
+            variant = {
+                'chrom': chrom,
+                'pos': pos,
+                'ref': ref,
+                'alt': alt,
+                'qual': qual,
+                'af': af_value
+            }
+            
+            logger.debug(f"Parsed variant: {variant}")
+            return variant
+            
+        except (ValueError, IndexError) as e:
+            error_msg = f"Error parsing variant line '{line}': {str(e)}"
+            logger.debug(error_msg)
+            raise ValueError(error_msg) from e
+    
+    def _should_process_variant(self, variant: Dict, **kwargs) -> bool:
+        """
+        Determine if variant should be processed based on quality and AF thresholds.
+        
+        Args:
+            variant: Variant dictionary
+            **kwargs: Processing settings
+            
+        Returns:
+            True if variant should be processed
+        """
+        # Check quality threshold
+        qual_threshold = kwargs.get('snp_quality_threshold')
+        if qual_threshold is not None and variant.get('qual') is not None:
+            if variant['qual'] < qual_threshold:
+                logger.debug(f"Skipping variant at {variant['pos']} due to low quality: {variant['qual']}")
+                return False
+        
+        # Always process if AF is not available
+        if variant.get('af') is None:
+            logger.debug(f"Processing variant at {variant['pos']} (no AF information)")
+            return True
+        
+        # Check AF threshold
+        af_threshold = kwargs.get('snp_allele_frequency_threshold')
+        if af_threshold is not None:
+            if variant['af'] < af_threshold:
+                logger.debug(f"Skipping rare variant at {variant['pos']} (AF={variant['af']:.3f})")
+                return False
+        
+        logger.debug(f"Processing variant at {variant['pos']} (AF={variant['af']:.3f}, QUAL={variant.get('qual', 'N/A')})")
+        return True
+    
+    def _classify_variant(self, variant: Dict, **kwargs) -> str:
+        """
+        Classify variant action based on allele frequency.
+        
+        Args:
+            variant: Variant dictionary
+            **kwargs: Processing settings
+            
+        Returns:
+            'substitute' for fixed variants (AF=1.0), 'mask' for variable variants
+        """
+        af = variant.get('af')
+        
+        # Fixed variants (AF = 1.0) should be substituted
+        if af is not None and abs(af - 1.0) < 0.001:  # Account for floating point precision
+            logger.debug(f"Variant at {variant['pos']} classified as 'substitute' (AF={af:.3f})")
+            return 'substitute'
+        
+        # All other variants should be masked
+        logger.debug(f"Variant at {variant['pos']} classified as 'mask' (AF={af})")
+        return 'mask'
+    
+    def _apply_variants_to_sequence(self, sequence: str, variants: List[Dict], **kwargs) -> str:
+        """
+        Apply all variants to sequence in coordinate order.
+        
+        Processes variants in reverse order (high to low position) to maintain
+        coordinate integrity during insertions and deletions.
+        
+        Args:
+            sequence: Original DNA sequence
+            variants: List of variant dictionaries
+            **kwargs: Processing settings
             
         Returns:
             Modified sequence with variants applied
         """
         if not variants:
+            logger.debug("No variants to apply")
             return sequence
         
-        # Convert to mutable list for in-place modifications
-        seq_list = list(sequence)
+        # Sort variants by position in descending order
+        # Process from end to beginning to maintain coordinate integrity
+        sorted_variants = sorted(variants, key=lambda v: v['pos'], reverse=True)
         
-        # Sort variants by position (descending) to avoid coordinate drift
-        sorted_variants = sorted(variants, key=lambda x: x['pos'], reverse=True)
+        logger.debug(f"Applying {len(sorted_variants)} variants to sequence (length: {len(sequence)})")
         
-        logger.info(f"Applying {len(sorted_variants)} variants to sequence")
-        
-        masked_count = 0
-        substituted_count = 0
+        modified_sequence = sequence
+        applied_count = 0
         
         for variant in sorted_variants:
-            pos = variant['pos'] - 1  # Convert to 0-based indexing
-            ref = variant['ref']
-            alt = variant['alt']
-            qual = variant['qual']
-            info = variant['info']
-            
-            # Apply quality threshold
-            if snp_quality_threshold is not None and qual is not None:
-                if qual < snp_quality_threshold:
-                    logger.debug(f"Skipping variant at {pos+1}: QUAL {qual} < {snp_quality_threshold}")
-                    continue
-            
-            # Extract allele frequency
-            af = self._extract_allele_frequency(info)
-            
-            # Determine if we should mask or substitute
-            should_mask = (
-                snp_allele_frequency_threshold is not None and
-                af is not None and
-                af >= snp_allele_frequency_threshold
-            )
-            
-            # Validate reference sequence matches
-            if pos + len(ref) <= len(seq_list):
-                ref_in_seq = ''.join(seq_list[pos:pos+len(ref)])
-                if ref_in_seq.upper() != ref.upper():
-                    logger.warning(
-                        f"Reference mismatch at position {pos+1}: "
-                        f"expected {ref}, found {ref_in_seq}"
-                    )
-                    continue
-            else:
-                logger.warning(f"Variant at position {pos+1} extends beyond sequence")
+            try:
+                action = self._classify_variant(variant, **kwargs)
+                
+                # Apply variant based on classification
+                if action == 'substitute':
+                    modified_sequence = self._apply_substitution(modified_sequence, variant, **kwargs)
+                elif action == 'mask':
+                    modified_sequence = self._apply_masking(modified_sequence, variant, **kwargs)
+                
+                applied_count += 1
+                
+            except Exception as e:
+                logger.warning(f"Error applying variant at position {variant['pos']}: {str(e)}")
+                logger.debug(f"Variant details: {variant}")
                 continue
-            
-            if should_mask:
-                # Apply masking
-                self._apply_masking(
-                    seq_list, pos, len(ref), 
-                    snp_flanking_mask_size, snp_use_soft_masking
-                )
-                masked_count += 1
-                logger.debug(f"Masked variant at {pos+1}: {ref} (AF={af})")
-            else:
-                # Apply substitution
-                self._apply_substitution(seq_list, pos, ref, alt)
-                substituted_count += 1
-                logger.debug(f"Substituted variant at {pos+1}: {ref}->{alt}")
         
-        logger.info(f"Applied {masked_count} maskings and {substituted_count} substitutions")
-        return ''.join(seq_list)
+        logger.debug(f"Successfully applied {applied_count}/{len(sorted_variants)} variants")
+        return modified_sequence
     
-    def _extract_allele_frequency(self, info: str) -> Optional[float]:
-        """Extract allele frequency from INFO field."""
-        # Look for common AF tags
-        af_tags = ['AF=', 'AC=', 'MAF=']
-        for tag in af_tags:
-            for field in info.split(';'):
-                if field.startswith(tag):
-                    try:
-                        value = field.split('=')[1]
-                        # Handle comma-separated values (take first)
-                        if ',' in value:
-                            value = value.split(',')[0]
-                        return float(value)
-                    except (ValueError, IndexError):
-                        continue
-        return None
-    
-    def _apply_masking(self, seq_list: List[str], pos: int, length: int,
-                      flanking_size: int, use_soft_masking: bool):
-        """Apply masking to sequence at specified position."""
-        mask_char = 'n' if use_soft_masking else 'N'
-        
-        # Calculate masking range
-        start = max(0, pos - flanking_size)
-        end = min(len(seq_list), pos + length + flanking_size)
-        
-        # Apply masking
-        for i in range(start, end):
-            seq_list[i] = mask_char
-    
-    def _apply_substitution(self, seq_list: List[str], pos: int, ref: str, alt: str):
-        """Apply substitution to sequence at specified position."""
-        # Handle different variant types
-        if len(ref) == len(alt):
-            # SNP or MNP
-            for i, base in enumerate(alt):
-                if pos + i < len(seq_list):
-                    seq_list[pos + i] = base
-        elif len(ref) > len(alt):
-            # Deletion
-            # Replace ref with alt, then remove extra bases
-            for i, base in enumerate(alt):
-                if pos + i < len(seq_list):
-                    seq_list[pos + i] = base
-            # Remove the extra bases
-            del seq_list[pos + len(alt):pos + len(ref)]
-        else:
-            # Insertion
-            # Replace ref with alt (which is longer)
-            for i, base in enumerate(ref):
-                if pos + i < len(seq_list):
-                    seq_list[pos + i] = base
-            # Insert additional bases
-            insertion = alt[len(ref):]
-            for i, base in enumerate(insertion):
-                seq_list.insert(pos + len(ref) + i, base)
-    
-    def process_sequence_with_vcf(self, 
-                                sequence: Union[str, SeqRecord],
-                                vcf_path: str,
-                                chromosome: str,
-                                **kwargs) -> str:
+    def _apply_substitution(self, sequence: str, variant: Dict, **kwargs) -> str:
         """
-        Complete workflow: normalize VCF and apply variants to sequence.
-        
-        This method uses the scalable bcftools-based approach for processing
-        large VCF files efficiently.
+        Apply variant substitution to sequence (for fixed variants AF=1.0).
         
         Args:
-            sequence: Input sequence (string or SeqRecord)
-            vcf_path: Path to VCF file
-            chromosome: FASTA chromosome identifier (will be mapped to VCF chromosome)
-            **kwargs: Additional arguments for apply_variants_to_sequence
+            sequence: DNA sequence
+            variant: Variant dictionary
+            **kwargs: Processing settings
             
         Returns:
-            Modified sequence string
+            Sequence with variant substituted
         """
-        # Extract sequence string if SeqRecord
-        if isinstance(sequence, SeqRecord):
-            seq_str = str(sequence.seq)
-        else:
-            seq_str = sequence
+        pos = variant['pos'] - 1  # Convert to 0-based indexing
+        ref = variant['ref']
+        alt = variant['alt']
         
-        # Normalize VCF using scalable approach
-        normalized_vcf = None
-        try:
-            normalized_vcf = self.normalize_vcf(vcf_path)
-            
-            # Parse variants for this chromosome using bcftools query
-            variants = self.parse_normalized_vcf(normalized_vcf, chromosome)
-            
-            # Apply variants
-            modified_sequence = self.apply_variants_to_sequence(
-                seq_str, variants, **kwargs
-            )
-            
-            return modified_sequence
-            
-        finally:
-            # Clean up temporary normalized VCF
-            if normalized_vcf and os.path.exists(normalized_vcf):
-                try:
-                    os.unlink(normalized_vcf)
-                    # Also clean up index if it exists
-                    if os.path.exists(normalized_vcf + '.csi'):
-                        os.unlink(normalized_vcf + '.csi')
-                    logger.debug(f"Cleaned up normalized VCF: {normalized_vcf}")
-                except:
-                    pass
-
-
-def process_fasta_with_vcf(fasta_path: str, 
-                          vcf_path: str, 
-                          output_path: str,
-                          reference_fasta: str,
-                          **kwargs):
-    """
-    Process FASTA file with VCF variants using scalable normalization approach.
+        # Validate position and reference
+        if pos < 0 or pos >= len(sequence):
+            logger.debug(f"Position {variant['pos']} out of sequence bounds")
+            return sequence
+        
+        if pos + len(ref) > len(sequence):
+            logger.debug(f"Reference allele extends beyond sequence end at position {variant['pos']}")
+            return sequence
+        
+        # Check reference match
+        sequence_ref = sequence[pos:pos + len(ref)]
+        if sequence_ref.upper() != ref.upper():
+            logger.debug(f"Reference mismatch at {variant['pos']}: expected {ref}, found {sequence_ref}")
+            return sequence
+        
+        # Apply substitution
+        new_sequence = sequence[:pos] + alt + sequence[pos + len(ref):]
+        
+        logger.debug(f"Substituted {ref}->{alt} at position {variant['pos']}")
+        return new_sequence
     
-    Args:
-        fasta_path: Input FASTA file
-        vcf_path: Input VCF file
-        output_path: Output FASTA file
-        reference_fasta: Reference FASTA for VCF normalization
-        **kwargs: Additional arguments for variant processing
-    """
-    from Bio import SeqIO
-    
-    processor = SNPMaskingProcessor(reference_fasta)
-    
-    with open(output_path, 'w') as output_handle:
-        for record in SeqIO.parse(fasta_path, 'fasta'):
-            logger.info(f"Processing sequence: {record.id}")
+    def _apply_masking(self, sequence: str, variant: Dict, **kwargs) -> str:
+        """
+        Apply variant masking to sequence (for variable variants AF<1.0).
+        
+        Args:
+            sequence: DNA sequence
+            variant: Variant dictionary
+            **kwargs: Processing settings
             
-            # Process sequence with VCF
-            modified_seq = processor.process_sequence_with_vcf(
-                record, vcf_path, record.id, **kwargs
-            )
-            
-            # Create new record with modified sequence
-            new_record = SeqRecord(
-                Seq(modified_seq),
-                id=record.id,
-                description=record.description + " [VCF_processed]"
-            )
-            
-            SeqIO.write(new_record, output_handle, 'fasta')
-    
-    logger.info(f"Processed sequences written to: {output_path}")
+        Returns:
+            Sequence with variant region masked
+        """
+        pos = variant['pos'] - 1  # Convert to 0-based indexing
+        ref = variant['ref']
+        
+        # Validate position
+        if pos < 0 or pos >= len(sequence):
+            logger.debug(f"Position {variant['pos']} out of sequence bounds")
+            return sequence
+        
+        if pos + len(ref) > len(sequence):
+            logger.debug(f"Reference allele extends beyond sequence end at position {variant['pos']}")
+            return sequence
+        
+        # Determine masking strategy
+        use_soft_masking = kwargs.get('snp_use_soft_masking', False)
+        flanking_mask_size = kwargs.get('snp_flanking_mask_size', 0)
+        
+        # Calculate masking region
+        start_pos = max(0, pos - flanking_mask_size)
+        end_pos = min(len(sequence), pos + len(ref) + flanking_mask_size)
+        
+        # Apply masking
+        if use_soft_masking:
+            # Soft masking - convert to lowercase
+            masked_region = sequence[start_pos:end_pos].lower()
+            logger.debug(f"Soft masked region {start_pos+1}-{end_pos} at variant {variant['pos']}")
+        else:
+            # Hard masking - replace with 'N'
+            masked_region = 'N' * (end_pos - start_pos)
+            logger.debug(f"Hard masked region {start_pos+1}-{end_pos} at variant {variant['pos']}")
+        
+        new_sequence = sequence[:start_pos] + masked_region + sequence[end_pos:]
+        return new_sequence

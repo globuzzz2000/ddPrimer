@@ -226,6 +226,27 @@ class TempDirectoryManager:
                 logger.warning(f"Error cleaning up temporary files: {str(e)}")
                 logger.debug(f"Error details: {str(e)}", exc_info=True)
 
+def prepare_files_for_pipeline(vcf_file, reference_file, gff_file=None, interactive=True):
+    """
+    Standalone file preparation function.
+    
+    Returns:
+        Dictionary with prepared file paths: {'vcf': path, 'fasta': path, 'gff': path}
+    """
+    from .utils import FilePreparator
+    
+    logger.info("Preparing files for ddPrimer pipeline...")
+    
+    with FilePreparator() as preparator:
+        result = preparator.prepare_files(
+            vcf_file=vcf_file,
+            fasta_file=reference_file,
+            gff_file=gff_file,
+            interactive=interactive
+        )
+
+        return result['prepared_files']
+
 
 def process_sequences_with_vcf(sequences, vcf_file, reference_file):
     """
@@ -249,15 +270,6 @@ def process_sequences_with_vcf(sequences, vcf_file, reference_file):
         
         # Initialize SNP processor
         snp_processor = SNPMaskingProcessor(reference_file)
-        
-        # Build chromosome mapping using the first VCF processing call
-        logger.debug("Analyzing chromosome compatibility between VCF and FASTA...")
-        chromosome_mapping = snp_processor.build_chromosome_mapping(vcf_file)
-        
-        if not chromosome_mapping:
-            logger.warning("No chromosome mapping could be established - sequences may not be processed")
-        else:
-            logger.debug(f"Established mapping for {len(chromosome_mapping)} chromosomes")
         
         # Get processing settings
         vcf_settings = Config.get_vcf_processing_settings()
@@ -907,21 +919,10 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
 
 def run_standard_mode(args):
     """
-    Run the standard mode primer design workflow.
+    Run the standard mode primer design workflow with file preparation.
     
-    Executes the complete standard mode pipeline including file selection,
-    variant extraction, sequence processing, gene annotation loading, and
-    primer design workflow execution. Supports fixed SNP substitution.
-    
-    Args:
-        args: Command line arguments containing file paths and options
-        
-    Returns:
-        True if the workflow completed successfully, False otherwise
-        
-    Raises:
-        FileSelectionError: If required input files cannot be selected
-        SequenceProcessingError: If sequence processing fails
+    Modified version that includes automatic file preparation before
+    proceeding with the primer design pipeline.
     """
     logger.info("=== Standard Mode Workflow ===")
     
@@ -943,21 +944,21 @@ def run_standard_mode(args):
             try:
                 args.vcf = FileIO.select_file(
                     "Select VCF variant file", 
-                    [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*")]
+                    [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*.*")]
                 )
                 logger.debug(f"Selected VCF file: {args.vcf}")
             except FileSelectionError as e:
                 error_msg = f"VCF file selection failed: {str(e)}"
                 logger.error(error_msg)
                 return False
-        
+
         # GFF file selection
         if not args.noannotation and not args.gff:
             logger.info("\n>>> Please select GFF annotation file <<<")
             try:
                 args.gff = FileIO.select_file(
                     "Select GFF annotation file", 
-                    [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3"), ("All Files", "*")]
+                    [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3"), ("Compressed GFF Files", "*.gff.gz"), ("All Files", "*.*")]
                 )
                 logger.debug(f"Selected GFF file: {args.gff}")
             except FileSelectionError as e:
@@ -967,9 +968,47 @@ def run_standard_mode(args):
         elif args.noannotation:
             logger.info("\nSkipping GFF annotation file selection")
             args.gff = None
-        
+
         # Signal that all file selections are complete
         FileIO.mark_selection_complete()
+        
+        # File preparation step
+        try:
+            from .utils import prepare_pipeline_files
+            
+            prep_result = prepare_pipeline_files(
+                vcf_file=args.vcf,
+                fasta_file=args.fasta,
+                gff_file=args.gff
+            )
+            
+            if not prep_result['success']:
+                logger.debug("File preparation failed or was canceled")
+                if prep_result.get('reason'):
+                    logger.debug(f"Reason: {prep_result['reason']}")
+                return False
+            
+            # Update file paths to use prepared files
+            if prep_result['changes_made']:
+                logger.info("Using prepared files for pipeline:")
+                if 'vcf' in prep_result.get('prepared_files', {}):
+                    args.vcf = prep_result['vcf_file']
+                    logger.info(f"  VCF: {args.vcf}")
+                if 'fasta' in prep_result.get('prepared_files', {}):
+                    args.fasta = prep_result['fasta_file']
+                    logger.info(f"  FASTA: {args.fasta}")
+                if 'gff' in prep_result.get('prepared_files', {}):
+                    args.gff = prep_result['gff_file']
+                    logger.info(f"  GFF: {args.gff}")
+            else:
+                logger.info("Original files are compatible and will be used as-is")
+            
+        except Exception as e:
+            error_msg = f"File preparation failed: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return False
+
         
         # Set up output directory
         if args.output:
@@ -992,10 +1031,11 @@ def run_standard_mode(args):
             logger.debug(f"Loaded {len(sequences)} sequences")
             
             # Process sequences with VCF using the new normalization approach
+            # NOTE: Now using prepared/validated files
             processed_sequences = process_sequences_with_vcf(
                 sequences=sequences,
-                vcf_file=args.vcf,
-                reference_file=args.fasta
+                vcf_file=args.vcf,  # This is now the prepared VCF
+                reference_file=args.fasta  # This might be the original or prepared FASTA
             )
             
             logger.debug("VCF processing completed successfully")
@@ -1010,6 +1050,7 @@ def run_standard_mode(args):
         if not args.noannotation:
             logger.info("\nLoading gene annotations from GFF file...")
             try:
+                # NOTE: Now using prepared GFF file if it was modified
                 genes = AnnotationProcessor.load_genes_from_gff(args.gff)
                 logger.debug(f"Gene annotations loaded successfully from {args.gff}")
                 logger.debug(f"Loaded {len(genes)} gene annotations")
@@ -1260,7 +1301,7 @@ def run_pipeline():
             logger.info("\n=== Pipeline execution completed successfully! ===\n")
             return True
         else:
-            logger.error("Pipeline execution failed")
+            logger.error("\n=== Pipeline execution failed ===")
             return False
             
     except DDPrimerError as e:

@@ -96,7 +96,7 @@ class Config:
     VCF_FLANKING_MASK_SIZE = 0               # Bases to mask around variants (0 = just the variant)
     VCF_USE_SOFT_MASKING = False             # Use lowercase instead of 'N' for masking
     
-    VCF_TEMP_DIR = None                      # Temp directory (None = auto-generate)
+    TEMP_DIR = None                          # Temp directory (None = auto-generate)
     VCF_KEEP_NORMALIZED = True               # Keep normalized files for debugging
     
     #############################################################################
@@ -808,12 +808,12 @@ class Config:
             )
     
     @classmethod
-    def get_vcf_temp_dir(cls) -> str:
+    def get_temp_dir(cls) -> str:
         """Get temp directory for VCF processing."""
-        if cls.VCF_TEMP_DIR:
-            temp_dir = cls.VCF_TEMP_DIR
+        if cls.TEMP_DIR:
+            temp_dir = cls.TEMP_DIR
         else:
-            temp_dir = os.path.join(cls.get_user_config_dir(), "vcf_temp")
+            temp_dir = os.path.join(cls.get_user_config_dir(), "temp")
         os.makedirs(temp_dir, exist_ok=True)
         return temp_dir
     

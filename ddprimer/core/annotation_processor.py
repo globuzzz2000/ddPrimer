@@ -4,24 +4,27 @@
 Annotation processing module for ddPrimer pipeline.
 
 Handles GFF annotation file parsing and processing to extract gene information
-from GFF files for use in primer design workflows.
+from prepared GFF files for use in primer design workflows.
 Contains functionality for:
 1. GFF file parsing with parallel processing support
 2. Gene overlap detection and fragment creation
-3. Meaningful gene name filtering with species-specific patterns
-4. Enhanced gene overlap extraction for comprehensive coverage
+3. Enhanced gene overlap extraction for comprehensive coverage
+4. Integration with prepared/indexed GFF files
 
 This module integrates with the broader ddPrimer pipeline to provide
-robust gene annotation capabilities for primer design workflows.
+robust gene annotation capabilities for primer design workflows. Works
+with GFF files prepared by FilePreparator (sorted, compressed, indexed).
 """
 
 import concurrent.futures
+import gzip
 import logging
+import os
 from tqdm import tqdm
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Import package modules
-from ..config import Config
+from ..config import Config, FileError, SequenceProcessingError
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -31,12 +34,10 @@ class AnnotationProcessor:
     """
     Processes GFF annotation files to extract gene information.
     
-    This class provides methods for parsing GFF files, extracting gene overlaps,
-    and creating gene-specific fragments for primer design workflows.
+    This class provides methods for parsing prepared GFF files, extracting gene overlaps,
+    and creating gene-specific fragments for primer design workflows. Works with both
+    prepared (sorted/indexed) and standard GFF files.
     
-    Attributes:
-        PLACEHOLDER_PATTERNS: Regex patterns for detecting placeholder gene names
-        
     Example:
         >>> processor = AnnotationProcessor()
         >>> genes = processor.load_genes_from_gff("annotations.gff")
@@ -44,7 +45,7 @@ class AnnotationProcessor:
     """
     
     @staticmethod
-    def parse_gff_attributes(attribute_str: str) -> dict:
+    def parse_gff_attributes(attribute_str: str) -> Dict[str, str]:
         """
         Convert GFF attribute string (key1=val1;key2=val2) -> dict.
         
@@ -60,7 +61,6 @@ class AnnotationProcessor:
                 key, value = attr.split('=', 1)
                 attr_dict[key.strip().lower()] = value.strip()
         return attr_dict
-    
     
     @classmethod
     def process_gff_chunk(cls, chunk: List[str]) -> List[Dict]:
@@ -101,7 +101,7 @@ class AnnotationProcessor:
 
             attr_dict = cls.parse_gff_attributes(attributes)
 
-            # Get the best available identifier - no meaningfulness filtering
+            # Get the best available identifier
             name = attr_dict.get('name')
             gene_id = attr_dict.get('id')
             locus_tag = attr_dict.get('locus_tag')
@@ -127,10 +127,11 @@ class AnnotationProcessor:
         """
         Extract gene information from a GFF file.
         
-        Uses global RETAIN_TYPES for filtering.
+        Handles both compressed (.gz) and uncompressed GFF files.
+        Uses parallel processing for large files.
         
         Args:
-            gff_path: Path to the GFF file
+            gff_path: Path to the GFF file (prepared or standard)
             
         Returns:
             List of gene dictionaries with extracted information
@@ -139,18 +140,34 @@ class AnnotationProcessor:
             FileError: If GFF file cannot be read
             SequenceProcessingError: If GFF processing fails
         """
+        logger.debug(f"=== GFF LOADING DEBUG ===")
         logger.debug(f"Loading genes from GFF file: {gff_path}")
         
+        if not os.path.exists(gff_path):
+            error_msg = f"GFF file not found: {gff_path}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
+        
         try:
+            # Determine if file is compressed
+            is_compressed = gff_path.endswith('.gz')
+            opener = gzip.open if is_compressed else open
+            mode = 'rt' if is_compressed else 'r'
+            
+            logger.debug(f"Reading GFF file (compressed: {is_compressed})")
+            
             # Read all lines from the file
-            with open(gff_path, 'r') as f:
+            with opener(gff_path, mode) as f:
                 all_lines = f.readlines()
+            
+            logger.debug(f"Read {len(all_lines)} lines from GFF file")
             
             # Calculate chunk size for parallel processing
             chunk_size = max(1, len(all_lines) // Config.NUM_PROCESSES)
             chunks = [all_lines[i:i + chunk_size] for i in range(0, len(all_lines), chunk_size)]
             
             logger.debug(f"Processing GFF in {len(chunks)} chunks with {Config.NUM_PROCESSES} processes")
+            logger.debug(f"Filtering for feature types: {Config.RETAIN_TYPES}")
             
             # Process chunks in parallel
             genes = []
@@ -167,13 +184,29 @@ class AnnotationProcessor:
                         genes.extend(future.result())
             
             logger.info(f"Extracted {len(genes)} genes from GFF file")
+            
+            if genes:
+                # Log some statistics
+                chromosomes = set(gene['chr'] for gene in genes)
+                logger.debug(f"Genes found on {len(chromosomes)} chromosomes/sequences")
+                
+                # Log first few genes as examples
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("Sample genes extracted:")
+                    for i, gene in enumerate(genes[:5], 1):
+                        logger.debug(f"  {i}. {gene['id']} on {gene['chr']}:{gene['start']}-{gene['end']}")
+                    if len(genes) > 5:
+                        logger.debug(f"  ... and {len(genes) - 5} more")
+            
+            logger.debug(f"=== END GFF LOADING DEBUG ===")
             return genes
         
         except Exception as e:
-            error_msg = f"Failed to load genes from GFF: {e}"
+            error_msg = f"Failed to load genes from GFF: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return []
+            logger.debug(f"=== END GFF LOADING DEBUG ===")
+            raise SequenceProcessingError(error_msg) from e
 
     @staticmethod
     def extract_gene_name(sequence_id: str) -> str:
@@ -199,6 +232,60 @@ class AnnotationProcessor:
         return sequence_id
 
     @classmethod
+    def filter_by_gene_overlap_enhanced(cls, restriction_fragments: List[Dict], 
+                                       genes: List[Dict]) -> List[Dict]:
+        """
+        Enhanced version of filter_by_gene_overlap that extracts ALL gene overlaps.
+        
+        This is the main function for extracting gene-overlapping regions from
+        restriction fragments. Creates separate fragments for each gene overlap.
+        
+        Args:
+            restriction_fragments: List of restriction fragments
+            genes: List of gene annotations
+            
+        Returns:
+            List of all gene-overlapping fragments
+        """
+        logger.debug(f"=== GENE OVERLAP EXTRACTION DEBUG ===")
+        
+        overlap_margin = getattr(Config, 'GENE_OVERLAP_MARGIN', 0)
+        logger.debug(f"Extracting gene-overlapping regions with margin: {overlap_margin} bp")
+        
+        # Extract all gene overlaps
+        gene_fragments = cls.extract_all_gene_overlaps(
+            restriction_fragments, genes, overlap_margin
+        )
+        
+        # Log statistics
+        logger.debug(f"Gene overlap extraction results:")
+        logger.debug(f"  Input restriction fragments: {len(restriction_fragments)}")
+        logger.debug(f"  Output gene fragments: {len(gene_fragments)}")
+        
+        if gene_fragments:
+            # Count unique genes
+            unique_genes = set(frag.get("Gene", "unknown") for frag in gene_fragments)
+            logger.debug(f"  Unique genes covered: {len(unique_genes)}")
+            
+            # Log fragment length statistics
+            lengths = [len(frag.get("sequence", "")) for frag in gene_fragments]
+            if lengths:
+                avg_length = sum(lengths) / len(lengths)
+                min_length = min(lengths)
+                max_length = max(lengths)
+                logger.debug(f"  Fragment lengths: avg={avg_length:.0f}, min={min_length}, max={max_length}")
+                
+                # Log genes covered
+                if logger.isEnabledFor(logging.DEBUG) and len(unique_genes) <= 10:
+                    logger.debug(f"  Genes covered: {', '.join(sorted(unique_genes))}")
+                elif logger.isEnabledFor(logging.DEBUG):
+                    sample_genes = sorted(list(unique_genes))[:10]
+                    logger.debug(f"  Sample genes covered: {', '.join(sample_genes)} ... (+{len(unique_genes)-10} more)")
+        
+        logger.debug(f"=== END GENE OVERLAP EXTRACTION DEBUG ===")
+        return gene_fragments
+
+    @classmethod
     def extract_all_gene_overlaps(cls, restriction_fragments: List[Dict], genes: List[Dict], 
                                  overlap_margin: int = 0) -> List[Dict]:
         """
@@ -221,15 +308,13 @@ class AnnotationProcessor:
         logger.debug(f"Available genes: {len(genes)}")
         
         # Log restriction fragment statistics
-        fragment_lengths = [len(frag.get('sequence', '')) for frag in restriction_fragments]
-        if fragment_lengths:
-            avg_len = sum(fragment_lengths) / len(fragment_lengths)
-            logger.debug(f"Fragment length stats - avg: {avg_len:.0f}, min: {min(fragment_lengths)}, max: {max(fragment_lengths)}")
+        if restriction_fragments:
+            fragment_lengths = [len(frag.get('sequence', '')) for frag in restriction_fragments]
+            if fragment_lengths:
+                avg_len = sum(fragment_lengths) / len(fragment_lengths)
+                logger.debug(f"Fragment length stats - avg: {avg_len:.0f}, min: {min(fragment_lengths)}, max: {max(fragment_lengths)}")
         
-        fragments_with_genes = 0
-        total_gene_overlaps = 0
-        
-        # Track what gets filtered out for debugging
+        # Track statistics for debugging
         debug_stats = {
             'fragments_processed': 0,
             'fragments_with_overlaps': 0,
@@ -259,8 +344,6 @@ class AnnotationProcessor:
             if overlapping_genes:
                 debug_stats['fragments_with_overlaps'] += 1
                 debug_stats['total_overlaps_found'] += len(overlapping_genes)
-                fragments_with_genes += 1
-                total_gene_overlaps += len(overlapping_genes)
                 
                 logger.debug(f"Fragment {fragment.get('id')}: found {len(overlapping_genes)} overlapping genes")
                 
@@ -291,21 +374,17 @@ class AnnotationProcessor:
                 logger.debug(f"Fragment {fragment.get('id')}: no overlapping genes found")
         
         # Log detailed statistics
-        logger.debug(f"GENE OVERLAP EXTRACTION DETAILED STATS:")
-        logger.debug(f"  Restriction fragments processed: {debug_stats['fragments_processed']}")
-        logger.debug(f"  Fragments with gene overlaps: {debug_stats['fragments_with_overlaps']}")
-        logger.debug(f"  Total gene overlaps found: {debug_stats['total_overlaps_found']}")
-        logger.debug(f"  Gene fragments created successfully: {debug_stats['gene_fragments_created']}")
-        logger.debug(f"  Gene fragments rejected (too short): {debug_stats['gene_fragments_too_short']}")
-        logger.debug(f"  Gene fragments rejected (other reasons): {debug_stats['gene_fragments_invalid'] - debug_stats['gene_fragments_too_short']}")
-        logger.debug(f"  Success rate: {debug_stats['gene_fragments_created']}/{debug_stats['total_overlaps_found']} ({100*debug_stats['gene_fragments_created']/max(1, debug_stats['total_overlaps_found']):.1f}%)")
-        
-        logger.debug(f"GENE OVERLAP RESULTS:")
-        logger.debug(f"  Input restriction fragments: {len(restriction_fragments)}")
-        logger.debug(f"  Fragments with gene overlaps: {fragments_with_genes}")
-        logger.debug(f"  Total gene overlaps found: {total_gene_overlaps}")
-        logger.debug(f"  Output gene fragments: {len(gene_fragments)}")
-        logger.debug(f"  Average overlaps per fragment: {total_gene_overlaps/len(restriction_fragments):.2f}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"GENE OVERLAP EXTRACTION DETAILED STATS:")
+            logger.debug(f"  Restriction fragments processed: {debug_stats['fragments_processed']}")
+            logger.debug(f"  Fragments with gene overlaps: {debug_stats['fragments_with_overlaps']}")
+            logger.debug(f"  Total gene overlaps found: {debug_stats['total_overlaps_found']}")
+            logger.debug(f"  Gene fragments created successfully: {debug_stats['gene_fragments_created']}")
+            logger.debug(f"  Gene fragments rejected (too short): {debug_stats['gene_fragments_too_short']}")
+            logger.debug(f"  Gene fragments rejected (other reasons): {debug_stats['gene_fragments_invalid'] - debug_stats['gene_fragments_too_short']}")
+            if debug_stats['total_overlaps_found'] > 0:
+                success_rate = 100 * debug_stats['gene_fragments_created'] / debug_stats['total_overlaps_found']
+                logger.debug(f"  Success rate: {debug_stats['gene_fragments_created']}/{debug_stats['total_overlaps_found']} ({success_rate:.1f}%)")
         
         return gene_fragments
 
@@ -351,7 +430,7 @@ class AnnotationProcessor:
 
     @classmethod
     def create_gene_fragment(cls, fragment: Dict, gene: Dict, gene_idx: int, 
-                            overlap_margin: int = 0) -> Dict:
+                            overlap_margin: int = 0) -> Optional[Dict]:
         """
         Create a new fragment for a specific gene overlap region.
         
@@ -402,7 +481,7 @@ class AnnotationProcessor:
         # Extract the overlapping sequence
         gene_sequence = fragment_seq[seq_start:seq_end]
         
-        # Use Config minimum segment length instead of hardcoded value
+        # Use Config minimum segment length
         if len(gene_sequence) < Config.MIN_SEGMENT_LENGTH:
             logger.debug(f"Skipping short gene fragment for {gene_id}: {len(gene_sequence)} bp < {Config.MIN_SEGMENT_LENGTH} bp minimum")
             return None
@@ -426,48 +505,3 @@ class AnnotationProcessor:
         }
         
         return gene_fragment
-
-    @classmethod
-    def filter_by_gene_overlap_enhanced(cls, restriction_fragments: List[Dict], 
-                                       genes: List[Dict]) -> List[Dict]:
-        """
-        Enhanced version of filter_by_gene_overlap that extracts ALL gene overlaps.
-        
-        This is the replacement function for the existing filter_by_gene_overlap
-        in SequenceProcessor.
-        
-        Args:
-            restriction_fragments: List of restriction fragments
-            genes: List of gene annotations
-            
-        Returns:
-            List of all gene-overlapping fragments
-        """
-        overlap_margin = getattr(Config, 'GENE_OVERLAP_MARGIN', 0)
-        
-        logger.debug(f"Extracting gene-overlapping regions with margin: {overlap_margin} bp")
-        
-        # Extract all gene overlaps
-        gene_fragments = cls.extract_all_gene_overlaps(
-            restriction_fragments, genes, overlap_margin
-        )
-        
-        # Log statistics
-        logger.debug(f"Gene overlap extraction results:")
-        logger.debug(f"  Input restriction fragments: {len(restriction_fragments)}")
-        logger.debug(f"  Output gene fragments: {len(gene_fragments)}")
-        
-        if gene_fragments:
-            # Count unique genes
-            unique_genes = set(frag.get("Gene", "unknown") for frag in gene_fragments)
-            logger.debug(f"  Unique genes covered: {len(unique_genes)}")
-            
-            # Log fragment length statistics
-            lengths = [len(frag.get("sequence", "")) for frag in gene_fragments]
-            if lengths:
-                avg_length = sum(lengths) / len(lengths)
-                min_length = min(lengths)
-                max_length = max(lengths)
-                logger.debug(f"  Fragment lengths: avg={avg_length:.0f}, min={min_length}, max={max_length}")
-        
-        return gene_fragments
