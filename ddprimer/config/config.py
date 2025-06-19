@@ -16,7 +16,6 @@ Primer3 settings customization.
 
 import os
 import json
-from pathlib import Path
 import logging
 from multiprocessing import cpu_count
 from typing import Dict, Any
@@ -50,7 +49,7 @@ class Config:
     #############################################################################
     #                           Pipeline Mode Options
     #############################################################################
-    DEBUG_MODE = False                   # Debug logging mode (enable with --debug flag)
+    DEBUG_MODE = False                  # Debug logging mode (enable with --debug flag)
     DISABLE_INTERNAL_OLIGO = False      # Disable internal oligo design
     
     #############################################################################
@@ -63,7 +62,7 @@ class Config:
     #############################################################################
     #                           Design Parameters
     #############################################################################
-    # Basic primer design constraints
+    # Basic Primer3 parameters
     PRIMER_MIN_SIZE = 18
     PRIMER_OPT_SIZE = 20
     PRIMER_MAX_SIZE = 23
@@ -72,21 +71,18 @@ class Config:
     PRIMER_MAX_TM = 65.0
     PRIMER_MIN_GC = 50.0
     PRIMER_MAX_GC = 60.0
-    
-    # Product size constraints
     PRIMER_PRODUCT_SIZE_RANGE = [[90, 200]]
     
     # Pipeline parameters
     MIN_SEGMENT_LENGTH = 90
-    RETAIN_TYPES = ["mRNA"]  # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
-    COUNT_AMBIGUOUS_AS_MISMATCH = False
-    GENE_OVERLAP_MARGIN = 25
-    RESTRICTION_SITE = "GGCC"
-    PENALTY_MAX = 5.0
-    MAX_PRIMER_PAIRS_PER_SEGMENT = 3
-    PREFER_PROBE_MORE_C_THAN_G = True  # Set to False to disable
-    SEQUENCE_MIN_GC = 50.0
-    SEQUENCE_MAX_GC = 60.0
+    RETAIN_TYPES = ["gene"]                   # gff filtering: "gene", "mRNA", "CDS", "exon", etc.
+    GENE_OVERLAP_MARGIN = 25                  # design region extent beyond gff filtered type
+    RESTRICTION_SITE = "GGCC"                 # restriction site where fragments will be cut
+    PENALTY_MAX = 5.0                         # primer3 penalty filter cut-off
+    MAX_PRIMER_PAIRS_PER_SEGMENT = 3          # maximum number of primer3 designs per segment
+    PREFER_PROBE_MORE_C_THAN_G = True         # for Probe reversing, recommended for ddPCR
+    SEQUENCE_MIN_GC = 50.0                    # for amplicon
+    SEQUENCE_MAX_GC = 60.0                    # for amplicon
 
     #############################################################################
     #                           SNP Masking Parameters
@@ -97,7 +93,7 @@ class Config:
     SNP_USE_SOFT_MASKING = False             # Use lowercase letters instead of 'N' characters
     
     #############################################################################
-    #                           Thermodynamic Calculation Settings
+    #                           ViennaRNA Calculation Settings
     #############################################################################
     THERMO_TEMPERATURE = 37  # Celsius
     THERMO_SODIUM = 0.05     # Molar

@@ -108,13 +108,14 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
         try:
             with open(filepath, 'w') as f:
                 json.dump(template_with_comments, f, indent=4)
-            
-            print(f"\n{Fore.GREEN}Configuration template generated successfully!{Style.RESET_ALL}")
-            print(f"Template saved to: {Fore.YELLOW}{filepath}{Style.RESET_ALL}")
+            print(f"\n{Fore.WHITE}{'='*80}{Style.RESET_ALL}")
+            print(f"{Fore.WHITE}Configuration Template File Generator")
+            print(f"{Fore.WHITE}{'='*80}{Style.RESET_ALL}")
+            print(f"\nTemplate saved to: {Fore.CYAN}{filepath}{Style.RESET_ALL}")
             print(f"\nTo use this template:")
             print(f"1. Edit the file with your preferred settings")
-            print(f"2. Run: {Fore.YELLOW}ddprimer --config {filepath}{Style.RESET_ALL}")
-            print()
+            print(f"2. Run: {Fore.CYAN}ddprimer --config {filepath}{Style.RESET_ALL}")
+            print(f"\n{Fore.WHITE}{'='*80}{Style.RESET_ALL}\n")
             
             logger.debug("Template generation completed successfully")
             return filepath

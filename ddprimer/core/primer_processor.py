@@ -10,13 +10,19 @@ Contains functionality for:
 4. Repeat sequence detection and filtering
 5. BLAST specificity evaluation
 6. Internal oligo processing and optimization
+7. Generic primer record creation and validation
+8. Amplicon extraction and coordinate handling
+9. Sequence utility functions (GC content, reverse complement, etc.)
+
+This module now includes all generic primer processing operations and sequence utilities,
+providing a comprehensive toolkit for primer analysis and manipulation.
 """
 
 import pandas as pd
 import logging
+from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
-from ..utils import SequenceUtils
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -27,13 +33,14 @@ class PrimerProcessor:
     Handles primer processing and filtering operations.
     
     This class provides comprehensive filtering capabilities for primer pairs
-    including penalty scoring, sequence composition analysis, and specificity
-    validation through multiple filtering stages.
+    including penalty scoring, sequence composition analysis, specificity
+    validation, amplicon extraction, and sequence utility functions.
     
     Example:
         >>> df = PrimerProcessor.filter_by_penalty(primer_df)
         >>> df = PrimerProcessor.filter_by_gc_content(df)
         >>> df = PrimerProcessor.filter_by_blast(df)
+        >>> amplicon = PrimerProcessor.get_amplicon(seq, start, len, start2, len2)
     """
     
     @staticmethod
@@ -161,9 +168,9 @@ class PrimerProcessor:
                 primer_r = row.get("Primer R", "")
                 probe = row.get("Probe", "") if "Probe" in df.columns else ""
                 
-                has_f_repeats = SequenceUtils.has_disallowed_repeats(primer_f)
-                has_r_repeats = SequenceUtils.has_disallowed_repeats(primer_r)
-                has_probe_repeats = SequenceUtils.has_disallowed_repeats(probe) if probe else False
+                has_f_repeats = PrimerProcessor.has_disallowed_repeats(primer_f)
+                has_r_repeats = PrimerProcessor.has_disallowed_repeats(primer_r)
+                has_probe_repeats = PrimerProcessor.has_disallowed_repeats(probe) if probe else False
                 
                 will_fail = has_f_repeats or has_r_repeats
                 
@@ -192,8 +199,8 @@ class PrimerProcessor:
                     logger.debug(f"Gene {gene}: PASS - no disallowed repeats in primers")
         
         # Apply repeat filtering (primers only, not probes)
-        df["Has_Repeats_F"] = df["Primer F"].apply(SequenceUtils.has_disallowed_repeats)
-        df["Has_Repeats_R"] = df["Primer R"].apply(SequenceUtils.has_disallowed_repeats)
+        df["Has_Repeats_F"] = df["Primer F"].apply(PrimerProcessor.has_disallowed_repeats)
+        df["Has_Repeats_R"] = df["Primer R"].apply(PrimerProcessor.has_disallowed_repeats)
         
         df_filtered = df[~(df["Has_Repeats_F"] | df["Has_Repeats_R"])].reset_index(drop=True)
         
@@ -277,7 +284,7 @@ class PrimerProcessor:
                     logger.debug(f"Gene {gene}: WILL BE FILTERED - no amplicon sequence")
                     continue
                 
-                gc_content = SequenceUtils.calculate_gc(amplicon)
+                gc_content = PrimerProcessor.calculate_gc(amplicon)
                 in_range = min_gc <= gc_content <= max_gc
                 
                 # Detailed sequence analysis
@@ -304,7 +311,7 @@ class PrimerProcessor:
         df_with_amplicons = df_with_amplicons[df_with_amplicons["Amplicon"] != ""].reset_index(drop=True)
         
         # Calculate and filter by GC content
-        df_with_amplicons["Amplicon GC%"] = df_with_amplicons["Amplicon"].apply(SequenceUtils.calculate_gc)
+        df_with_amplicons["Amplicon GC%"] = df_with_amplicons["Amplicon"].apply(PrimerProcessor.calculate_gc)
         df_filtered = df_with_amplicons[
             (df_with_amplicons["Amplicon GC%"] >= min_gc) & 
             (df_with_amplicons["Amplicon GC%"] <= max_gc)
@@ -370,7 +377,7 @@ class PrimerProcessor:
                 continue
             
             # Apply reverse complementation if needed
-            optimized_probe, was_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
+            optimized_probe, was_reversed = PrimerProcessor.ensure_more_c_than_g(probe_seq)
             
             df.at[i, "Probe"] = optimized_probe
             df.at[i, "Probe Reversed"] = was_reversed
@@ -534,3 +541,607 @@ class PrimerProcessor:
             
         # Check specificity ratio: best * filter_factor <= second
         return best * filter_factor <= second
+
+    @staticmethod
+    def get_amplicon(seq, left_start, left_len, right_start, right_len):
+        """
+        Extract amplicon sequence with corrected coordinate handling.
+        
+        Returns the substring from the 5' end of the forward primer
+        to the 3' end of the reverse primer, addressing systematic
+        coordinate alignment issues with Primer3.
+        
+        Args:
+            seq: Template sequence
+            left_start: Start position of forward primer (1-based)
+            left_len: Length of forward primer
+            right_start: Start position of reverse primer (1-based)
+            right_len: Length of reverse primer
+            
+        Returns:
+            Amplicon sequence string, empty if extraction fails
+            
+        Raises:
+            ValueError: If coordinate parameters are invalid
+            
+        Example:
+            >>> amplicon = PrimerProcessor.get_amplicon(template, 10, 20, 200, 20)
+            >>> print(f"Amplicon length: {len(amplicon)} bp")
+        """
+        # Validate input parameters
+        if None in (left_start, left_len, right_start, right_len):
+            logger.warning("Missing required parameters for amplicon extraction")
+            return ""
+        
+        try:
+            left_start = int(left_start)
+            left_len = int(left_len)
+            right_start = int(right_start)
+            right_len = int(right_len)
+        except (TypeError, ValueError) as e:
+            error_msg = f"Invalid numerical values for amplicon extraction"
+            logger.error(error_msg)
+            logger.debug(f"Parameter conversion error: {str(e)}", exc_info=True)
+            raise ValueError(error_msg) from e
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Amplicon extraction: left={left_start},{left_len}, right={right_start},{right_len}")
+            
+        # Adjust coordinates to address off-by-one issues
+        adj_left_start = max(1, left_start - 1)
+        
+        # Handle edge cases
+        if right_start > len(seq):
+            logger.debug(f"Adjusting right_start from {right_start} to {len(seq)} (sequence length)")
+            right_start = len(seq)
+        
+        # Calculate amplicon boundaries
+        amp_start = adj_left_start
+        amp_end = right_start
+        
+        # Validate coordinates
+        if amp_start < 1 or amp_end > len(seq) or amp_start > amp_end:
+            logger.warning(f"Invalid amplicon coordinates: start={amp_start}, end={amp_end}, seq_len={len(seq)}")
+            return ""
+        
+        # Extract amplicon sequence (convert to 0-based for Python)
+        amplicon = seq[amp_start - 1 : amp_end]
+        
+        # Debug validation in debug mode
+        if logger.isEnabledFor(logging.DEBUG):
+            PrimerProcessor._validate_amplicon_extraction(seq, left_start, left_len, right_start, right_len, 
+                                             adj_left_start, amplicon)
+        
+        return amplicon
+
+    @staticmethod
+    def _validate_amplicon_extraction(seq, left_start, left_len, right_start, right_len, 
+                                    adj_left_start, amplicon):
+        """
+        Validate amplicon extraction by comparing primer sequences.
+        
+        Args:
+            seq: Template sequence
+            left_start: Original left start position
+            left_len: Left primer length
+            right_start: Right start position
+            right_len: Right primer length
+            adj_left_start: Adjusted left start position
+            amplicon: Extracted amplicon sequence
+        """
+        # Extract primer sequences for validation
+        forward_original = seq[left_start - 1 : left_start - 1 + left_len]
+        forward_adjusted = seq[adj_left_start - 1 : adj_left_start - 1 + left_len]
+        reverse_primer = seq[right_start - right_len : right_start]
+        
+        logger.debug(f"Primer validation:")
+        logger.debug(f"  Forward (original pos): {forward_original}")
+        logger.debug(f"  Forward (adjusted pos): {forward_adjusted}")
+        logger.debug(f"  Amplicon start: {amplicon[:left_len] if len(amplicon) >= left_len else amplicon}")
+        logger.debug(f"  Reverse primer: {reverse_primer}")
+        logger.debug(f"  Amplicon end: {amplicon[-right_len:] if len(amplicon) >= right_len else amplicon}")
+        
+        # Check alignment
+        if len(amplicon) >= left_len and amplicon[:left_len] != forward_adjusted:
+            logger.debug("WARNING: Amplicon start does not match adjusted forward primer")
+        
+        if len(amplicon) >= right_len and amplicon[-right_len:] != reverse_primer:
+            logger.debug("WARNING: Amplicon end does not match reverse primer")
+
+    @staticmethod
+    def filter_primer_pairs(primer_pairs: List[Dict], config) -> List[Dict]:
+        """
+        Filter and limit primer pairs based on configuration.
+        
+        Args:
+            primer_pairs: List of primer pairs to filter
+            config: Configuration object with filtering parameters
+            
+        Returns:
+            Filtered and limited primer pairs
+        """
+        acceptable = primer_pairs
+        
+        # Apply maximum pairs per segment limit
+        if (hasattr(config, 'MAX_PRIMER_PAIRS_PER_SEGMENT') and 
+            config.MAX_PRIMER_PAIRS_PER_SEGMENT > 0):
+            
+            original_count = len(acceptable)
+            acceptable = acceptable[:config.MAX_PRIMER_PAIRS_PER_SEGMENT]
+            
+            if logger.isEnabledFor(logging.DEBUG) and original_count > config.MAX_PRIMER_PAIRS_PER_SEGMENT:
+                logger.debug(f"Limited to {config.MAX_PRIMER_PAIRS_PER_SEGMENT} primer pairs "
+                           f"(had {original_count} total)")
+        
+        return acceptable
+
+    @staticmethod
+    def create_primer_record(block: Dict, pair: Dict, fragment_info: Dict, config, debug_mode: bool = False) -> Optional[Dict]:
+        """
+        Create a primer record dictionary from sequence block and primer pair.
+        
+        Args:
+            block: Sequence block containing template
+            pair: Primer pair data
+            fragment_info: Fragment information mapping
+            config: Configuration object
+            debug_mode: Whether debug logging is enabled
+            
+        Returns:
+            Complete primer record dictionary or None if creation fails
+            
+        Raises:
+            ValueError: If required primer data is missing
+        """
+        try:
+            # Extract basic primer sequences
+            left_seq = pair.get("left_sequence", "")
+            right_seq = pair.get("right_sequence", "")
+            
+            if not left_seq or not right_seq:
+                logger.warning(f"Missing primer sequences for pair {pair.get('idx', 'unknown')}")
+                return None
+            
+            # Process probe sequence
+            probe_seq, probe_reversed = PrimerProcessor._process_probe_sequence(pair, config)
+            
+            # Get position data
+            ls, ll = pair.get("left_start"), pair.get("left_len")
+            rs, rl = pair.get("right_start"), pair.get("right_len")
+            
+            # Create amplicon
+            amplicon = PrimerProcessor._create_amplicon(block['sequence_template'], pair, debug_mode)
+            
+            # Get location information
+            location_info = PrimerProcessor._get_location_info(block['sequence_id'], pair, fragment_info)
+            
+            # Calculate product size
+            product_size = pair.get("product_size")
+            if product_size is None and amplicon:
+                product_size = len(amplicon)
+            
+            # Build comprehensive primer record
+            record = {
+                "Gene": location_info["gene"],
+                "Index": pair["idx"],
+                "Template": block['sequence_template'],
+                "Primer F": left_seq,
+                "Tm F": pair.get("left_tm"),
+                "Penalty F": pair.get("left_penalty"),
+                "Primer F Start": ls,
+                "Primer F Len": ll,
+                "Primer R": right_seq,
+                "Tm R": pair.get("right_tm"),
+                "Penalty R": pair.get("right_penalty"),
+                "Primer R Start": rs,
+                "Primer R Len": rl,
+                "Pair Penalty": pair.get("pair_penalty"),
+                "Amplicon": amplicon,
+                "Length": product_size,
+                "Chromosome": location_info["chromosome"],
+                "Location": location_info["location"]
+            }
+            
+            # Add probe-related fields if internal oligos are enabled
+            if not config.DISABLE_INTERNAL_OLIGO:
+                internal_start = pair.get("internal_start")
+                internal_len = pair.get("internal_len")
+                
+                record.update({
+                    "Probe": probe_seq,
+                    "Probe Tm": pair.get("internal_tm"),
+                    "Probe Penalty": pair.get("internal_penalty"),
+                    "Probe Start": internal_start,
+                    "Probe Len": internal_len,
+                    "Probe Reversed": probe_reversed
+                })
+            
+            return record
+            
+        except Exception as e:
+            error_msg = f"Failed to create primer record for pair {pair.get('idx', 'unknown')}"
+            logger.error(error_msg)
+            logger.debug(f"Record creation error: {str(e)}", exc_info=True)
+            return None
+
+    @staticmethod
+    def _process_probe_sequence(pair: Dict, config) -> Tuple[str, bool]:
+        """
+        Process probe sequence with optional reverse complementation.
+        
+        Args:
+            pair: Primer pair containing probe data
+            config: Configuration object
+            
+        Returns:
+            Tuple of (probe_sequence, was_reversed)
+        """
+        if config.DISABLE_INTERNAL_OLIGO:
+            return "", False
+        
+        probe_seq = pair.get("internal_sequence", "")
+        probe_reversed = False
+        
+        # Apply reverse complementation if configured and probe exists
+        if config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
+            try:
+                probe_seq, probe_reversed = PrimerProcessor.ensure_more_c_than_g(probe_seq)
+                
+                if probe_reversed and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Reversed probe for optimal C>G ratio")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to process probe sequence: {str(e)}")
+                logger.debug(f"Probe processing error: {str(e)}", exc_info=True)
+        
+        return probe_seq, probe_reversed
+
+    @staticmethod
+    def _create_amplicon(template: str, pair: Dict, debug_mode: bool) -> str:
+        """
+        Create amplicon sequence from template and primer positions.
+        
+        Args:
+            template: Template sequence
+            pair: Primer pair with position information
+            debug_mode: Whether debug logging is enabled
+            
+        Returns:
+            Amplicon sequence string, empty if creation fails
+        """
+        ls, ll = pair.get("left_start"), pair.get("left_len")
+        rs, rl = pair.get("right_start"), pair.get("right_len")
+        
+        # Validate position data
+        if not all([ls, ll, rs, rl]):
+            if debug_mode:
+                logger.debug(f"Missing position data for amplicon creation in pair {pair.get('idx', 'unknown')}")
+                logger.debug(f"  Left: {ls},{ll}, Right: {rs},{rl}")
+            return ""
+        
+        try:
+            # Use existing amplicon extraction method
+            amplicon = PrimerProcessor.get_amplicon(template, ls, ll, rs, rl)
+            
+            # Detailed debug logging
+            if debug_mode:
+                if not amplicon:
+                    logger.debug(f"WARNING: Failed to create amplicon for pair {pair.get('idx', 'unknown')}")
+                    logger.debug(f"  Coordinates: left={ls},{ll}, right={rs},{rl}")
+                    logger.debug(f"  Template length: {len(template)}")
+                    
+                    # Attempt alternative extraction
+                    amplicon = PrimerProcessor._try_reconstruct_amplicon(template, ls, rs, debug_mode)
+                else:
+                    logger.debug(f"Created amplicon for pair {pair.get('idx', 'unknown')}: {len(amplicon)} bp")
+                    
+                    # Validate primer alignment
+                    PrimerProcessor._validate_primer_alignment(pair, amplicon, debug_mode)
+            
+            return amplicon
+            
+        except Exception as e:
+            error_msg = f"Error creating amplicon for pair {pair.get('idx', 'unknown')}"
+            logger.error(error_msg)
+            logger.debug(f"Amplicon creation error: {str(e)}", exc_info=True)
+            return ""
+
+    @staticmethod
+    def _try_reconstruct_amplicon(template: str, ls: int, rs: int, debug_mode: bool) -> str:
+        """
+        Attempt to reconstruct amplicon when normal extraction fails.
+        
+        Args:
+            template: Template sequence
+            ls: Left start position
+            rs: Right start position
+            debug_mode: Whether debug logging is enabled
+            
+        Returns:
+            Reconstructed amplicon or empty string
+        """
+        if debug_mode:
+            logger.debug("Attempting amplicon reconstruction")
+        
+        # Try direct template extraction
+        if (ls is not None and rs is not None and ls <= rs and 
+            ls >= 1 and rs <= len(template)):
+            
+            direct_amplicon = template[ls-1:rs]
+            
+            if debug_mode:
+                logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)} bp")
+                
+            if len(direct_amplicon) > 0:
+                return direct_amplicon
+        
+        if debug_mode:
+            logger.debug(f"Amplicon reconstruction failed: ls={ls}, rs={rs}, template_len={len(template)}")
+        
+        return ""
+
+    @staticmethod
+    def _validate_primer_alignment(pair: Dict, amplicon: str, debug_mode: bool) -> None:
+        """
+        Validate that amplicon contains expected primer sequences.
+        
+        Args:
+            pair: Primer pair data
+            amplicon: Extracted amplicon sequence
+            debug_mode: Whether debug logging is enabled
+        """
+        if not debug_mode or not amplicon:
+            return
+        
+        left_seq = pair.get("left_sequence", "")
+        right_seq = pair.get("right_sequence", "")
+        
+        # Check forward primer alignment
+        if left_seq and len(amplicon) >= len(left_seq):
+            if not amplicon.startswith(left_seq[:min(len(left_seq), 10)]):
+                logger.debug("WARNING: Amplicon does not start with forward primer")
+        
+        # Check reverse primer alignment (reverse complement)
+        if right_seq and len(amplicon) >= len(right_seq):
+            try:
+                rc_right = PrimerProcessor.reverse_complement(right_seq)
+                if rc_right[:min(len(right_seq), 10)] not in amplicon[-len(right_seq):]:
+                    logger.debug("WARNING: Amplicon does not end with reverse primer complement")
+            except Exception as e:
+                logger.debug(f"Could not validate reverse primer alignment: {e}")
+
+    @staticmethod
+    def _get_location_info(sequence_id: str, pair: Dict, fragment_info: Dict) -> Dict[str, str]:
+        """
+        Get location information for primer record.
+        
+        Args:
+            sequence_id: Sequence identifier
+            pair: Primer pair data
+            fragment_info: Fragment information mapping
+            
+        Returns:
+            Dictionary with gene, chromosome, and location information
+        """
+        # Get fragment information
+        frag_info = fragment_info.get(sequence_id, {})
+        
+        # Determine gene name
+        gene = frag_info.get("gene", sequence_id)
+        
+        # Get chromosome
+        chromosome = frag_info.get("chr", "")
+        
+        # Calculate absolute genomic position if possible
+        location = ""
+        ls = pair.get("left_start")
+        if ls is not None and "start" in frag_info:
+            try:
+                fragment_start = frag_info.get("start", 1)
+                abs_left_start = fragment_start + ls - 1
+                location = str(abs_left_start)
+            except (TypeError, ValueError):
+                logger.debug(f"Could not calculate absolute position for {sequence_id}")
+        
+        return {
+            "gene": gene,
+            "chromosome": chromosome, 
+            "location": location
+        }
+
+    # =============================================================================
+    # SEQUENCE UTILITY METHODS (moved from sequence_utils.py)
+    # =============================================================================
+
+    @staticmethod
+    def has_disallowed_repeats(seq):
+        """
+        Check for disallowed repeats in a DNA sequence.
+        
+        Identifies sequences containing runs of four or more consecutive
+        G or C nucleotides, which can cause issues in PCR amplification
+        and primer binding.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            True if disallowed repeats found, False otherwise
+            
+        Example:
+            >>> PrimerProcessor.has_disallowed_repeats("ATCGGGGATC")
+            True
+            >>> PrimerProcessor.has_disallowed_repeats("ATCGATCG")
+            False
+        """
+        if not isinstance(seq, str):
+            logger.debug("Invalid sequence type provided to has_disallowed_repeats")
+            return True
+            
+        if not seq:
+            logger.debug("Empty sequence provided to has_disallowed_repeats")
+            return False
+            
+        seq_upper = seq.upper()
+        has_repeats = "CCCC" in seq_upper or "GGGG" in seq_upper
+        
+        if logger.isEnabledFor(logging.DEBUG) and has_repeats:
+            logger.debug(f"Disallowed repeats found in sequence: {seq[:20]}...")
+            
+        return has_repeats
+    
+    @staticmethod
+    def calculate_gc(seq):
+        """
+        Calculate GC content of a DNA sequence.
+        
+        Computes the percentage of guanine and cytosine nucleotides
+        in the provided DNA sequence, which is important for primer
+        design and PCR optimization.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            GC content as a percentage (0-100)
+            
+        Example:
+            >>> PrimerProcessor.calculate_gc("ATCGGCTA")
+            37.5
+        """
+        if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to calculate_gc")
+            return 0.0
+            
+        if not seq.strip():
+            logger.debug("Empty sequence provided to calculate_gc")
+            return 0.0
+            
+        seq_upper = seq.upper()
+        gc_count = sum(1 for base in seq_upper if base in "GC")
+        total_bases = len(seq_upper)
+        
+        if total_bases == 0:
+            return 0.0
+            
+        gc_percentage = (gc_count / total_bases) * 100
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"GC content calculation: {gc_count}/{total_bases} = {gc_percentage:.1f}%")
+            
+        return gc_percentage
+    
+    @staticmethod
+    def reverse_complement(seq):
+        """
+        Generate the reverse complement of a DNA sequence.
+        
+        Creates the reverse complement by reversing the sequence and
+        replacing each nucleotide with its complement (A↔T, G↔C).
+        Supports IUPAC ambiguous nucleotide codes.
+        
+        Args:
+            seq: DNA sequence to reverse complement
+            
+        Returns:
+            Reverse complement sequence
+            
+        Raises:
+            ValueError: If sequence contains invalid characters
+            
+        Example:
+            >>> PrimerProcessor.reverse_complement("ATCG")
+            'CGAT'
+        """
+        if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to reverse_complement")
+            return ""
+        
+        if not seq.strip():
+            logger.debug("Empty sequence provided to reverse_complement")
+            return ""
+        
+        seq_upper = seq.upper()
+        
+        # Define the complement mapping including IUPAC codes
+        complement = {
+            'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A',
+            'N': 'N', 'R': 'Y', 'Y': 'R', 'S': 'S',
+            'W': 'W', 'K': 'M', 'M': 'K', 'B': 'V',
+            'D': 'H', 'H': 'D', 'V': 'B'
+        }
+        
+        # Check for invalid characters
+        invalid_chars = set(seq_upper) - set(complement.keys())
+        if invalid_chars:
+            error_msg = f"Invalid nucleotide characters found: {', '.join(invalid_chars)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Generate reverse complement
+        try:
+            rev_comp = ''.join(complement.get(base, base) for base in reversed(seq_upper))
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Reverse complement: {seq[:20]}... -> {rev_comp[:20]}...")
+                
+            return rev_comp
+        except Exception as e:
+            error_msg = f"Error generating reverse complement for sequence: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ValueError(error_msg) from e
+    
+    @staticmethod
+    def ensure_more_c_than_g(seq):
+        """
+        Ensure a sequence has more Cs than Gs, reversing if necessary.
+        
+        Checks the C/G ratio in a sequence and returns the reverse
+        complement if there are more Gs than Cs. This is useful for
+        probe design where C-rich sequences are preferred.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            Tuple of (possibly_reversed_sequence, was_reversed)
+            
+        Example:
+            >>> seq, reversed = PrimerProcessor.ensure_more_c_than_g("GGGATC")
+            >>> print(f"Sequence: {seq}, Was reversed: {reversed}")
+        """
+        if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to ensure_more_c_than_g")
+            return seq, False
+        
+        if not seq.strip():
+            logger.debug("Empty sequence provided to ensure_more_c_than_g")
+            return seq, False
+        
+        seq_upper = seq.upper()
+        c_count = seq_upper.count('C')
+        g_count = seq_upper.count('G')
+        
+        logger.debug(f"C/G analysis: C={c_count}, G={g_count}")
+        
+        if c_count >= g_count:
+            logger.debug("C count >= G count, no reversal needed")
+            return seq, False
+        
+        # Need to reverse complement
+        try:
+            rev_comp = PrimerProcessor.reverse_complement(seq)
+            logger.debug("Sequence reversed to ensure more Cs than Gs")
+            return rev_comp, True
+        except ValueError as e:
+            error_msg = f"Failed to reverse complement sequence: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            # Return original sequence if reverse complement fails
+            return seq, False
+        except Exception as e:
+            error_msg = f"Unexpected error in ensure_more_c_than_g: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return seq, False

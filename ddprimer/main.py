@@ -86,7 +86,7 @@ def parse_arguments():
     
     option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
     option_group.add_argument('--config', metavar='[.json]', nargs='?', const='DISPLAY', 
-                      help='Configuration file path or special mode ("all", "basic", or "template")')
+                      help='Configuration file path or special mode ("primer3", or "template")')
 
     option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
     option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
@@ -281,7 +281,7 @@ def run_pipeline():
         logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
         # Display configuration if --config is provided with special values
-        if args.config in ['DISPLAY', 'all', 'basic', 'template']:
+        if args.config in ['DISPLAY', 'primer3', 'template']:
             if args.config == 'template':
                 # Generate template configuration file
                 from .config import generate_config_template
@@ -291,8 +291,8 @@ def run_pipeline():
             else:
                 # Display configuration
                 display_config(Config)
-                # Show Primer3 settings only for 'all' mode
-                if args.config == 'all':
+                # Show Primer3 settings only for 'primer3' mode
+                if args.config == 'primer3':
                     display_primer3_settings(Config)
             return True
 
@@ -302,7 +302,7 @@ def run_pipeline():
             logger.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
-        if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
+        if args.config and args.config not in ['DISPLAY', 'primer3', 'template']:
             logger.debug(f"Loading custom configuration from {args.config}")
             try:
                 Config.load_from_file(args.config)
@@ -403,7 +403,7 @@ def run_pipeline():
                         blast_db_manager._cleanup_genome_file(fasta_file)
 
                     # Check if there's already a database path set
-                    if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
+                    if Config.DB_PATH:
                         # If there's already a non-default database, ask if we should use the new one
                         logger.info(f"Current BLAST database path: {Config.DB_PATH}")
                         use_new_db = input("\n>>> Use the newly created database instead? <<<\n[y/n]: ").strip().lower()

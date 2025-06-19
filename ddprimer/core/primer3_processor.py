@@ -13,16 +13,14 @@ Handles primer design through Primer3 including:
 
 import logging
 import re
-import os
 import primer3
 import multiprocessing
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
-from pathlib import Path
 
 from ..config import Config, SequenceProcessingError, PrimerDesignError
-from ..utils import SequenceUtils
+from ..core import PrimerProcessor
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -374,110 +372,6 @@ class Primer3Processor:
         if f"PRIMER_{side}_{i}_PENALTY" in primer_result:
             lines.append(f"PRIMER_{side}_{i}_PENALTY={primer_result[f'PRIMER_{side}_{i}_PENALTY']}")
     
-    def get_amplicon(self, seq, left_start, left_len, right_start, right_len):
-        """
-        Extract amplicon sequence with corrected coordinate handling.
-        
-        Returns the substring from the 5' end of the forward primer
-        to the 3' end of the reverse primer, addressing systematic
-        coordinate alignment issues with Primer3.
-        
-        Args:
-            seq: Template sequence
-            left_start: Start position of forward primer (1-based)
-            left_len: Length of forward primer
-            right_start: Start position of reverse primer (1-based)
-            right_len: Length of reverse primer
-            
-        Returns:
-            Amplicon sequence string, empty if extraction fails
-            
-        Raises:
-            ValueError: If coordinate parameters are invalid
-            
-        Example:
-            >>> amplicon = processor.get_amplicon(template, 10, 20, 200, 20)
-            >>> print(f"Amplicon length: {len(amplicon)} bp")
-        """
-        # Validate input parameters
-        if None in (left_start, left_len, right_start, right_len):
-            logger.warning("Missing required parameters for amplicon extraction")
-            return ""
-        
-        try:
-            left_start = int(left_start)
-            left_len = int(left_len)
-            right_start = int(right_start)
-            right_len = int(right_len)
-        except (TypeError, ValueError) as e:
-            error_msg = f"Invalid numerical values for amplicon extraction"
-            logger.error(error_msg)
-            logger.debug(f"Parameter conversion error: {str(e)}", exc_info=True)
-            raise ValueError(error_msg) from e
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Amplicon extraction: left={left_start},{left_len}, right={right_start},{right_len}")
-            
-        # Adjust coordinates to address off-by-one issues
-        adj_left_start = max(1, left_start - 1)
-        
-        # Handle edge cases
-        if right_start > len(seq):
-            logger.debug(f"Adjusting right_start from {right_start} to {len(seq)} (sequence length)")
-            right_start = len(seq)
-        
-        # Calculate amplicon boundaries
-        amp_start = adj_left_start
-        amp_end = right_start
-        
-        # Validate coordinates
-        if amp_start < 1 or amp_end > len(seq) or amp_start > amp_end:
-            logger.warning(f"Invalid amplicon coordinates: start={amp_start}, end={amp_end}, seq_len={len(seq)}")
-            return ""
-        
-        # Extract amplicon sequence (convert to 0-based for Python)
-        amplicon = seq[amp_start - 1 : amp_end]
-        
-        # Debug validation in debug mode
-        if logger.isEnabledFor(logging.DEBUG):
-            self._validate_amplicon_extraction(seq, left_start, left_len, right_start, right_len, 
-                                             adj_left_start, amplicon)
-        
-        return amplicon
-    
-    def _validate_amplicon_extraction(self, seq, left_start, left_len, right_start, right_len, 
-                                    adj_left_start, amplicon):
-        """
-        Validate amplicon extraction by comparing primer sequences.
-        
-        Args:
-            seq: Template sequence
-            left_start: Original left start position
-            left_len: Left primer length
-            right_start: Right start position
-            right_len: Right primer length
-            adj_left_start: Adjusted left start position
-            amplicon: Extracted amplicon sequence
-        """
-        # Extract primer sequences for validation
-        forward_original = seq[left_start - 1 : left_start - 1 + left_len]
-        forward_adjusted = seq[adj_left_start - 1 : adj_left_start - 1 + left_len]
-        reverse_primer = seq[right_start - right_len : right_start]
-        
-        logger.debug(f"Primer validation:")
-        logger.debug(f"  Forward (original pos): {forward_original}")
-        logger.debug(f"  Forward (adjusted pos): {forward_adjusted}")
-        logger.debug(f"  Amplicon start: {amplicon[:left_len] if len(amplicon) >= left_len else amplicon}")
-        logger.debug(f"  Reverse primer: {reverse_primer}")
-        logger.debug(f"  Amplicon end: {amplicon[-right_len:] if len(amplicon) >= right_len else amplicon}")
-        
-        # Check alignment
-        if len(amplicon) >= left_len and amplicon[:left_len] != forward_adjusted:
-            logger.debug("WARNING: Amplicon start does not match adjusted forward primer")
-        
-        if len(amplicon) >= right_len and amplicon[-right_len:] != reverse_primer:
-            logger.debug("WARNING: Amplicon end does not match reverse primer")
-    
     def parse_primer3_batch(self, stdout_data: str, fragment_info: Optional[Dict] = None) -> List[Dict]:
         """
         Parse primer3 output for a batch with comprehensive error handling.
@@ -701,7 +595,7 @@ class Primer3Processor:
             self._log_primer_pairs_debug(block)
         
         # Filter and limit primer pairs
-        acceptable_pairs = self._filter_primer_pairs(block['primer_pairs'])
+        acceptable_pairs = PrimerProcessor.filter_primer_pairs(block['primer_pairs'])
         
         if debug_mode and len(acceptable_pairs) != len(block['primer_pairs']):
             logger.debug(f"Filtered {len(block['primer_pairs'])} → {len(acceptable_pairs)} primer pairs")
@@ -710,7 +604,7 @@ class Primer3Processor:
         records = []
         for pair in acceptable_pairs:
             try:
-                record = self._create_primer_record(block, pair, fragment_info, debug_mode)
+                record = PrimerProcessor.create_primer_record(block, pair, fragment_info, debug_mode)
                 if record:
                     records.append(record)
             except Exception as e:
@@ -747,259 +641,6 @@ class Primer3Processor:
             logger.debug(f"Pair {i+1}: Penalty={penalty}, Size={product_size}")
             logger.debug(f"  Forward: {left_seq}")
             logger.debug(f"  Reverse: {right_seq}")
-
-    def _filter_primer_pairs(self, primer_pairs: List[Dict]) -> List[Dict]:
-        """
-        Filter and limit primer pairs based on configuration.
-        
-        Args:
-            primer_pairs: List of primer pairs to filter
-            
-        Returns:
-            Filtered and limited primer pairs
-        """
-        acceptable = primer_pairs
-        
-        # Apply maximum pairs per segment limit
-        if (hasattr(self.config, 'MAX_PRIMER_PAIRS_PER_SEGMENT') and 
-            self.config.MAX_PRIMER_PAIRS_PER_SEGMENT > 0):
-            
-            original_count = len(acceptable)
-            acceptable = acceptable[:self.config.MAX_PRIMER_PAIRS_PER_SEGMENT]
-            
-            if logger.isEnabledFor(logging.DEBUG) and original_count > self.config.MAX_PRIMER_PAIRS_PER_SEGMENT:
-                logger.debug(f"Limited to {self.config.MAX_PRIMER_PAIRS_PER_SEGMENT} primer pairs "
-                           f"(had {original_count} total)")
-        
-        return acceptable
-
-    def _create_primer_record(self, block: Dict, pair: Dict, fragment_info: Dict, debug_mode: bool) -> Optional[Dict]:
-        """
-        Create a primer record dictionary from sequence block and primer pair.
-        
-        Args:
-            block: Sequence block containing template
-            pair: Primer pair data
-            fragment_info: Fragment information mapping
-            debug_mode: Whether debug logging is enabled
-            
-        Returns:
-            Complete primer record dictionary or None if creation fails
-            
-        Raises:
-            ValueError: If required primer data is missing
-        """
-        try:
-            # Extract basic primer sequences
-            left_seq = pair.get("left_sequence", "")
-            right_seq = pair.get("right_sequence", "")
-            
-            if not left_seq or not right_seq:
-                logger.warning(f"Missing primer sequences for pair {pair.get('idx', 'unknown')}")
-                return None
-            
-            # Process probe sequence
-            probe_seq, probe_reversed = self._process_probe_sequence(pair)
-            
-            # Get position data
-            ls, ll = pair.get("left_start"), pair.get("left_len")
-            rs, rl = pair.get("right_start"), pair.get("right_len")
-            
-            # Create amplicon
-            amplicon = self._create_amplicon(block['sequence_template'], pair, debug_mode)
-            
-            # Get location information
-            location_info = self._get_location_info(block['sequence_id'], pair, fragment_info)
-            
-            # Calculate product size
-            product_size = pair.get("product_size")
-            if product_size is None and amplicon:
-                product_size = len(amplicon)
-            
-            # Build comprehensive primer record
-            record = {
-                "Gene": location_info["gene"],
-                "Index": pair["idx"],
-                "Template": block['sequence_template'],
-                "Primer F": left_seq,
-                "Tm F": pair.get("left_tm"),
-                "Penalty F": pair.get("left_penalty"),
-                "Primer F Start": ls,
-                "Primer F Len": ll,
-                "Primer R": right_seq,
-                "Tm R": pair.get("right_tm"),
-                "Penalty R": pair.get("right_penalty"),
-                "Primer R Start": rs,
-                "Primer R Len": rl,
-                "Pair Penalty": pair.get("pair_penalty"),
-                "Amplicon": amplicon,
-                "Length": product_size,
-                "Chromosome": location_info["chromosome"],
-                "Location": location_info["location"]
-            }
-            
-            # Add probe-related fields if internal oligos are enabled
-            if not self.config.DISABLE_INTERNAL_OLIGO:
-                internal_start = pair.get("internal_start")
-                internal_len = pair.get("internal_len")
-                
-                record.update({
-                    "Probe": probe_seq,
-                    "Probe Tm": pair.get("internal_tm"),
-                    "Probe Penalty": pair.get("internal_penalty"),
-                    "Probe Start": internal_start,
-                    "Probe Len": internal_len,
-                    "Probe Reversed": probe_reversed
-                })
-            
-            return record
-            
-        except Exception as e:
-            error_msg = f"Failed to create primer record for pair {pair.get('idx', 'unknown')}"
-            logger.error(error_msg)
-            logger.debug(f"Record creation error: {str(e)}", exc_info=True)
-            return None
-
-    def _process_probe_sequence(self, pair: Dict) -> Tuple[str, bool]:
-        """
-        Process probe sequence with optional reverse complementation.
-        
-        Args:
-            pair: Primer pair containing probe data
-            
-        Returns:
-            Tuple of (probe_sequence, was_reversed)
-        """
-        if self.config.DISABLE_INTERNAL_OLIGO:
-            return "", False
-        
-        probe_seq = pair.get("internal_sequence", "")
-        probe_reversed = False
-        
-        # Apply reverse complementation if configured and probe exists
-        if self.config.PREFER_PROBE_MORE_C_THAN_G and probe_seq:
-            try:
-                probe_seq, probe_reversed = SequenceUtils.ensure_more_c_than_g(probe_seq)
-                
-                if probe_reversed and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Reversed probe for optimal C>G ratio")
-                    
-            except Exception as e:
-                logger.warning(f"Failed to process probe sequence: {str(e)}")
-                logger.debug(f"Probe processing error: {str(e)}", exc_info=True)
-        
-        return probe_seq, probe_reversed
-
-    def _create_amplicon(self, template: str, pair: Dict, debug_mode: bool) -> str:
-        """
-        Create amplicon sequence from template and primer positions.
-        
-        Args:
-            template: Template sequence
-            pair: Primer pair with position information
-            debug_mode: Whether debug logging is enabled
-            
-        Returns:
-            Amplicon sequence string, empty if creation fails
-        """
-        ls, ll = pair.get("left_start"), pair.get("left_len")
-        rs, rl = pair.get("right_start"), pair.get("right_len")
-        
-        # Validate position data
-        if not all([ls, ll, rs, rl]):
-            if debug_mode:
-                logger.debug(f"Missing position data for amplicon creation in pair {pair.get('idx', 'unknown')}")
-                logger.debug(f"  Left: {ls},{ll}, Right: {rs},{rl}")
-            return ""
-        
-        try:
-            # Use existing amplicon extraction method
-            amplicon = self.get_amplicon(template, ls, ll, rs, rl)
-            
-            # Detailed debug logging
-            if debug_mode:
-                if not amplicon:
-                    logger.debug(f"WARNING: Failed to create amplicon for pair {pair.get('idx', 'unknown')}")
-                    logger.debug(f"  Coordinates: left={ls},{ll}, right={rs},{rl}")
-                    logger.debug(f"  Template length: {len(template)}")
-                    
-                    # Attempt alternative extraction
-                    amplicon = self._try_reconstruct_amplicon(template, ls, rs, debug_mode)
-                else:
-                    logger.debug(f"Created amplicon for pair {pair.get('idx', 'unknown')}: {len(amplicon)} bp")
-                    
-                    # Validate primer alignment
-                    self._validate_primer_alignment(pair, amplicon, debug_mode)
-            
-            return amplicon
-            
-        except Exception as e:
-            error_msg = f"Error creating amplicon for pair {pair.get('idx', 'unknown')}"
-            logger.error(error_msg)
-            logger.debug(f"Amplicon creation error: {str(e)}", exc_info=True)
-            return ""
-
-    def _try_reconstruct_amplicon(self, template: str, ls: int, rs: int, debug_mode: bool) -> str:
-        """
-        Attempt to reconstruct amplicon when normal extraction fails.
-        
-        Args:
-            template: Template sequence
-            ls: Left start position
-            rs: Right start position
-            debug_mode: Whether debug logging is enabled
-            
-        Returns:
-            Reconstructed amplicon or empty string
-        """
-        if debug_mode:
-            logger.debug("Attempting amplicon reconstruction")
-        
-        # Try direct template extraction
-        if (ls is not None and rs is not None and ls <= rs and 
-            ls >= 1 and rs <= len(template)):
-            
-            direct_amplicon = template[ls-1:rs]
-            
-            if debug_mode:
-                logger.debug(f"Reconstructed amplicon: {len(direct_amplicon)} bp")
-                
-            if len(direct_amplicon) > 0:
-                return direct_amplicon
-        
-        if debug_mode:
-            logger.debug(f"Amplicon reconstruction failed: ls={ls}, rs={rs}, template_len={len(template)}")
-        
-        return ""
-
-    def _validate_primer_alignment(self, pair: Dict, amplicon: str, debug_mode: bool) -> None:
-        """
-        Validate that amplicon contains expected primer sequences.
-        
-        Args:
-            pair: Primer pair data
-            amplicon: Extracted amplicon sequence
-            debug_mode: Whether debug logging is enabled
-        """
-        if not debug_mode or not amplicon:
-            return
-        
-        left_seq = pair.get("left_sequence", "")
-        right_seq = pair.get("right_sequence", "")
-        
-        # Check forward primer alignment
-        if left_seq and len(amplicon) >= len(left_seq):
-            if not amplicon.startswith(left_seq[:min(len(left_seq), 10)]):
-                logger.debug("WARNING: Amplicon does not start with forward primer")
-        
-        # Check reverse primer alignment (reverse complement)
-        if right_seq and len(amplicon) >= len(right_seq):
-            try:
-                rc_right = SequenceUtils.reverse_complement(right_seq)
-                if rc_right[:min(len(right_seq), 10)] not in amplicon[-len(right_seq):]:
-                    logger.debug("WARNING: Amplicon does not end with reverse primer complement")
-            except Exception as e:
-                logger.debug(f"Could not validate reverse primer alignment: {e}")
 
     def _get_location_info(self, sequence_id: str, pair: Dict, fragment_info: Dict) -> Dict[str, str]:
         """

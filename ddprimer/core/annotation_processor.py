@@ -15,7 +15,6 @@ This module integrates with the broader ddPrimer pipeline to provide
 robust gene annotation capabilities for primer design workflows.
 """
 
-import re
 import concurrent.futures
 import logging
 from tqdm import tqdm
@@ -23,7 +22,6 @@ from typing import List, Dict
 
 # Import package modules
 from ..config import Config
-from ..utils import CommonUtils
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -130,7 +128,6 @@ class AnnotationProcessor:
         Extract gene information from a GFF file.
         
         Uses global RETAIN_TYPES for filtering.
-        Optimized version that processes the file in parallel chunks.
         
         Args:
             gff_path: Path to the GFF file
@@ -151,7 +148,7 @@ class AnnotationProcessor:
             
             # Calculate chunk size for parallel processing
             chunk_size = max(1, len(all_lines) // Config.NUM_PROCESSES)
-            chunks = CommonUtils.chunks(all_lines, chunk_size)
+            chunks = [all_lines[i:i + chunk_size] for i in range(0, len(all_lines), chunk_size)]
             
             logger.debug(f"Processing GFF in {len(chunks)} chunks with {Config.NUM_PROCESSES} processes")
             
@@ -162,8 +159,8 @@ class AnnotationProcessor:
                 
                 if Config.SHOW_PROGRESS:
                     for future in tqdm(concurrent.futures.as_completed(futures), 
-                                      total=len(futures), 
-                                      desc="Processing GFF file"):
+                                    total=len(futures), 
+                                    desc="Processing GFF file"):
                         genes.extend(future.result())
                 else:
                     for future in concurrent.futures.as_completed(futures):

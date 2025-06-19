@@ -675,23 +675,29 @@ class BlastDatabaseManager:
             return None, None, None
     
     def _handle_model_organism_selection(self, choice: int) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """Handle model organism selection and download."""
-        try:
-            organism_key = list(self.MODEL_ORGANISMS.keys())[choice - 1]
-            organism_data = self.MODEL_ORGANISMS[organism_key]
-            organism_name = organism_data['name']
-            
-            # Create genome directory
-            genome_dir = os.path.join(self._get_default_db_directory(), "..", "genomes")
-            os.makedirs(genome_dir, exist_ok=True)
-            
-            # Fetch the genome
-            fasta_file = self._fetch_model_organism(organism_key, genome_dir)
-            return organism_key, organism_name, fasta_file
-            
-        except Exception as e:
-            logger.error(f"Error fetching model organism: {str(e)}")
-            return None, None, None
+            """Handle model organism selection and download."""
+            try:
+                organism_key = list(self.MODEL_ORGANISMS.keys())[choice - 1]
+                organism_data = self.MODEL_ORGANISMS[organism_key]
+                organism_name = organism_data['name']
+                
+                # Create temporary directory for genome download
+                temp_genome_dir = tempfile.mkdtemp(prefix="ddprimer_genomes_")
+                logger.debug(f"Created temporary genome directory: {temp_genome_dir}")
+                
+                try:
+                    # Fetch the genome
+                    fasta_file = self._fetch_model_organism(organism_key, temp_genome_dir)
+                    return organism_key, organism_name, fasta_file
+                except Exception as e:
+                    # Clean up temp directory on error
+                    if os.path.exists(temp_genome_dir):
+                        shutil.rmtree(temp_genome_dir)
+                    raise e
+                
+            except Exception as e:
+                logger.error(f"Error fetching model organism: {str(e)}")
+                return None, None, None
     
     def _fetch_model_organism(self, organism_key: str, output_dir: str) -> str:
         """Fetch genome file for a model organism."""
@@ -765,23 +771,33 @@ class BlastDatabaseManager:
             raise FileError(error_msg) from e
     
     def _cleanup_genome_file(self, file_path: str) -> None:
-        """Clean up downloaded genome files."""
-        if not file_path:
-            return
-            
-        try:
-            if os.path.exists(file_path):
-                logger.debug(f"Cleaning up genome file: {file_path}")
-                os.remove(file_path)
+            """Clean up downloaded genome files and their temporary directory."""
+            if not file_path:
+                return
                 
-                # Also remove .gz file if this was decompressed
-                if not file_path.endswith('.gz'):
-                    gz_file = f"{file_path}.gz"
-                    if os.path.exists(gz_file):
-                        os.remove(gz_file)
+            try:
+                # Get the directory containing the genome file
+                genome_dir = os.path.dirname(file_path)
+                
+                # If it's a temporary directory (contains ddprimer_genomes_), remove the whole directory
+                if "ddprimer_genomes_" in genome_dir:
+                    logger.debug(f"Cleaning up temporary genome directory: {genome_dir}")
+                    if os.path.exists(genome_dir):
+                        shutil.rmtree(genome_dir)
+                else:
+                    # Fallback: just remove the specific file (for backwards compatibility)
+                    if os.path.exists(file_path):
+                        logger.debug(f"Cleaning up genome file: {file_path}")
+                        os.remove(file_path)
                         
-        except OSError as e:
-            logger.warning(f"Error cleaning up genome file {file_path}: {str(e)}")
+                        # Also remove .gz file if this was decompressed
+                        if not file_path.endswith('.gz'):
+                            gz_file = f"{file_path}.gz"
+                            if os.path.exists(gz_file):
+                                os.remove(gz_file)
+                            
+            except OSError as e:
+                logger.warning(f"Error cleaning up genome files: {str(e)}")
 
 
 # Convenience functions for backward compatibility and ease of use
