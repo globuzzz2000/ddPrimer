@@ -176,6 +176,17 @@ class SNPVerificationError(DDPrimerError):
     """
     pass
 
+class VCFNormalizationError(DDPrimerError):
+    """
+    Error during VCF normalization process.
+    
+    Raised when there are issues with VCF normalization using bcftools,
+    including tool availability, execution failures, or parsing errors.
+    
+    Example:
+        >>> raise VCFNormalizationError("bcftools normalization failed: invalid reference")
+    """
+    pass
 
 class PrimerDesignError(DDPrimerError):
     """
