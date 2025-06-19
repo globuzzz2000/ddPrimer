@@ -11,20 +11,14 @@ This subpackage contains utility functions:
 from .sequence_utils import SequenceUtils
 from .file_io import FileIO, TempDirectoryManager
 from .common_utils import CommonUtils
-from .blast_db_creator import BlastDBCreator
-from .blast_verification import BlastVerification
-from .model_organism_manager import ModelOrganismManager
-from .selector import Selector
+from .blast_db_manager import BlastDatabaseManager
 from .chromosome_mapper import ChromosomeMapper
 
 __all__ = [
     'FileUtils',
-    'BlastDBCreator',
     'SequnceUtils',
     'CommonUtils',
-    'BlastVerification',
-    'ModelOrganismManager',
-    'Selector',
+    'BlastDatabaseManager',
     'FileIO',
     'TempDirectoryManager',
     'SequenceUtils',

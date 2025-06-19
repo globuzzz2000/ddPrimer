@@ -19,7 +19,7 @@ if __name__ == '__main__':
         sys.path.insert(0, os.path.dirname(__file__))
 
 # Make essential components available at package level
-from .pipeline import run_pipeline, main
+from .main import run_pipeline, main
 from .config import Config
 
 __all__ = ['run_pipeline', 'main', 'Config', '__version__']

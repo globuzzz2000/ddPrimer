@@ -6,7 +6,7 @@ Configuration module for ddPrimer pipeline.
 Contains functionality for:
 1. Central configuration settings management with singleton pattern
 2. JSON and Primer3 format configuration file loading/saving
-3. BLAST database path management and auto-detection
+3. BLAST database path management
 4. Comprehensive Primer3 settings configuration
 
 This module provides centralized configuration management for the ddPrimer
@@ -58,7 +58,6 @@ class Config:
     #############################################################################
     NUM_PROCESSES = max(1, int(cpu_count() * 0.75))  # Use 75% of cores
     BATCH_SIZE = 100
-    MAF_CHUNK_SIZE = 10000
     SHOW_PROGRESS = True
     
     #############################################################################
@@ -89,7 +88,6 @@ class Config:
     SEQUENCE_MIN_GC = 50.0
     SEQUENCE_MAX_GC = 60.0
 
-
     #############################################################################
     #                           SNP Masking Parameters
     #############################################################################
@@ -108,11 +106,8 @@ class Config:
     #############################################################################
     #                           BLAST Database Options
     #############################################################################
-    DB_FASTA = None            # Path to a FASTA file to create a BLAST database from
-    DB_OUTPUT_DIR = None       # Custom output directory for the BLAST database
-    DB_NAME = None             # Custom name for the BLAST database
-    USE_CUSTOM_DB = False      # Whether to use a custom database or an auto-detected one
-    DB_PATH = None
+    DB_PATH = None             # Path to the BLAST database
+    USE_CUSTOM_DB = False      # Whether to use a custom database
     
     # BLAST+ parameters
     BLAST_WORD_SIZE = 7
@@ -124,27 +119,6 @@ class Config:
     BLAST_GAPEXTEND = 2
     BLAST_FILTER_FACTOR = 100  # E-value filtering factor
 
-
-    #############################################################################
-    #                           Alignment Parameters
-    #############################################################################
-    # Sequence identity settings for alignment mode
-    MIN_IDENTITY = 80.0  # Minimum sequence identity for primer regions (percentage)
-    MIN_LENGTH = 20      # Minimum length of conserved regions
-
-    # LastZ alignment options
-    LASTZ_OPTIONS = "--format=maf --chain --gapped --step=10 --ambiguous=iupac"
-    # Options commonly used:
-    # --format=maf      : Output in Multiple Alignment Format (required)
-    # --step=10         : Step size for search (smaller = more sensitive but slower)
-    # --hspthresh=3000  : Threshold for high-scoring segment pairs (lower = more alignments)
-    # --chain           : Enable chaining of HSPs
-    # --gapped          : Enable gapped extension of HSPs
-    # --inner=2000      : Inner radius for seeding alignments
-    # --ydrop=3400      : Y-drop parameter (controls extension termination)
-    # --gappedthresh=3000 : Threshold for gapped alignments
-
-        
     #############################################################################
     #                           Unified Configuration Storage
     #############################################################################
@@ -259,7 +233,6 @@ class Config:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
-
 
     #############################################################################
     #                           Primer3 Settings
@@ -435,7 +408,6 @@ class Config:
     
     def __init__(self):
         """Initialize Config instance with default values."""
-        # Implementation left empty as we're using class variables
         pass
     
     @classmethod
@@ -458,10 +430,15 @@ class Config:
                 cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
                 logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
             
-            # Initialize the BLAST database path if not already set
-            if cls.DB_PATH is None:
-                cls.DB_PATH = cls._initialize_db_path()
-                logger.debug(f"Initialized DB_PATH to {cls.DB_PATH}")
+            # Initialize the BLAST database path from saved configuration
+            saved_db_path = cls.load_user_setting("blast_db_path", None)
+            if saved_db_path and os.path.exists(saved_db_path + ".nhr"):
+                cls.DB_PATH = saved_db_path
+                cls.USE_CUSTOM_DB = True
+                logger.debug(f"Loaded saved database path: {saved_db_path}")
+            else:
+                logger.debug("No valid saved database path found")
+                
         return cls._instance
     
     @classmethod
@@ -730,21 +707,6 @@ class Config:
                         cls.MIN_SEGMENT_LENGTH = ranges[0][0]
                         logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
             
-            # Handle BLAST database options
-            blast_settings_map = {
-                "DB_FASTA": "DB_FASTA",
-                "DB_OUTPUT_DIR": "DB_OUTPUT_DIR",
-                "DB_NAME": "DB_NAME",
-                "DB_PATH": "DB_PATH"
-            }
-            
-            for setting_key, config_attr in blast_settings_map.items():
-                if setting_key in settings:
-                    setattr(cls, config_attr, settings[setting_key])
-                    if setting_key == "DB_FASTA":
-                        cls.USE_CUSTOM_DB = True
-                        logger.debug("Enabled USE_CUSTOM_DB due to DB_FASTA setting")
-            
             return True
         except Exception as e:
             error_msg = f"Failed to load Primer3 settings from {filepath}"
@@ -817,96 +779,6 @@ class Config:
             raise ConfigError(error_msg) from e
 
     @classmethod
-    def _initialize_db_path(cls):
-        """
-        Find a BLAST database path for use using unified config system.
-        
-        Returns:
-            str or None: Path to BLAST database or None if not found
-            
-        Raises:
-            ConfigError: If database initialization fails
-        """
-        logger.debug("=== DB PATH INITIALIZATION DEBUG ===")
-        logger.debug("Searching for BLAST database path")
-        
-        try:
-            # First check for a saved database path in unified config
-            saved_db_path = cls.load_user_setting("blast_db_path", None)
-            
-            if saved_db_path:
-                logger.debug(f"Found saved database path: {saved_db_path}")
-                # Verify this path still has database files
-                if os.path.exists(saved_db_path + ".nhr"):
-                    logger.debug(f"Using configured BLAST database: {saved_db_path}")
-                    return saved_db_path
-                else:
-                    logger.debug(f"Saved database path {saved_db_path} is not valid (missing .nhr file)")
-            else:
-                logger.debug("No saved database path found in unified config")
-            
-            # If no saved config or the saved path is invalid, 
-            # fall back to looking in standard directories
-            possible_locations = [
-                # System directory
-                "/usr/local/share/ddprimer/blast_db",
-                # User directory
-                os.path.join(Path.home(), ".ddprimer", "blast_db")
-            ]
-            
-            for location in possible_locations:
-                if os.path.exists(location):
-                    logger.debug(f"Checking for BLAST databases in {location}")
-                    # Look for any .nhr files which indicate BLAST databases
-                    db_files = [f for f in os.listdir(location) if f.endswith(".nhr")]
-                    if db_files:
-                        # Use the first database found, without the extension
-                        db_name = os.path.splitext(db_files[0])[0]
-                        db_path = os.path.join(location, db_name)
-                        logger.debug(f"Found existing BLAST database: {db_path}")
-                        return db_path
-                    else:
-                        logger.debug(f"No database files (.nhr) found in {location}")
-            
-            # If no database found, return None
-            logger.debug("No existing BLAST database found")
-            return None
-            
-        except Exception as e:
-            error_msg = f"Failed to initialize database path"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ConfigError(error_msg) from e
-        
-        logger.debug("=== END DB PATH INITIALIZATION DEBUG ===")
-    
-    @classmethod
-    def save_database_config(cls, db_path):
-        """
-        Save the database path to unified config system for future runs.
-        
-        Args:
-            db_path (str): Path to the BLAST database
-            
-        Raises:
-            ConfigError: If saving database config fails
-            
-        Example:
-            >>> Config.save_database_config("/path/to/blast_db")
-        """
-        logger.debug(f"Saving database config: {db_path}")
-        
-        try:
-            cls.save_user_setting("blast_db_path", db_path)
-            logger.debug(f"Database config saved to unified storage: {db_path}")
-            
-        except Exception as e:
-            error_msg = f"Failed to save database config for path {db_path}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ConfigError(error_msg) from e
-    
-    @classmethod
     def _save_to_json(cls, filepath: str) -> bool:
         """
         Save settings in JSON format.
@@ -967,6 +839,32 @@ class Config:
         logger.debug(f"Retrieved {len(settings)} configuration settings")
         return settings
     
+    @classmethod
+    def save_database_config(cls, db_path: str):
+        """
+        Save the database path to unified config system for future runs.
+        
+        Args:
+            db_path: Path to the BLAST database
+            
+        Raises:
+            ConfigError: If saving database config fails
+            
+        Example:
+            >>> Config.save_database_config("/path/to/blast_db")
+        """
+        logger.debug(f"Saving database config: {db_path}")
+        
+        try:
+            cls.save_user_setting("blast_db_path", db_path)
+            logger.debug(f"Database config saved to unified storage: {db_path}")
+            
+        except Exception as e:
+            error_msg = f"Failed to save database config for path {db_path}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ConfigError(error_msg) from e
+    
     @staticmethod
     def debug(message: str) -> None:
         """
@@ -990,3 +888,112 @@ class ConfigError(Exception):
 class FileFormatError(Exception):
     """Error with file formatting or parsing."""
     pass
+
+
+class DDPrimerError(Exception):
+    """Base exception for ddPrimer application errors."""
+    pass
+
+
+class FileError(Exception):
+    """Error with file operations."""
+    pass
+
+
+class ExternalToolError(Exception):
+    """Error with external tool execution."""
+    
+    def __init__(self, message: str, tool_name: str = None):
+        super().__init__(message)
+        self.tool_name = tool_name
+
+
+class SequenceProcessingError(Exception):
+    """Error during sequence processing operations."""
+    pass
+
+
+def setup_logging(debug=False):
+    """
+    Set up logging configuration for the ddPrimer pipeline.
+    
+    Args:
+        debug: Enable debug logging mode
+        
+    Returns:
+        Path to log file if created, None otherwise
+    """
+    # Set the debug mode in Config
+    Config.DEBUG_MODE = debug
+    
+    # Configure logging level
+    if debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),
+                logging.FileHandler('ddprimer_debug.log')
+            ]
+        )
+        return 'ddprimer_debug.log'
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(levelname)s: %(message)s',
+            handlers=[logging.StreamHandler()]
+        )
+        return None
+
+
+def display_config(config_class):
+    """
+    Display current configuration settings.
+    
+    Args:
+        config_class: The Config class to display settings for
+    """
+    print("\n=== ddPrimer Configuration ===")
+    print(f"Debug Mode: {config_class.DEBUG_MODE}")
+    print(f"Number of Processes: {config_class.NUM_PROCESSES}")
+    print(f"Batch Size: {config_class.BATCH_SIZE}")
+    print(f"Primer Min Size: {config_class.PRIMER_MIN_SIZE}")
+    print(f"Primer Opt Size: {config_class.PRIMER_OPT_SIZE}")
+    print(f"Primer Max Size: {config_class.PRIMER_MAX_SIZE}")
+    print(f"Product Size Range: {config_class.PRIMER_PRODUCT_SIZE_RANGE}")
+    print(f"BLAST Database Path: {config_class.DB_PATH}")
+    print("=" * 30)
+
+
+def display_primer3_settings(config_class):
+    """
+    Display Primer3 settings.
+    
+    Args:
+        config_class: The Config class to display Primer3 settings for
+    """
+    print("\n=== Primer3 Settings ===")
+    settings = config_class.get_primer3_global_args()
+    for key, value in sorted(settings.items()):
+        print(f"{key}: {value}")
+    print("=" * 25)
+
+
+def generate_config_template(config_class, output_dir=None):
+    """
+    Generate a configuration template file.
+    
+    Args:
+        config_class: The Config class to generate template from
+        output_dir: Directory to save the template file
+    """
+    if output_dir:
+        template_path = os.path.join(output_dir, "ddprimer_config_template.json")
+    else:
+        template_path = "ddprimer_config_template.json"
+    
+    try:
+        config_class.save_to_file(template_path, "json")
+        print(f"Configuration template saved to: {template_path}")
+    except Exception as e:
+        print(f"Error generating configuration template: {str(e)}")

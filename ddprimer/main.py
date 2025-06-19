@@ -13,8 +13,6 @@ A streamlined script that:
 7. BLASTs primers and oligos for specificity
 8. Saves results to an Excel file
 
-Now with support for automatic model organism database creation!
-
 Contains functionality for:
 1. Command line argument parsing and validation
 2. Configuration management and display
@@ -27,6 +25,7 @@ This module serves as the main entry point for the ddPrimer pipeline,
 coordinating all components to provide a complete primer design solution.
 """
 
+import os
 import sys
 import argparse
 import logging
@@ -36,8 +35,8 @@ from typing import Optional, Union
 
 # Import package modules
 from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, FileError, ExternalToolError
-from .utils import FileIO, BlastDBCreator, BlastVerification
-from .modes import run_alignment_mode, run_direct_mode, run_standard_mode
+from .utils import FileIO, BlastDatabaseManager
+from .modes import run_direct_mode, run_standard_mode
 
 # Type alias for path inputs
 PathLike = Union[str, Path]
@@ -62,11 +61,11 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='ddPrimer: A pipeline for primer design and filtering',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        usage='ddprimer [--direct [.csv, .xlsx]] [--alignment] [-h] [--debug [MODULE...]] [--config [.json]] \n'
-            '                [--cli] [--nooligo] [--snp] [--noannotation] [--lastzonly] \n'
+        usage='ddprimer [--direct [.csv, .xlsx]] [-h] [--debug [MODULE...]] [--config [.json]] \n'
+            '                [--cli] [--nooligo] [--snp] [--noannotation] \n'
             '                [--db [.fasta, .fna, .fa] [DB_NAME]] \n'
-            '                [--fasta [.fasta, .fna, .fa]] [--second-fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
-            '                [--second-vcf [.vcf, .vcf.gz]] [--gff [.gff, .gff3]] [--maf [.maf]] [--output <output_dir>]'
+            '                [--fasta [.fasta, .fna, .fa]] [--vcf [.vcf, .vcf.gz]] \n'
+            '                [--gff [.gff, .gff3]] [--output <output_dir>]'
     )
 
     # Create argument groups for better organization
@@ -77,14 +76,12 @@ def parse_arguments():
     # Modes
     mode_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
                            help='Enable target-sequence based primer design workflow')
-    mode_group.add_argument("--alignment", action="store_true", 
-                           help="Enable alignment-based primer design workflow")
 
     # Enhanced debug option
     option_group.add_argument('--debug', nargs='*', metavar='MODULE', 
                              help='Enable debug mode. Use without arguments for universal debug, '
                                   'or specify module names (e.g., --debug standard_mode snp blast). '
-                                  'Available modules: standard_mode, direct_mode, alignment_mode, '
+                                  'Available modules: standard_mode, direct_mode, '
                                   'snp, annotations, blast, vienna, primer3, utils')
     
     option_group.add_argument('--output', metavar='<output_dir>', help='Output directory (for results and config templates)')
@@ -93,9 +90,8 @@ def parse_arguments():
 
     option_group.add_argument('--cli', action='store_true', help='Force CLI mode')
     option_group.add_argument('--nooligo', action='store_true', help='Disable internal oligo (probe) design')
-    option_group.add_argument('--snp', action='store_true', help='For direct and alignment mode: Enable SNP masking in sequences (requires fasta and vcf file)')
-    option_group.add_argument('--noannotation', action='store_true', help='For standard and alignment mode: Disable gene annotation filtering in all modes')
-    option_group.add_argument('--lastzonly', action='store_true', help='Run only LastZ alignments (no primer design)')
+    option_group.add_argument('--snp', action='store_true', help='For direct mode: Enable SNP masking in sequences (requires fasta and vcf file)')
+    option_group.add_argument('--noannotation', action='store_true', help='For standard mode: Disable gene annotation filtering')
     option_group.add_argument('--db', nargs='*', metavar=('[.fasta, .fna, .fa]', '[DB_NAME]'),
                     help='Create or select a BLAST database. With no arguments, shows model organism selection menu. '
                         'With one argument, creates database from the specified FASTA file. '
@@ -103,11 +99,8 @@ def parse_arguments():
         
     # Input files
     input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', help='Reference genome FASTA file')
-    input_group.add_argument('--second-fasta', metavar='[.fasta, .fna, .fa]', help='Second genome FASTA file')
     input_group.add_argument('--vcf', metavar='[.vcf, .vcf.gz]', help='Variant Call Format (VCF) file with variants')
-    input_group.add_argument('--second-vcf', metavar='[.vcf, .vcf.gz]', help='VCF file for the second genome')
     input_group.add_argument('--gff', metavar='[.gff, .gff3]', help='GFF annotation file')
-    input_group.add_argument('--maf', metavar='[.maf]', nargs='?', const=True, help="For alignment mode: Pre-computed MAF alignment file (skips LastZ alignment)")
     
     args = parser.parse_args()
 
@@ -123,48 +116,10 @@ def parse_arguments():
         # --debug not specified
         args.debug = False
 
-    # Check for conflicting modes (only check actual modes, not utility flags)
-    mode_count = sum([bool(args.direct), bool(args.alignment)])
-    if mode_count > 1:
-        parser.error("Only one mode can be specified: --direct or --alignment")
-    
-    # If --maf is used, automatically activate alignment mode
-    if args.maf:
-        args.alignment = True
-    
     # Handle --snp requirements
     if args.snp and args.cli:
         if not args.fasta or not args.vcf:
             parser.error("SNP masking (--snp) requires --fasta and --vcf")
-    
-    # Extra validation for lastzonly mode
-    if args.lastzonly:
-        # Force alignment mode when lastzonly is specified
-        args.alignment = True
-        
-        # Only need reference FASTA and second FASTA for lastzonly mode
-        if args.cli and not args.fasta:
-            parser.error("--lastzonly requires --fasta (reference genome)")
-        if args.cli and not args.second_fasta:
-            parser.error("--lastzonly requires --second-fasta (second genome)")
-        # These flags are incompatible with lastzonly
-        if args.snp:
-            parser.error("--lastzonly cannot be used with --snp")
-        if args.direct:
-            parser.error("--lastzonly cannot be used with --direct")
-        if args.noannotation:
-            parser.error("--lastzonly cannot be used with --noannotation")
-    
-    # Alignment mode validation (only in CLI mode)
-    if args.cli and args.alignment and not args.lastzonly:
-        if not (args.maf or args.second_fasta):
-            parser.error("Alignment mode requires either --maf or --second-fasta")
-        if not args.maf and not args.fasta:
-            parser.error("Reference genome FASTA (--fasta) is required for alignment")
-        if args.snp:
-            # Only require VCF files if SNP masking is enabled
-            if args.second_fasta and not args.second_vcf:
-                parser.error("Second VCF file (--second-vcf) is required for SNP masking")
     
     # Process --db arguments
     if args.db is not None:
@@ -218,15 +173,11 @@ class WorkflowFactory:
         Returns:
             Workflow function to execute
         """
-        # For both lastzonly and alignment, use alignment mode
-        if args.alignment or args.lastzonly:
-            # Alignment mode (also handles lastzonly)
-            return run_alignment_mode
-        elif args.direct:
+        if args.direct:
             # Direct mode
             return run_direct_mode
         else:
-            # Standard mode
+            # Standard mode (default)
             return run_standard_mode
 
 
@@ -271,7 +222,7 @@ class TempDirectoryManager:
         try:
             import tempfile
             self.temp_dir = tempfile.mkdtemp(
-                prefix=Config.BLAST_TEMP_FILE_PREFIX,
+                prefix="ddprimer_temp_",
                 dir=self.base_dir
             )
             logger.debug(f"Created temporary directory: {self.temp_dir}")
@@ -315,9 +266,6 @@ def run_pipeline():
         FileError: For file-related operations
         ExternalToolError: For external tool failures
     """
-    # Initialize logger first to handle any early errors
-    logger_instance = None
-
     try:
         # Parse command line arguments
         args = parse_arguments()
@@ -325,13 +273,12 @@ def run_pipeline():
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
         
-        logger_instance = logging.getLogger(__name__)
-        logger_instance.debug("Initializing Config settings")
+        logger.debug("Initializing Config settings")
         Config.get_instance()
-        logger_instance.debug(f"Initial DB_PATH: {Config.DB_PATH}")
-        logger_instance.debug("Starting pipeline execution")
-        logger_instance.debug(f"Arguments: {args}")
-        logger_instance.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
+        logger.debug(f"Initial DB_PATH: {Config.DB_PATH}")
+        logger.debug("Starting pipeline execution")
+        logger.debug(f"Arguments: {args}")
+        logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
         # Display configuration if --config is provided with special values
         if args.config in ['DISPLAY', 'all', 'basic', 'template']:
@@ -349,95 +296,103 @@ def run_pipeline():
                     display_primer3_settings(Config)
             return True
 
-            
         # Force CLI mode if specified
         if args.cli:
             FileIO.use_cli = True
-            logger_instance.debug("CLI mode enforced via command line argument")
+            logger.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
         if args.config and args.config not in ['DISPLAY', 'all', 'basic', 'template']:
-            logger_instance.debug(f"Loading custom configuration from {args.config}")
+            logger.debug(f"Loading custom configuration from {args.config}")
             try:
                 Config.load_from_file(args.config)
             except FileNotFoundError as e:
                 error_msg = f"Configuration file not found: {args.config}"
-                logger_instance.error(error_msg)
+                logger.error(error_msg)
                 raise FileError(error_msg) from e
             except Exception as e:
                 error_msg = f"Error loading configuration file {args.config}: {str(e)}"
-                logger_instance.error(error_msg)
-                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 raise FileError(error_msg) from e
             
         # Apply nooligo setting if specified
         if args.nooligo:
-            logger_instance.info("Internal oligo (probe) design is disabled")
+            logger.info("Internal oligo (probe) design is disabled")
             # Modify settings
             Config.PRIMER3_SETTINGS["PRIMER_PICK_INTERNAL_OLIGO"] = 0
             Config.DISABLE_INTERNAL_OLIGO = True
         
-        # Process BLAST database arguments - simplified handling
+        # Process BLAST database arguments
         if args.db is not None:
-            logger_instance.debug("BLAST database operation requested")
+            logger.debug("BLAST database operation requested")
             try:
-                blast_db_creator = BlastDBCreator()
+                blast_db_manager = BlastDatabaseManager()
+                
+                # Initialize variables that will be used in database creation
+                organism_key = None
+                fasta_file = None
+                db_name = None
                 
                 # Handle model organism / existing db selection
                 if args.db_action == 'select':
-                    logger_instance.info("=== Blast Database selection menu ===")
-                    from .utils import ModelOrganismManager as MOManager
-                    # Fix: Remove the logger_instance argument
-                    organism_key, organism_name, fasta_file = MOManager.select_model_organism()
+                    logger.info("=== BLAST Database selection menu ===")
+                    organism_key, organism_name, fasta_file = blast_db_manager.select_model_organism()
                     
                     if organism_key is None and fasta_file is None:
-                        logger_instance.info("Database selection canceled. Exiting...")
+                        logger.info("Database selection canceled. Exiting...")
                         return False
                     
                     # Handle the case of selecting an existing database
                     if organism_key == 'existing_db':
                         # fasta_file actually contains the database path in this case
                         selected_db_path = fasta_file
-                        Config.DB_PATH = selected_db_path
-                        Config.save_database_config(selected_db_path)
-                        Config.USE_CUSTOM_DB = True
-                        logger_instance.info(f"\n=== Selected database: {selected_db_path} ===")
-                        
-                        # If only running database operations, exit successfully
-                        if not args.fasta:
-                            return True
+                        if blast_db_manager.set_active_database(selected_db_path):
+                            logger.info(f"\n=== Successfully selected BLAST database ===\n")
+                            
+                            # If only running database operations, exit successfully
+                            if not args.fasta:
+                                return True
                         else:
-                            # Continue with other operations using the selected database
-                            pass
+                            logger.error("Failed to set selected database as active")
+                            return False
                     
-                    # For model organism or custom file cases, continue with database creation
-                    if organism_key is not None and args.db_name is None:
+                    # For model organism cases, set up database name
+                    if organism_key is not None and organism_key != 'existing_db':
                         # For model organism, use scientific name as the database name
-                        organism_name = MOManager.MODEL_ORGANISMS[organism_key]["name"]
+                        organism_data = blast_db_manager.MODEL_ORGANISMS[organism_key]
+                        organism_name = organism_data["name"]
                         scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
                         db_name = scientific_name.replace(' ', '_')
-                        logger_instance.info(f"Using database name: {db_name}")
-                    else:
-                        db_name = args.db_name
+                        logger.debug(f"Using database name: {db_name}")
+                    
+                    # For custom file cases, derive database name from filename
+                    elif organism_key is None and fasta_file is not None:
+                        # This is a custom file selection
+                        db_name = os.path.splitext(os.path.basename(fasta_file))[0]
+                        logger.debug(f"Using database name derived from filename: {db_name}")
                 
                 # Handle direct file path
                 elif args.db_action == 'file':
                     fasta_file = args.db_fasta
                     if not Path(fasta_file).exists():
                         error_msg = f"FASTA file not found: {fasta_file}"
-                        logger_instance.error(error_msg)
+                        logger.error(error_msg)
                         raise FileError(error_msg)
                     organism_key = None  # Not a model organism
                     db_name = args.db_name
                     
                 # If we have a file to create a database from
                 if fasta_file and organism_key != 'existing_db':
+                    # Only show creation message for command line usage, not menu selection
+                    if args.db_action == 'file':
+                        logger.info("=== BLAST Database creation ===")
                     
                     # Use the output directory if provided, otherwise use default
                     output_dir = args.output if args.output else None
                     
                     # Create the database
-                    db_path = blast_db_creator.create_db(
+                    db_path = blast_db_manager.create_database(
                         fasta_file,
                         db_name,  # Custom database name
                         output_dir
@@ -445,27 +400,22 @@ def run_pipeline():
                     
                     # Clean up genome file if it was from a model organism
                     if organism_key is not None and organism_key != 'existing_db':
-                        from .utils import ModelOrganismManager
-                        ModelOrganismManager.cleanup_genome_file(fasta_file, logger_instance)
+                        blast_db_manager._cleanup_genome_file(fasta_file)
 
                     # Check if there's already a database path set
                     if Config.DB_PATH and Config.DB_PATH != "/Library/Application Support/Blast_DBs/Tair DB/TAIR10":
                         # If there's already a non-default database, ask if we should use the new one
-                        logger_instance.info(f"Current BLAST database path: {Config.DB_PATH}")
-                        use_new_db = input("Use the newly created database instead? [Y/n]: ").strip().lower()
+                        logger.info(f"Current BLAST database path: {Config.DB_PATH}")
+                        use_new_db = input("\n>>> Use the newly created database instead? <<<\n[y/n]: ").strip().lower()
                         if use_new_db == "" or use_new_db.startswith("y"):
-                            Config.DB_PATH = db_path
-                            Config.save_database_config(db_path)
-                            Config.USE_CUSTOM_DB = True
-                            logger_instance.info(f"\n=== Now using: {db_path} ===")
+                            blast_db_manager.set_active_database(db_path)
+                            logger.info(f"\n=== Successfully updated BLAST database ===\n")
                         else:
-                            logger_instance.info(f"Keeping current BLAST database: {Config.DB_PATH}")
+                            logger.info(f"\n=== Successfully created BLAST database ===\n")
                     else:
                         # If no database or default database, automatically use the new one
-                        Config.DB_PATH = db_path
-                        Config.save_database_config(db_path)
-                        Config.USE_CUSTOM_DB = True
-                        logger_instance.info(f"BLAST database created and set as active: {db_path}")
+                        blast_db_manager.set_active_database(db_path)
+                        logger.info(f"\n=== Successfully created and set BLAST database ===\n")
                         
                     # If only running database operations, exit successfully
                     if not args.fasta:
@@ -479,33 +429,34 @@ def run_pipeline():
                 raise
             except Exception as e:
                 error_msg = f"Unexpected error during database operation: {str(e)}"
-                logger_instance.error(error_msg)
-                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
+                logger.error(error_msg)
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 raise DDPrimerError(error_msg) from e
                 
-        # Skip BLAST verification for lastzonly mode
-        if not args.lastzonly:
-            # Verify BLAST database
-            logger_instance.debug("Verifying BLAST database...")
-            
-            try:
-                if not BlastVerification.verify_blast_database():
+        # Verify BLAST database
+        logger.debug("Verifying BLAST database...")
+        
+        try:
+            blast_db_manager = BlastDatabaseManager()
+            if not blast_db_manager.verify_database():
+                logger.warning("BLAST database verification failed. Attempting interactive setup...")
+                if not blast_db_manager.setup_database_interactive():
                     error_msg = "BLAST database verification failed, and no new database created."
-                    logger_instance.error(error_msg)
+                    logger.error(error_msg)
                     # Mark file selection as complete
                     FileIO.mark_selection_complete()
                     raise ExternalToolError(error_msg, tool_name="blastn")
-            except Exception as e:
-                error_msg = f"Error during BLAST verification: {str(e)}"
-                logger_instance.error(error_msg)
-                logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
-                # Mark file selection as complete
-                FileIO.mark_selection_complete()
-                raise ExternalToolError(error_msg, tool_name="blastn") from e
+        except Exception as e:
+            error_msg = f"Error during BLAST verification: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            # Mark file selection as complete
+            FileIO.mark_selection_complete()
+            raise ExternalToolError(error_msg, tool_name="blastn") from e
         
-        logger_instance.debug("=== Primer Design Pipeline ===")
+        logger.debug("=== Primer Design Pipeline ===")
         
         # Use factory pattern to get the appropriate workflow
         workflow = WorkflowFactory.create_workflow(args)
@@ -514,33 +465,24 @@ def run_pipeline():
         success = workflow(args)
         
         if success:
-            logger_instance.info("\n=== Pipeline execution completed successfully! ===")
-            logger_instance.info("")
+            logger.info("\n=== Pipeline execution completed successfully! ===\n")
             return True
         else:
-            logger_instance.error("Pipeline execution failed")
+            logger.error("Pipeline execution failed")
             return False
             
     except DDPrimerError as e:
         # Handle application-specific exceptions
-        if logger_instance:
-            error_msg = f"Pipeline error: {str(e)}"
-            logger_instance.error(error_msg)
-            logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
-        else:
-            print(f"Pipeline error: {str(e)}")
-            print(f"Run with --debug for more detailed error information")
+        error_msg = f"Pipeline error: {str(e)}"
+        logger.error(error_msg)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
         # Handle unexpected exceptions
-        if logger_instance:
-            error_msg = f"Unhandled exception during pipeline execution: {str(e)}"
-            logger_instance.error(error_msg)
-            logger_instance.debug(f"Error details: {str(e)}", exc_info=True)
-        else:
-            print(f"Unhandled exception during pipeline execution: {str(e)}")
-            print(f"Run with --debug for more detailed error information")
-            print(traceback.format_exc())
+        error_msg = f"Unhandled exception during pipeline execution: {str(e)}"
+        logger.error(error_msg)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        print(traceback.format_exc())
         return False
 
 

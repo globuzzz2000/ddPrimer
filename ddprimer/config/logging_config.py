@@ -47,7 +47,7 @@ class ModuleDebugConfig:
         'ddprimer.modes.direct_mode': logging.INFO,
         'ddprimer.modes.alignment_mode': logging.INFO,
         'ddprimer.modes.common': logging.INFO,
-        'ddprimer.core.SNP_processor': logging.INFO,
+        'ddprimer.core.snp_processor': logging.INFO,
         'ddprimer.core.annotation_processor': logging.INFO,
         'ddprimer.core.blast_processor': logging.INFO,
         'ddprimer.core.vienna_processor': logging.INFO,
@@ -83,7 +83,7 @@ class ModuleDebugConfig:
         'common': 'ddprimer.modes.common',
         
         # Core processing files
-        'SNP_processor': 'ddprimer.core.SNP_processor',
+        'snp_processor': 'ddprimer.core.snp_processor',
         'annotation_processor': 'ddprimer.core.annotation_processor',
         'blast_processor': 'ddprimer.core.blast_processor',
         'vienna_processor': 'ddprimer.core.vienna_processor',
@@ -413,7 +413,7 @@ def _resolve_module_name(filename: str) -> Optional[str]:
     Resolve a filename to its full module path.
     
     Args:
-        filename: Filename like 'pipeline', 'SNP_processor', etc.
+        filename: Filename like 'pipeline', 'snp_processor', etc.
         
     Returns:
         Full module path or None if not found

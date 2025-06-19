@@ -444,6 +444,8 @@ class SNPMaskingProcessor:
         Variable SNPs are masked according to the masking parameters.
         Now supports indels (insertions/deletions) for both substitution and masking.
         
+        FIXED: Processes variants in reverse order to avoid coordinate drift from indel substitutions.
+        
         Args:
             sequence: Input DNA sequence
             variants: List of Variant objects
@@ -462,16 +464,17 @@ class SNPMaskingProcessor:
         substituted_count = 0
         masked_count = 0
         
-        # Sort variants by position for consistent processing
-        variants_sorted = sorted(variants, key=lambda v: v.position)
+        # FIXED: Sort variants by position in REVERSE order (highest position first)
+        # This prevents coordinate drift when indels change sequence length
+        variants_sorted = sorted(variants, key=lambda v: v.position, reverse=True)
         
-        logger.debug(f"Processing {len(variants_sorted)} variants with flanking_size={flanking_size}")
+        logger.debug(f"Processing {len(variants_sorted)} variants in reverse order with flanking_size={flanking_size}")
         
         # Track all substitutions for detailed logging
         substitutions_made = []
         
         if Config.SHOW_PROGRESS and len(variants_sorted) > 1000:
-            variant_iter = tqdm(variants_sorted, desc="Processing variants")
+            variant_iter = tqdm(variants_sorted, desc="Processing variants (reverse order)")
         else:
             variant_iter = variants_sorted
             
@@ -595,7 +598,10 @@ class SNPMaskingProcessor:
         modified_sequence = "".join(sequence_list)
         
         # Log detailed substitution information (permanent feature)
+        # FIXED: Sort substitutions back to forward order for logical display
         if substitutions_made:
+            substitutions_made.sort(key=lambda x: x['position'])  # Sort by position for display
+            
             logger.debug(f"\n=== DETAILED SUBSTITUTION REPORT ===")
             for i, sub in enumerate(substitutions_made[:5]):  # Show first 5 substitutions
                 logger.debug(f"Substitution {i+1} ({sub['variant_type']}):")
@@ -618,7 +624,7 @@ class SNPMaskingProcessor:
                     logger.debug(f"  Before: {''.join(pre_marked)}")
                     logger.debug(f"  After:  {''.join(post_marked)}")
                 else:
-                    # FIXED: Better indel bracket display
+                    # Better indel bracket display
                     logger.debug(f"  Context positions: {sub['context_start']}-{sub['context_start'] + len(sub['pre_context']) - 1}")
                     
                     # For indels, mark the exact affected region
@@ -628,7 +634,7 @@ class SNPMaskingProcessor:
                     ref_len = sub['ref_len']
                     alt_len = sub['alt_len']
                     
-                    # FIXED: Mark the reference sequence in the before context
+                    # Mark the reference sequence in the before context
                     if center_pos >= 0 and center_pos + ref_len <= len(pre_marked):
                         if ref_len == 1:
                             # Single character: [X]
@@ -642,7 +648,7 @@ class SNPMaskingProcessor:
                                     pre_marked[center_pos + j] = f"{pre_marked[center_pos + j]}]"
                                 # middle characters unchanged
                     
-                    # FIXED: Mark the alternate sequence in the after context  
+                    # Mark the alternate sequence in the after context  
                     if center_pos >= 0 and center_pos + alt_len <= len(post_marked):
                         if alt_len == 1:
                             # Single character: [X]
@@ -814,28 +820,28 @@ class SNPMaskingProcessor:
             Dictionary of processed sequences with fixed SNPs substituted and variable SNPs masked
         """
         mask_type = "soft" if use_soft_masking else "hard"
-        logger.info(f"\nProcessing variants from VCF file...")
+        logger.info(f"Processing variants in sequences using {mask_type} masking and fixed SNP substitution...")
         
         if flanking_size > 0:
-            logger.debug(f"Using flanking region size: {flanking_size} bases")
+            logger.info(f"Using flanking region size: {flanking_size} bases")
         if min_af is not None:
-            logger.debug(f"AF filter: variants with AF >= {min_af}")
+            logger.info(f"AF filter: variants with AF >= {min_af}")
         if min_qual is not None:
-            logger.debug(f"QUAL filter: variants with QUAL >= {min_qual}")
+            logger.info(f"QUAL filter: variants with QUAL >= {min_qual}")
         
         # Log fixed SNP criteria
-        logger.debug(f"Fixed SNP criteria: AF=1.0 always substituted")
+        logger.info(f"Fixed SNP criteria: AF=1.0 always substituted")
         if Config.SNP_ALLELE_FREQUENCY_THRESHOLD is not None:
             fixed_af_threshold = 1.0 - Config.SNP_ALLELE_FREQUENCY_THRESHOLD
             if Config.SNP_QUALITY_THRESHOLD is not None:
-                logger.debug(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f} AND QUAL > {Config.SNP_QUALITY_THRESHOLD}")
+                logger.info(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f} AND QUAL > {Config.SNP_QUALITY_THRESHOLD}")
             else:
-                logger.debug(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f}")
+                logger.info(f"Additional fixed SNP criteria: AF >= {fixed_af_threshold:.3f}")
         
         processed_sequences = {}
         
         if Config.SHOW_PROGRESS:
-            sequence_iter = tqdm(sequences.items(), desc=f"Processing sequences:")
+            sequence_iter = tqdm(sequences.items(), desc=f"Processing sequences ({mask_type})")
         else:
             sequence_iter = sequences.items()
         
@@ -866,9 +872,9 @@ class SNPMaskingProcessor:
                 processed_sequences[seq_id] = sequence
                 logger.debug(f"No variants found for sequence {seq_id}, using original")
         
-        logger.debug(f"Completed variant processing for {len(processed_sequences)} sequences:")
-        logger.info(f"Fixed SNPs substituted: {total_substitutions}")
-        logger.info(f"SNPs masked: {total_maskings}")
+        logger.info(f"Completed variant processing for {len(processed_sequences)} sequences:")
+        logger.info(f"  Fixed SNPs substituted: {total_substitutions}")
+        logger.info(f"  Variable SNPs masked: {total_maskings}")
         
         return processed_sequences
     

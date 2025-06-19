@@ -10,7 +10,6 @@ This package contains the implementation of different operation modes:
 """
 
 from . import common
-from .alignment_mode import run as run_alignment_mode
 from .direct_mode import run as run_direct_mode
 from .standard_mode import run as run_standard_mode
 
@@ -18,8 +17,6 @@ __all__ = [
     'common',
     'standard_mode',
     'direct_mode',
-    'alignment_mode',
     'run_standard_mode',
-    'run_direct_mode',
-    'run_alignment_mode'
+    'run_direct_mode'
 ]
