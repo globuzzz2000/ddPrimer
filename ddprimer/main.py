@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """
-    Parse command line arguments with enhanced debug support.
+    Parse command line arguments with comprehensive help.
     
     Validates argument combinations and provides comprehensive help
     for all available options and modes.
@@ -201,7 +201,6 @@ class TempDirectoryManager:
                 prefix="ddprimer_temp_",
                 dir=self.base_dir
             )
-            logger.debug(f"Created temporary directory: {self.temp_dir}")
             return self.temp_dir
         except OSError as e:
             error_msg = f"Failed to create temporary directory: {str(e)}"
@@ -220,11 +219,10 @@ class TempDirectoryManager:
         if self.temp_dir and Path(self.temp_dir).exists():
             try:
                 import shutil
-                logger.debug(f"Cleaning up temporary directory: {self.temp_dir}")
                 shutil.rmtree(self.temp_dir)
             except OSError as e:
                 logger.warning(f"Error cleaning up temporary files: {str(e)}")
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
+
 
 def prepare_files_for_pipeline(vcf_file, reference_file, gff_file=None, interactive=True):
     """
@@ -278,8 +276,6 @@ def process_sequences_with_vcf(sequences, vcf_file, reference_file):
         
         for seq_id, sequence in sequences.items():
             try:
-                logger.debug(f"Processing sequence: {seq_id}")
-                
                 # Apply VCF variants to sequence
                 modified_sequence = snp_processor.process_sequence_with_vcf(
                     sequence=sequence,
@@ -289,15 +285,6 @@ def process_sequences_with_vcf(sequences, vcf_file, reference_file):
                 )
                 
                 processed_sequences[seq_id] = modified_sequence
-                
-                # Log stats in debug mode
-                if Config.DEBUG_MODE:
-                    n_count = modified_sequence.count('N')
-                    soft_count = sum(1 for c in modified_sequence if c.islower())
-                    original_len = len(sequence)
-                    modified_len = len(modified_sequence)
-                    logger.debug(f"  {seq_id}: {original_len} -> {modified_len} bp, "
-                               f"{n_count} hard masked, {soft_count} soft masked")
                 
             except Exception as e:
                 logger.error(f"Error processing sequence {seq_id}: {e}")
@@ -310,7 +297,6 @@ def process_sequences_with_vcf(sequences, vcf_file, reference_file):
     except Exception as e:
         error_msg = f"VCF processing failed: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise SequenceProcessingError(error_msg) from e
 
 
@@ -331,41 +317,17 @@ def process_restriction_sites(processed_sequences):
         SequenceProcessingError: If there's an error in restriction site processing
     """
     logger.info("\nFiltering sequences by restriction sites...")
-    logger.debug("Processing sequences that may contain masked variants and fixed SNP substitutions")
     
     try:
-        logger.debug(f"Using restriction site pattern: {Config.RESTRICTION_SITE}")
-        
-        # Log sequence stats before restriction site cutting
-        if Config.DEBUG_MODE:
-            logger.debug(f"Sequences before restriction site cutting:")
-            for seq_id, seq in processed_sequences.items():
-                n_count = seq.count('N')
-                lowercase_count = sum(1 for c in seq if c.islower())
-                logger.debug(f"  {seq_id}: {len(seq)} bp, {n_count} hard masked, {lowercase_count} soft masked")
-        
         # Use the standard restriction site method
         restriction_fragments = SequenceProcessor.cut_at_restriction_sites(processed_sequences)
         
-        # Log detailed information about restriction fragments
-        if Config.DEBUG_MODE:
-            logger.debug("Restriction fragments after cutting:")
-            for fragment in restriction_fragments:
-                frag_seq = fragment['sequence']
-                n_count = frag_seq.count('N')
-                lowercase_count = sum(1 for c in frag_seq if c.islower())
-                logger.debug(f"  {fragment['id']}: {len(frag_seq)} bp, chr={fragment.get('chr', 'NA')}, "
-                            f"start={fragment.get('start', 'NA')}, end={fragment.get('end', 'NA')}, "
-                            f"{n_count} hard masked, {lowercase_count} soft masked")
-        
-        logger.debug("Restriction site filtering completed successfully")
         logger.info(f"Generated {len(restriction_fragments)} fragments after restriction site cutting")
         
         return restriction_fragments
     except Exception as e:
         error_msg = f"Error in restriction site filtering: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise SequenceProcessingError(error_msg) from e
 
 
@@ -388,7 +350,6 @@ def filter_fragments_by_gene_overlap(restriction_fragments, genes, skip_annotati
         SequenceProcessingError: If there's an error in fragment filtering
     """
     if skip_annotation_filtering:
-        logger.debug("Skipping gene annotation filtering as requested")
         # Create simplified fragments without location data
         filtered_fragments = []
         for fragment in restriction_fragments:
@@ -401,7 +362,6 @@ def filter_fragments_by_gene_overlap(restriction_fragments, genes, skip_annotati
                 "Gene": fragment["id"].split("_")[-1]
             }
             filtered_fragments.append(simplified_fragment)
-        logger.debug(f"Prepared {len(filtered_fragments)} fragments for processing")
         return filtered_fragments
     else:
         # Extract ALL gene overlaps for standard mode
@@ -412,16 +372,12 @@ def filter_fragments_by_gene_overlap(restriction_fragments, genes, skip_annotati
                 
         logger.info("Extracting gene-overlapping regions...")
         try:
-            logger.debug(f"Using gene overlap margin: {Config.GENE_OVERLAP_MARGIN}")
-            # Use the enhanced function that extracts ALL gene overlaps
-            filtered_fragments = AnnotationProcessor.filter_by_gene_overlap_enhanced(restriction_fragments, genes)
-            logger.debug("Gene overlap extraction completed successfully")
-            logger.info(f"Extracted {len(filtered_fragments)} gene fragments from {len(restriction_fragments)} restriction fragments")
+            # Use the function that extracts ALL gene overlaps
+            filtered_fragments = AnnotationProcessor.filter_by_gene_overlap(restriction_fragments, genes)
             return filtered_fragments
         except Exception as e:
             error_msg = f"Error in gene overlap extraction: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise SequenceProcessingError(error_msg) from e
 
 
@@ -491,22 +447,18 @@ def design_primers_with_primer3(fragments):
         return None
         
     # Run Primer3
-    logger.debug(f"Running Primer3 on {len(primer3_inputs)} fragments...")
     try:
         # Use parallel processing with progress bar
         primer3_output = primer3_processor.run_primer3_batch_parallel(primer3_inputs)
-        logger.debug(f"Primer3 execution completed successfully")
         
         # Parse the results
         primer_results = primer3_processor.parse_primer3_batch(primer3_output, fragment_info)
-        logger.debug(f"Parsed {len(primer_results)} primer pairs from Primer3 output")
         
         return primer_results
         
     except Exception as e:
         error_msg = f"Error running Primer3: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
 
 
@@ -526,66 +478,41 @@ def filter_primers(primer_results):
     Raises:
         PrimerDesignError: If there's an error in primer filtering
     """
-    logger.debug("Filtering primers...")
-
     # Convert to DataFrame
     df = pd.DataFrame(primer_results)
     initial_count = len(df)
-    logger.debug(f"Initial primer count: {initial_count}")
 
     # Filter by penalty
     try:
-        logger.debug(f"Filtering by penalty with threshold: {Config.PENALTY_MAX}")
-        df_before = df.copy() if Config.DEBUG_MODE else None
         df = PrimerProcessor.filter_by_penalty(df)
-        
-        # Log what was filtered in debug mode
-        if Config.DEBUG_MODE and df_before is not None:
-            filtered_ids = set(df_before['Gene']) - set(df['Gene'])
-            if filtered_ids:
-                logger.debug(f"Penalty filtering removed primers for: {', '.join(filtered_ids)}")
-        
-        logger.debug("Penalty filtering completed successfully")
     except Exception as e:
         error_msg = f"Error in penalty filtering: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
-    logger.debug(f"After penalty filtering: {len(df)}/{initial_count} primers")
     
     # Filter by repeats
     try:
-        logger.debug("Filtering primers by repeat sequences")
         df = PrimerProcessor.filter_by_repeats(df)
-        logger.debug("Repeat filtering completed successfully")
     except Exception as e:
         error_msg = f"Error in repeat filtering: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
-    logger.debug(f"After repeat filtering: {len(df)}/{initial_count} primers")
     
     # Filter by GC content
     try:
-        logger.debug(f"Filtering by GC content: Min={Config.SEQUENCE_MIN_GC}, Max={Config.SEQUENCE_MAX_GC}")
         df = PrimerProcessor.filter_by_gc_content(df)
-        logger.debug("GC content filtering completed successfully")
     except Exception as e:
         error_msg = f"Error in GC content filtering: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     logger.info(f"After filtering: {len(df)}/{initial_count} primers")
     
     # Process internal oligos (reverse complement if needed)
     try:
-        logger.debug("Processing internal oligos")
         df = PrimerProcessor.process_internal_oligos(df)
-        logger.debug("Internal oligo processing completed successfully")
     except Exception as e:
         error_msg = f"Error in internal oligo processing: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     if len(df) == 0:
@@ -622,39 +549,31 @@ def calculate_thermodynamics(df):
     logger.info("\nCalculating thermodynamic properties with ViennaRNA...")
     
     # Calculate deltaG for forward primers
-    logger.debug("Calculating ΔG for forward primers...")
     try:
-        logger.debug(f"Thermodynamic settings: Temp={Config.THERMO_TEMPERATURE}°C, Na={Config.THERMO_SODIUM}M, Mg={Config.THERMO_MAGNESIUM}M")
         if Config.SHOW_PROGRESS:
             tqdm.pandas(desc="Processing forward primers with ViennaRNA")
             df["Primer F dG"] = df["Primer F"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
             df["Primer F dG"] = df["Primer F"].apply(ViennaRNAProcessor.calc_deltaG)
-        logger.debug("Forward primer deltaG calculation completed successfully")
     except Exception as e:
         error_msg = f"Error calculating forward primer deltaG: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for reverse primers
-    logger.debug("Calculating ΔG for reverse primers...")
     try:
         if Config.SHOW_PROGRESS:
             tqdm.pandas(desc="Processing reverse primers with ViennaRNA")
             df["Primer R dG"] = df["Primer R"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
             df["Primer R dG"] = df["Primer R"].apply(ViennaRNAProcessor.calc_deltaG)
-        logger.debug("Reverse primer deltaG calculation completed successfully")
     except Exception as e:
         error_msg = f"Error calculating reverse primer deltaG: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for probes if present
     if "Probe" in df.columns:
-        logger.debug("Calculating ΔG for probes...")
         try:
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing probes with ViennaRNA")
@@ -665,26 +584,21 @@ def calculate_thermodynamics(df):
                 df["Probe dG"] = df["Probe"].apply(lambda x: 
                                                ViennaRNAProcessor.calc_deltaG(x) 
                                                if pd.notnull(x) and x else None)
-            logger.debug("Probe deltaG calculation completed successfully")
         except Exception as e:
             error_msg = f"Error calculating probe deltaG: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise PrimerDesignError(error_msg) from e
     
     # Calculate deltaG for amplicons
-    logger.debug("Calculating ΔG for amplicons...")
     try:
         if Config.SHOW_PROGRESS:
             tqdm.pandas(desc="Processing amplicons with ViennaRNA")
             df["Amplicon dG"] = df["Amplicon"].progress_apply(ViennaRNAProcessor.calc_deltaG)
         else:
             df["Amplicon dG"] = df["Amplicon"].apply(ViennaRNAProcessor.calc_deltaG)
-        logger.debug("Amplicon deltaG calculation completed successfully")
     except Exception as e:
         error_msg = f"Error calculating amplicon deltaG: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
         
     return df
@@ -711,7 +625,6 @@ def run_blast_specificity(df):
     
     # Run BLAST for forward primers
     try:
-        logger.debug(f"BLAST settings: Word Size={Config.BLAST_WORD_SIZE}, E-value={Config.BLAST_EVALUE}")
         blast_results_f = []
         primers_f = df["Primer F"].tolist()
         if Config.SHOW_PROGRESS:
@@ -724,11 +637,9 @@ def run_blast_specificity(df):
             blast_results_f.append((blast1, blast2))
         
         df["Primer F BLAST1"], df["Primer F BLAST2"] = zip(*blast_results_f)
-        logger.debug("Forward primer BLAST completed successfully")
     except Exception as e:
         error_msg = f"Error in forward primer BLAST: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     # Run BLAST for reverse primers
@@ -745,11 +656,9 @@ def run_blast_specificity(df):
             blast_results_r.append((blast1, blast2))
         
         df["Primer R BLAST1"], df["Primer R BLAST2"] = zip(*blast_results_r)
-        logger.debug("Reverse primer BLAST completed successfully")
     except Exception as e:
         error_msg = f"Error in reverse primer BLAST: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     # Run BLAST for probes if present
@@ -770,24 +679,19 @@ def run_blast_specificity(df):
                 blast_results_p.append((blast1, blast2))
             
             df["Probe BLAST1"], df["Probe BLAST2"] = zip(*blast_results_p)
-            logger.debug("Probe BLAST completed successfully")
         except Exception as e:
             error_msg = f"Error in probe BLAST: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise PrimerDesignError(error_msg) from e
     
     # Filter by BLAST specificity
     try:
-        logger.debug(f"Filtering by BLAST specificity, filter factor: {Config.BLAST_FILTER_FACTOR}")
         initial_count = len(df)
         df = PrimerProcessor.filter_by_blast(df)
-        logger.debug("BLAST filtering completed successfully")
         logger.info(f"After BLAST filtering: {len(df)}/{initial_count} primers")
     except Exception as e:
         error_msg = f"Error in BLAST filtering: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise PrimerDesignError(error_msg) from e
     
     if len(df) == 0:
@@ -820,9 +724,6 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
         SequenceProcessingError: If sequence processing fails
         PrimerDesignError: If primer design fails
     """
-    logger.debug("Starting primer design workflow")
-    logger.debug("Enhanced SNP processing: Fixed SNPs substituted, variable SNPs masked")
-    
     try:
         # Step 1: Cut sequences at restriction sites
         restriction_fragments = process_restriction_sites(processed_sequences)
@@ -855,17 +756,6 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
         if not primer_results:
             logger.warning("No primers were designed by Primer3. Exiting.")
             return False
-        
-        # Create a temporary DataFrame to check what we have before filtering
-        temp_df = pd.DataFrame(primer_results)
-        logger.debug(f"CHECKPOINT 3b: {len(temp_df)} primer records, {len(temp_df['Gene'].unique())} unique genes")
-        
-        # Log penalty distribution
-        if 'Pair Penalty' in temp_df.columns:
-            penalty_stats = temp_df['Pair Penalty'].describe()
-            logger.debug(f"Penalty distribution: min={penalty_stats['min']:.2f}, mean={penalty_stats['mean']:.2f}, max={penalty_stats['max']:.2f}")
-            below_threshold = (temp_df['Pair Penalty'] <= Config.PENALTY_MAX).sum()
-            logger.debug(f"Primers with penalty <= {Config.PENALTY_MAX}: {below_threshold}/{len(temp_df)}")
         
         # Step 4: Filter primers
         df = filter_primers(primer_results)
@@ -903,17 +793,14 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
     except SequenceProcessingError as e:
         error_msg = f"Sequence processing error: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except PrimerDesignError as e:
         error_msg = f"Primer design error: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
         error_msg = f"Error in primer design workflow: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
 
 
@@ -932,7 +819,6 @@ def run_standard_mode(args):
             logger.info("\n>>> Please select FASTA sequence file <<<")
             try:
                 args.fasta = FileIO.select_fasta_file("Select FASTA sequence file")
-                logger.debug(f"Selected FASTA file: {args.fasta}")
             except FileSelectionError as e:
                 error_msg = f"FASTA file selection failed: {str(e)}"
                 logger.error(error_msg)
@@ -946,7 +832,6 @@ def run_standard_mode(args):
                     "Select VCF variant file", 
                     [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*.*")]
                 )
-                logger.debug(f"Selected VCF file: {args.vcf}")
             except FileSelectionError as e:
                 error_msg = f"VCF file selection failed: {str(e)}"
                 logger.error(error_msg)
@@ -960,7 +845,6 @@ def run_standard_mode(args):
                     "Select GFF annotation file", 
                     [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3"), ("Compressed GFF Files", "*.gff.gz"), ("All Files", "*.*")]
                 )
-                logger.debug(f"Selected GFF file: {args.gff}")
             except FileSelectionError as e:
                 error_msg = f"GFF file selection failed: {str(e)}"
                 logger.error(error_msg)
@@ -983,30 +867,24 @@ def run_standard_mode(args):
             )
             
             if not prep_result['success']:
-                logger.debug("File preparation failed or was canceled")
                 if prep_result.get('reason'):
-                    logger.debug(f"Reason: {prep_result['reason']}")
+                    logger.error(f"File preparation failed: {prep_result['reason']}")
                 return False
             
             # Update file paths to use prepared files
             if prep_result['changes_made']:
-                logger.info("Using prepared files for pipeline:")
                 if 'vcf' in prep_result.get('prepared_files', {}):
                     args.vcf = prep_result['vcf_file']
-                    logger.info(f"  VCF: {args.vcf}")
                 if 'fasta' in prep_result.get('prepared_files', {}):
                     args.fasta = prep_result['fasta_file']
-                    logger.info(f"  FASTA: {args.fasta}")
                 if 'gff' in prep_result.get('prepared_files', {}):
                     args.gff = prep_result['gff_file']
-                    logger.info(f"  GFF: {args.gff}")
             else:
                 logger.info("Original files are compatible and will be used as-is")
             
         except Exception as e:
             error_msg = f"File preparation failed: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
 
         
@@ -1020,44 +898,33 @@ def run_standard_mode(args):
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
-        logger.debug(f"Created output directory: {output_dir}")
         
         # Extract variants from VCF file and process sequences
         logger.info("\nProcessing sequences with VCF variants...")
         try:
             # Load sequences from FASTA file first
             sequences = FileIO.load_fasta(args.fasta)
-            logger.debug(f"Sequences loaded successfully from {args.fasta}")
-            logger.debug(f"Loaded {len(sequences)} sequences")
             
             # Process sequences with VCF using the new normalization approach
-            # NOTE: Now using prepared/validated files
             processed_sequences = process_sequences_with_vcf(
                 sequences=sequences,
                 vcf_file=args.vcf,  # This is now the prepared VCF
                 reference_file=args.fasta  # This might be the original or prepared FASTA
             )
             
-            logger.debug("VCF processing completed successfully")
-            
         except Exception as e:
             error_msg = f"Error processing sequences with VCF: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise SequenceProcessingError(error_msg) from e
         
         # Load gene annotations if needed
         if not args.noannotation:
             logger.info("\nLoading gene annotations from GFF file...")
             try:
-                # NOTE: Now using prepared GFF file if it was modified
                 genes = AnnotationProcessor.load_genes_from_gff(args.gff)
-                logger.debug(f"Gene annotations loaded successfully from {args.gff}")
-                logger.debug(f"Loaded {len(genes)} gene annotations")
             except Exception as e:
                 error_msg = f"Error loading gene annotations: {str(e)}"
                 logger.error(error_msg)
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 return False
         else:
             logger.info("\nSkipping gene annotation loading (--noannotation specified)")
@@ -1078,12 +945,10 @@ def run_standard_mode(args):
     except SequenceProcessingError as e:
         error_msg = f"Sequence processing error: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
         error_msg = f"Error in standard mode workflow: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
 
 
@@ -1109,12 +974,7 @@ def run_pipeline():
         # Setup logging
         log_file = setup_logging(debug=args.debug if args is not None else False)
         
-        logger.debug("Initializing Config settings")
         Config.get_instance()
-        logger.debug(f"Initial DB_PATH: {Config.DB_PATH}")
-        logger.debug("Starting pipeline execution")
-        logger.debug(f"Arguments: {args}")
-        logger.debug(f"Config settings: NUM_PROCESSES={Config.NUM_PROCESSES}, BATCH_SIZE={Config.BATCH_SIZE}")
         
         # Display configuration if --config is provided with special values
         if args.config in ['DISPLAY', 'primer3', 'template']:
@@ -1135,11 +995,9 @@ def run_pipeline():
         # Force CLI mode if specified
         if args.cli:
             FileIO.use_cli = True
-            logger.debug("CLI mode enforced via command line argument")
 
         # Load custom configuration if provided
         if args.config and args.config not in ['DISPLAY', 'primer3', 'template']:
-            logger.debug(f"Loading custom configuration from {args.config}")
             try:
                 Config.load_from_file(args.config)
             except FileNotFoundError as e:
@@ -1149,7 +1007,6 @@ def run_pipeline():
             except Exception as e:
                 error_msg = f"Error loading configuration file {args.config}: {str(e)}"
                 logger.error(error_msg)
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 raise FileError(error_msg) from e
             
         # Apply nooligo setting if specified
@@ -1161,7 +1018,6 @@ def run_pipeline():
         
         # Process BLAST database arguments
         if args.db is not None:
-            logger.debug("BLAST database operation requested")
             try:
                 blast_db_manager = BlastDatabaseManager()
                 
@@ -1200,13 +1056,11 @@ def run_pipeline():
                         organism_name = organism_data["name"]
                         scientific_name = organism_name.split(' (')[0] if ' (' in organism_name else organism_name
                         db_name = scientific_name.replace(' ', '_')
-                        logger.debug(f"Using database name: {db_name}")
                     
                     # For custom file cases, derive database name from filename
                     elif organism_key is None and fasta_file is not None:
                         # This is a custom file selection
                         db_name = os.path.splitext(os.path.basename(fasta_file))[0]
-                        logger.debug(f"Using database name derived from filename: {db_name}")
                 
                 # Handle direct file path
                 elif args.db_action == 'file':
@@ -1266,14 +1120,11 @@ def run_pipeline():
             except Exception as e:
                 error_msg = f"Unexpected error during database operation: {str(e)}"
                 logger.error(error_msg)
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
                 # Mark file selection as complete
                 FileIO.mark_selection_complete()
                 raise DDPrimerError(error_msg) from e
                 
         # Verify BLAST database
-        logger.debug("Verifying BLAST database...")
-        
         try:
             blast_db_manager = BlastDatabaseManager()
             if not blast_db_manager.verify_database():
@@ -1287,12 +1138,9 @@ def run_pipeline():
         except Exception as e:
             error_msg = f"Error during BLAST verification: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
             # Mark file selection as complete
             FileIO.mark_selection_complete()
             raise ExternalToolError(error_msg, tool_name="blastn") from e
-        
-        logger.debug("=== Primer Design Pipeline ===")
         
         # Execute the standard mode workflow (only mode currently supported)
         success = run_standard_mode(args)
@@ -1308,13 +1156,11 @@ def run_pipeline():
         # Handle application-specific exceptions
         error_msg = f"Pipeline error: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         return False
     except Exception as e:
         # Handle unexpected exceptions
         error_msg = f"Unhandled exception during pipeline execution: {str(e)}"
         logger.error(error_msg)
-        logger.debug(f"Error details: {str(e)}", exc_info=True)
         print(traceback.format_exc())
         return False
 

@@ -276,22 +276,20 @@ class SNPMaskingProcessor:
         qual_threshold = kwargs.get('snp_quality_threshold')
         if qual_threshold is not None and variant.get('qual') is not None:
             if variant['qual'] < qual_threshold:
-                logger.debug(f"Skipping variant at {variant['pos']} due to low quality: {variant['qual']}")
+                # Only log quality failures occasionally to reduce volume
                 return False
         
         # Always process if AF is not available
         if variant.get('af') is None:
-            logger.debug(f"Processing variant at {variant['pos']} (no AF information)")
             return True
         
         # Check AF threshold
         af_threshold = kwargs.get('snp_allele_frequency_threshold')
         if af_threshold is not None:
             if variant['af'] < af_threshold:
-                logger.debug(f"Skipping rare variant at {variant['pos']} (AF={variant['af']:.3f})")
+                # Only log AF failures occasionally to reduce volume
                 return False
         
-        logger.debug(f"Processing variant at {variant['pos']} (AF={variant['af']:.3f}, QUAL={variant.get('qual', 'N/A')})")
         return True
     
     def _classify_variant(self, variant: Dict, **kwargs) -> str:
@@ -309,11 +307,9 @@ class SNPMaskingProcessor:
         
         # Fixed variants (AF = 1.0) should be substituted
         if af is not None and abs(af - 1.0) < 0.001:  # Account for floating point precision
-            logger.debug(f"Variant at {variant['pos']} classified as 'substitute' (AF={af:.3f})")
             return 'substitute'
         
         # All other variants should be masked
-        logger.debug(f"Variant at {variant['pos']} classified as 'mask' (AF={af})")
         return 'mask'
     
     def _apply_variants_to_sequence(self, sequence: str, variants: List[Dict], **kwargs) -> str:
@@ -343,8 +339,9 @@ class SNPMaskingProcessor:
         
         modified_sequence = sequence
         applied_count = 0
+        failed_count = 0
         
-        for variant in sorted_variants:
+        for i, variant in enumerate(sorted_variants):
             try:
                 action = self._classify_variant(variant, **kwargs)
                 
@@ -356,12 +353,21 @@ class SNPMaskingProcessor:
                 
                 applied_count += 1
                 
+                # Sample logging - only log every 100th variant or first/last few
+                if (logger.isEnabledFor(logging.DEBUG) and 
+                    (i % 100 == 0 or i < 5 or i >= len(sorted_variants) - 5)):
+                    logger.debug(f"Applied variant {i+1}/{len(sorted_variants)} at position {variant['pos']} ({action})")
+                
             except Exception as e:
-                logger.warning(f"Error applying variant at position {variant['pos']}: {str(e)}")
-                logger.debug(f"Variant details: {variant}")
+                failed_count += 1
+                # Always log failures, but limit details for first few
+                if failed_count <= 10:
+                    logger.warning(f"Error applying variant at position {variant['pos']}: {str(e)}")
+                elif failed_count == 11:
+                    logger.warning(f"Suppressing further variant error details (total failures will be reported)")
                 continue
         
-        logger.debug(f"Successfully applied {applied_count}/{len(sorted_variants)} variants")
+        logger.debug(f"Variant application complete: {applied_count}/{len(sorted_variants)} applied successfully, {failed_count} failed")
         return modified_sequence
     
     def _apply_substitution(self, sequence: str, variant: Dict, **kwargs) -> str:
@@ -382,23 +388,19 @@ class SNPMaskingProcessor:
         
         # Validate position and reference
         if pos < 0 or pos >= len(sequence):
-            logger.debug(f"Position {variant['pos']} out of sequence bounds")
             return sequence
         
         if pos + len(ref) > len(sequence):
-            logger.debug(f"Reference allele extends beyond sequence end at position {variant['pos']}")
             return sequence
         
         # Check reference match
         sequence_ref = sequence[pos:pos + len(ref)]
         if sequence_ref.upper() != ref.upper():
-            logger.debug(f"Reference mismatch at {variant['pos']}: expected {ref}, found {sequence_ref}")
             return sequence
         
         # Apply substitution
         new_sequence = sequence[:pos] + alt + sequence[pos + len(ref):]
         
-        logger.debug(f"Substituted {ref}->{alt} at position {variant['pos']}")
         return new_sequence
     
     def _apply_masking(self, sequence: str, variant: Dict, **kwargs) -> str:
@@ -418,11 +420,9 @@ class SNPMaskingProcessor:
         
         # Validate position
         if pos < 0 or pos >= len(sequence):
-            logger.debug(f"Position {variant['pos']} out of sequence bounds")
             return sequence
         
         if pos + len(ref) > len(sequence):
-            logger.debug(f"Reference allele extends beyond sequence end at position {variant['pos']}")
             return sequence
         
         # Determine masking strategy
@@ -437,11 +437,9 @@ class SNPMaskingProcessor:
         if use_soft_masking:
             # Soft masking - convert to lowercase
             masked_region = sequence[start_pos:end_pos].lower()
-            logger.debug(f"Soft masked region {start_pos+1}-{end_pos} at variant {variant['pos']}")
         else:
             # Hard masking - replace with 'N'
             masked_region = 'N' * (end_pos - start_pos)
-            logger.debug(f"Hard masked region {start_pos+1}-{end_pos} at variant {variant['pos']}")
         
         new_sequence = sequence[:start_pos] + masked_region + sequence[end_pos:]
         return new_sequence

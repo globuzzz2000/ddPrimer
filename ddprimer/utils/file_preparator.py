@@ -147,6 +147,9 @@ class FilePreparator:
             # Validate input files exist
             self._validate_input_files(vcf_file, fasta_file, gff_file)
             
+            # Set reference file for normalization
+            self.set_reference_file(fasta_file)
+            
             # Analyze files and determine what needs to be prepared
             analysis = self._analyze_files(vcf_file, fasta_file, gff_file)
             
@@ -178,6 +181,30 @@ class FilePreparator:
             logger.info("\nCorrecting files...")
             prepared_files = self._prepare_corrected_files(vcf_file, fasta_file, gff_file, analysis)
             
+            # CRITICAL FIX: Check if VCF preparation actually succeeded
+            vcf_success = True
+            if 'vcf' in prepared_files:
+                vcf_path = prepared_files['vcf']
+                if not vcf_path or not os.path.exists(vcf_path):
+                    vcf_success = False
+                    error_msg = "VCF file preparation failed"
+            else:
+                # Check if VCF preparation was attempted but failed
+                vcf_issues = [issue for issue in analysis['issues'] 
+                            if issue.get('type', '').startswith('vcf') or 
+                                issue.get('type') == 'chromosome_mapping']
+                if vcf_issues:
+                    vcf_success = False
+                    error_msg = "VCF file preparation was required but failed"
+            
+            if not vcf_success:
+                logger.error(error_msg)
+                return {
+                    'success': False,
+                    'reason': error_msg,
+                    'issues_found': analysis['issues']
+                }
+            
             logger.info("File preparation completed successfully!")
             logger.debug("=== END FILE PREPARATION WORKFLOW DEBUG ===")
             
@@ -196,7 +223,11 @@ class FilePreparator:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.debug("=== END FILE PREPARATION WORKFLOW DEBUG ===")
-            raise FileError(error_msg) from e
+            return {
+                'success': False,
+                'reason': error_msg,
+                'issues_found': analysis.get('issues', [])
+            }
     
     def _validate_input_files(self, vcf_file: str, fasta_file: str, 
                             gff_file: Optional[str] = None):
@@ -817,8 +848,7 @@ class FilePreparator:
         """
         Check if VCF file appears to be normalized.
         
-        This is a heuristic check - we assume if the file works with bcftools
-        and doesn't have obvious normalization issues, it's probably normalized.
+        Uses bcftools norm --check-ref to properly validate normalization.
         
         Args:
             vcf_file: Path to VCF file
@@ -827,37 +857,41 @@ class FilePreparator:
             True if appears normalized, False otherwise
         """
         try:
-            # Sample a few variants to check for obvious normalization issues
-            cmd = ['bcftools', 'view', '-H', vcf_file]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            # Use bcftools norm --check-ref w (warn) mode to check normalization
+            # This is more reliable than manual heuristics
+            cmd = ['bcftools', 'norm', '--check-ref', 'w', '-f', self._get_reference_file(), vcf_file]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
             
             if result.returncode == 0:
-                lines = result.stdout.strip().split('\n')[:100]  # Check first 100 variants
+                # Check stderr for normalization warnings
+                stderr_output = result.stderr.lower()
+                normalization_warnings = [
+                    'not left-aligned',
+                    'not normalized',
+                    'multiallelic'
+                ]
                 
-                for line in lines:
-                    if not line.strip():
-                        continue
-                    
-                    fields = line.split('\t')
-                    if len(fields) >= 5:
-                        ref = fields[3]
-                        alt = fields[4]
-                        
-                        # Check for obvious unnormalized patterns
-                        # 1. Multi-character variants that could be left-aligned
-                        if len(ref) > 1 and len(alt) > 1:
-                            if ref[0] == alt[0]:  # Common prefix suggests not left-aligned
-                                logger.debug(f"Potential normalization issue: REF={ref}, ALT={alt}")
-                                return False
+                # If no normalization warnings, it's probably normalized
+                has_warnings = any(warning in stderr_output for warning in normalization_warnings)
                 
-                return True
-            
+                if has_warnings:
+                    logger.debug(f"VCF normalization warnings found: {result.stderr}")
+                    return False
+                else:
+                    logger.debug("VCF appears to be normalized")
+                    return True
+            else:
+                logger.debug(f"bcftools norm check failed: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.debug("VCF normalization check timed out")
             return False
-            
-        except Exception:
-            logger.debug("Error checking VCF normalization")
+        except Exception as e:
+            logger.debug(f"Error checking VCF normalization: {str(e)}")
             # If we can't check, assume it needs normalization to be safe
             return False
+
     
     def _is_fasta_indexed(self, fasta_file: str) -> bool:
         """
@@ -1012,6 +1046,8 @@ class FilePreparator:
         """
         Prepare corrected VCF file addressing all identified issues.
         
+        FIXED: Better error handling, validation, and proper order of operations.
+        
         Args:
             vcf_file: Original VCF file path
             issues: List of VCF-related issues to fix
@@ -1028,54 +1064,119 @@ class FilePreparator:
             if base_name.endswith('.vcf'):
                 base_name = base_name[:-4]
             
-            output_path = os.path.join(
-                os.path.dirname(vcf_file),
-                f"{base_name}_prepared.vcf.gz"
-            )
+            output_dir = os.path.dirname(os.path.abspath(vcf_file))
+            output_path = os.path.join(output_dir, f"{base_name}_prepared.vcf.gz")
+            
+            logger.debug(f"Input VCF: {vcf_file}")
+            logger.debug(f"Output VCF: {output_path}")
+            
+            # Clean up any existing broken prepared file
+            if os.path.exists(output_path):
+                logger.debug("Removing existing prepared file")
+                os.unlink(output_path)
+                for ext in ['.tbi', '.csi']:
+                    idx_file = f"{output_path}{ext}"
+                    if os.path.exists(idx_file):
+                        os.unlink(idx_file)
             
             # Process through pipeline
             current_file = vcf_file
             temp_files = []
             
-            # Step 1: Ensure proper compression
-            compression_issues = [issue for issue in issues if issue['type'] == 'vcf_compression']
-            if compression_issues:
-                logger.debug("Applying bgzip compression")
+            # Step 1: Ensure proper compression (ALWAYS do this for .vcf files)
+            needs_compression = (
+                not vcf_file.endswith('.gz') or 
+                any(issue['type'] == 'vcf_compression' for issue in issues)
+            )
+            
+            if needs_compression:
+                logger.debug("Step 1: Applying bgzip compression")
                 current_file = self._bgzip_vcf(current_file)
                 temp_files.append(current_file)
+                logger.debug(f"Compression complete: {current_file}")
+                
+                # Verify compression worked
+                verify_cmd = ['bcftools', 'view', '-h', current_file]
+                verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
+                if verify_result.returncode != 0:
+                    error_msg = f"bgzip verification failed after compression: {verify_result.stderr}"
+                    logger.error(error_msg)
+                    raise ExternalToolError(error_msg, tool_name="bgzip")
             
             # Step 2: Add AF field if missing
             af_issues = [issue for issue in issues if issue['type'] == 'vcf_af_field']
             if af_issues:
-                logger.debug("Adding INFO/AF field")
+                logger.debug("Step 2: Adding INFO/AF field")
                 current_file = self._add_af_field(current_file)
                 temp_files.append(current_file)
+                logger.debug(f"AF field addition complete: {current_file}")
             
-            # Step 3: Apply chromosome mapping BEFORE normalization
+            # Step 3: Apply chromosome mapping if needed
             mapping_issues = [issue for issue in issues if issue['type'] == 'chromosome_mapping']
             if mapping_issues:
-                logger.debug("Applying chromosome mapping")
+                logger.debug("Step 3: Applying chromosome mapping")
                 mapping = mapping_issues[0].get('mapping', {})
                 if mapping:
                     current_file = self._apply_chromosome_mapping(current_file, mapping)
                     temp_files.append(current_file)
+                    logger.debug(f"Chromosome mapping complete: {current_file}")
             
             # Step 4: Normalize VCF (after chromosome mapping)
             norm_issues = [issue for issue in issues if issue['type'] == 'vcf_normalization']
             if norm_issues:
-                logger.debug("Normalizing VCF")
-                current_file = self._normalize_vcf(current_file)
-                temp_files.append(current_file)
+                logger.debug("Step 4: Normalizing VCF")
+                try:
+                    current_file = self._normalize_vcf(current_file)
+                    temp_files.append(current_file)
+                    logger.debug(f"Normalization complete: {current_file}")
+                except ExternalToolError as e:
+                    if "chromosome not found" in str(e).lower():
+                        logger.warning("VCF normalization failed due to chromosome mismatch, skipping")
+                    else:
+                        raise
             
-            # Step 5: Copy to final location and index
+            # Step 5: Copy to final location
+            logger.debug("Step 5: Copying to final location")
             shutil.copy2(current_file, output_path)
-            self._index_vcf(output_path)
+            
+            # Step 6: Create index and verify
+            logger.debug("Step 6: Creating index")
+            try:
+                self._index_vcf(output_path)
+            except ExternalToolError as e:
+                # If indexing fails, the file is probably not properly prepared
+                error_msg = f"VCF indexing failed, file preparation incomplete: {str(e)}"
+                logger.error(error_msg)
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
+                raise ExternalToolError(error_msg, tool_name="tabix")
+            
+            # Step 7: Final verification
+            logger.debug("Step 7: Final verification")
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                error_msg = f"Prepared VCF file is missing or empty: {output_path}"
+                logger.error(error_msg)
+                return None
+            
+            # Test that bcftools can read the final file
+            test_cmd = ['bcftools', 'view', '-h', output_path]
+            test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
+            if test_result.returncode != 0:
+                error_msg = f"Final VCF file cannot be read by bcftools: {test_result.stderr}"
+                logger.error(error_msg)
+                if os.path.exists(output_path):
+                    os.unlink(output_path)
+                return None
             
             # Clean up temporary files
             for temp_file in temp_files:
                 if temp_file != vcf_file and os.path.exists(temp_file):
                     try:
                         os.unlink(temp_file)
+                        for ext in ['.tbi', '.csi']:
+                            idx_file = f"{temp_file}{ext}"
+                            if os.path.exists(idx_file):
+                                os.unlink(idx_file)
                     except OSError:
                         pass
             
@@ -1087,8 +1188,27 @@ class FilePreparator:
             error_msg = f"Error preparing VCF file: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
+            
+            # Clean up on error
+            if 'output_path' in locals() and os.path.exists(output_path):
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+            
+            # Clean up temp files
+            if 'temp_files' in locals():
+                for temp_file in temp_files:
+                    if temp_file != vcf_file and os.path.exists(temp_file):
+                        try:
+                            os.unlink(temp_file)
+                        except OSError:
+                            pass
+            
             logger.debug("=== END VCF PREPARATION DEBUG ===")
             return None
+
+
     
     def _prepare_fasta_file(self, fasta_file: str, issues: List[Dict]) -> Optional[str]:
         """
@@ -1147,21 +1267,49 @@ class FilePreparator:
                 base_name = Path(gff_file).stem
                 if base_name.endswith('.gff'):
                     base_name = base_name[:-4]
+                elif base_name.endswith('.gff3'):
+                    base_name = base_name[:-5]
                 
-                output_path = os.path.join(
-                    os.path.dirname(gff_file),
-                    f"{base_name}_prepared.gff.gz"
-                )
+                # Use same directory as original file for output
+                output_dir = os.path.dirname(os.path.abspath(gff_file))
+                output_path = os.path.join(output_dir, f"{base_name}_prepared.gff.gz")
+                
+                logger.debug(f"Original GFF: {gff_file}")
+                logger.debug(f"Prepared GFF will be: {output_path}")
+                
+                # Check if the prepared file already exists
+                if os.path.exists(output_path):
+                    logger.debug(f"Prepared GFF file already exists: {output_path}")
+                    user_input = input(f"\nPrepared GFF file already exists: {output_path}\nOverwrite? [y/n]: ").strip().lower()
+                    if user_input not in ['y', 'yes']:
+                        logger.info("Using existing prepared GFF file")
+                        self._index_gff(output_path)  # Ensure it's indexed
+                        return output_path
+                    else:
+                        os.unlink(output_path)  # Remove existing file
                 
                 logger.debug("Sorting and compressing GFF file")
                 self._sort_and_compress_gff(gff_file, output_path)
+                
+                # Verify the file was actually created
+                if not os.path.exists(output_path):
+                    error_msg = f"GFF preparation failed - output file not created: {output_path}"
+                    logger.error(error_msg)
+                    return None
+                
+                logger.debug("Creating tabix index")
                 self._index_gff(output_path)
+                
+                # Verify index was created
+                index_files = [f"{output_path}.tbi", f"{output_path}.csi"]
+                if not any(os.path.exists(idx) for idx in index_files):
+                    logger.warning("GFF index file was not created, but continuing")
                 
                 logger.info(f"Prepared GFF file: {output_path}")
                 logger.debug("=== END GFF PREPARATION DEBUG ===")
                 return output_path
             
-            logger.info("GFF file preparation completed")
+            logger.info("GFF file preparation completed (no changes needed)")
             logger.debug("=== END GFF PREPARATION DEBUG ===")
             return gff_file  # Return original file as no changes needed
             
@@ -1171,7 +1319,8 @@ class FilePreparator:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.debug("=== END GFF PREPARATION DEBUG ===")
             return None
-    
+        
+
     def _bgzip_vcf(self, vcf_file: str) -> str:
         """
         Compress VCF file with bgzip.
@@ -1194,35 +1343,55 @@ class FilePreparator:
             )
             os.close(temp_fd)
             
+            logger.debug(f"Input file: {vcf_file}")
+            logger.debug(f"Output file: {temp_path}")
+            logger.debug(f"Input file exists: {os.path.exists(vcf_file)}")
+            logger.debug(f"Input file size: {os.path.getsize(vcf_file) if os.path.exists(vcf_file) else 'N/A'}")
+            
             # Check if input is already compressed
             if vcf_file.endswith('.gz'):
-                # Decompress and recompress with bgzip
-                decompress_cmd = ['gunzip', '-c', vcf_file]
-                compress_cmd = ['bgzip', '-c']
+                logger.debug("Input is already compressed, checking if it's bgzip...")
                 
-                decompress_proc = subprocess.Popen(decompress_cmd, stdout=subprocess.PIPE,
-                                                 stderr=subprocess.PIPE)
+                # Test if it's already properly bgzipped
+                test_cmd = ['bcftools', 'view', '-h', vcf_file]
+                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
                 
-                with open(temp_path, 'wb') as temp_file:
-                    compress_proc = subprocess.Popen(compress_cmd, stdin=decompress_proc.stdout,
-                                                   stdout=temp_file, stderr=subprocess.PIPE)
-                    decompress_proc.stdout.close()
-                    
-                    compress_returncode = compress_proc.wait()
-                    decompress_returncode = decompress_proc.wait()
-                
-                if decompress_returncode != 0 or compress_returncode != 0:
-                    os.unlink(temp_path)
-                    error_msg = "Failed to recompress VCF with bgzip"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bgzip")
+                if test_result.returncode == 0:
+                    logger.debug("Input is already properly bgzipped, just copying")
+                    shutil.copy2(vcf_file, temp_path)
+                    return temp_path
+                else:
+                    logger.debug("Input is compressed but not bgzip, will recompress")
+                    # Decompress and recompress with bgzip
+                    with gzip.open(vcf_file, 'rt') as input_file:
+                        compress_cmd = ['bgzip', '-c']
+                        
+                        with open(temp_path, 'wb') as output_file:
+                            compress_proc = subprocess.run(
+                                compress_cmd, 
+                                input=input_file.read(), 
+                                stdout=output_file,
+                                stderr=subprocess.PIPE,
+                                text=True
+                            )
+                        
+                        if compress_proc.returncode != 0:
+                            os.unlink(temp_path)
+                            error_msg = f"Failed to recompress with bgzip: {compress_proc.stderr}"
+                            logger.error(error_msg)
+                            raise ExternalToolError(error_msg, tool_name="bgzip")
             else:
+                logger.debug("Input is uncompressed, compressing with bgzip...")
                 # Compress uncompressed VCF
                 compress_cmd = ['bgzip', '-c', vcf_file]
                 
-                with open(temp_path, 'wb') as temp_file:
-                    result = subprocess.run(compress_cmd, stdout=temp_file,
-                                          stderr=subprocess.PIPE)
+                with open(temp_path, 'wb') as output_file:
+                    result = subprocess.run(
+                        compress_cmd, 
+                        stdout=output_file,
+                        stderr=subprocess.PIPE,
+                        timeout=300
+                    )
                 
                 if result.returncode != 0:
                     os.unlink(temp_path)
@@ -1230,17 +1399,43 @@ class FilePreparator:
                     logger.error(error_msg)
                     raise ExternalToolError(error_msg, tool_name="bgzip")
             
+            # Verify the output is properly bgzipped
+            logger.debug("Verifying bgzip compression...")
+            verify_cmd = ['bcftools', 'view', '-h', temp_path]
+            verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
+            
+            if verify_result.returncode != 0:
+                os.unlink(temp_path)
+                error_msg = f"bgzip verification failed: {verify_result.stderr}"
+                logger.error(error_msg)
+                raise ExternalToolError(error_msg, tool_name="bgzip")
+            
+            # Verify file is not empty
+            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                error_msg = "bgzipped VCF file is empty or was not created"
+                logger.error(error_msg)
+                raise ExternalToolError(error_msg, tool_name="bgzip")
+            
             logger.debug(f"Successfully bgzipped VCF: {temp_path}")
+            logger.debug(f"Output file size: {os.path.getsize(temp_path)} bytes")
             return temp_path
             
+        except subprocess.TimeoutExpired:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            error_msg = "bgzip compression timed out"
+            logger.error(error_msg)
+            raise ExternalToolError(error_msg, tool_name="bgzip")
         except ExternalToolError:
             raise
         except Exception as e:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
             error_msg = f"Error bgzipping VCF file: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ExternalToolError(error_msg, tool_name="bgzip") from e
-    
+
     def _add_af_field(self, vcf_file: str) -> str:
         """
         Add INFO/AF field to VCF file using bcftools +fill-tags.
@@ -1293,6 +1488,8 @@ class FilePreparator:
         """
         Normalize VCF file using bcftools norm.
         
+        IMPROVED: Better error handling and reference file validation.
+        
         Args:
             vcf_file: Path to input VCF file
             
@@ -1311,27 +1508,54 @@ class FilePreparator:
             )
             os.close(temp_fd)
             
+            # Get reference file
+            reference_file = self._get_reference_file()
+            logger.debug(f"Using reference file for normalization: {reference_file}")
+            
+            # Verify reference file is indexed
+            if not os.path.exists(f"{reference_file}.fai"):
+                logger.debug("Reference file not indexed, creating index")
+                self._index_fasta(reference_file)
+            
             # Normalize with bcftools norm
             cmd = [
                 'bcftools', 'norm', vcf_file,
-                '-f', self._get_reference_file(),
+                '-f', reference_file,
+                '-m', '-any',  # Split multiallelic variants
+                '-N',          # Do not normalize indels
                 '-Oz', '-o', temp_path
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            logger.debug(f"Normalization command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             
             if result.returncode != 0:
                 os.unlink(temp_path)
                 error_msg = f"bcftools norm failed: {result.stderr}"
                 logger.error(error_msg)
+                # Include more context about the error
+                if "sequence not found" in result.stderr.lower():
+                    error_msg += "\nThis may indicate chromosome name mismatch between VCF and reference FASTA"
                 raise ExternalToolError(error_msg, tool_name="bcftools")
+            
+            # Log normalization stats if available
+            if result.stderr:
+                logger.debug(f"Normalization output: {result.stderr}")
             
             logger.debug(f"Successfully normalized VCF: {temp_path}")
             return temp_path
             
+        except subprocess.TimeoutExpired:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            error_msg = "VCF normalization timed out"
+            logger.error(error_msg)
+            raise ExternalToolError(error_msg, tool_name="bcftools")
         except ExternalToolError:
             raise
         except Exception as e:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.unlink(temp_path)
             error_msg = f"Error normalizing VCF file: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
@@ -1460,7 +1684,7 @@ class FilePreparator:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ExternalToolError(error_msg, tool_name="samtools") from e
-    
+        
     def _sort_and_compress_gff(self, gff_file: str, output_path: str):
         """
         Sort and compress GFF file for tabix indexing.
@@ -1473,34 +1697,93 @@ class FilePreparator:
             ExternalToolError: If sorting/compression fails
         """
         try:
-            # Sort GFF file by chromosome and position
-            sort_cmd = ['sort', '-k1,1', '-k4,4n', gff_file]
-            compress_cmd = ['bgzip', '-c']
+            logger.debug(f"Input GFF file: {gff_file}")
+            logger.debug(f"Output path: {output_path}")
+            logger.debug(f"Input file exists: {os.path.exists(gff_file)}")
+            logger.debug(f"Output directory exists: {os.path.exists(os.path.dirname(output_path))}")
             
-            # Chain sort and bgzip
-            sort_proc = subprocess.Popen(sort_cmd, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE)
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
-            with open(output_path, 'wb') as output_file:
-                compress_proc = subprocess.Popen(compress_cmd, stdin=sort_proc.stdout,
-                                               stdout=output_file, stderr=subprocess.PIPE)
-                sort_proc.stdout.close()
+            # Create a temporary intermediate file for sorted GFF
+            temp_sorted_fd, temp_sorted_path = tempfile.mkstemp(
+                suffix=".gff",
+                prefix="ddprimer_sorted_",
+                dir=self.temp_dir
+            )
+            os.close(temp_sorted_fd)
+            
+            try:
+                # First, sort the GFF file with explicit temporary directory
+                logger.debug("Sorting GFF file...")
+                sort_cmd = [
+                    'sort', 
+                    '-k1,1', '-k4,4n',  # Sort by chromosome, then by start position
+                    '-T', self.temp_dir,  # Specify temporary directory
+                    '-o', temp_sorted_path,  # Output to temporary file
+                    gff_file
+                ]
                 
-                compress_returncode = compress_proc.wait()
-                sort_returncode = sort_proc.wait()
-            
-            if sort_returncode != 0 or compress_returncode != 0:
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-                error_msg = "Failed to sort and compress GFF file"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="sort/bgzip")
+                logger.debug(f"Sort command: {' '.join(sort_cmd)}")
+                sort_result = subprocess.run(sort_cmd, capture_output=True, text=True, timeout=300)
+                
+                if sort_result.returncode != 0:
+                    error_msg = f"Failed to sort GFF file: {sort_result.stderr}"
+                    logger.error(error_msg)
+                    raise ExternalToolError(error_msg, tool_name="sort")
+                
+                # Verify sorted file was created
+                if not os.path.exists(temp_sorted_path) or os.path.getsize(temp_sorted_path) == 0:
+                    error_msg = "Sorted GFF file was not created or is empty"
+                    logger.error(error_msg)
+                    raise ExternalToolError(error_msg, tool_name="sort")
+                
+                logger.debug(f"Successfully sorted GFF file: {temp_sorted_path}")
+                logger.debug(f"Sorted file size: {os.path.getsize(temp_sorted_path)} bytes")
+                
+                # Now compress with bgzip
+                logger.debug("Compressing sorted GFF file...")
+                compress_cmd = ['bgzip', '-c', temp_sorted_path]
+                
+                logger.debug(f"Compress command: {' '.join(compress_cmd)}")
+                with open(output_path, 'wb') as output_file:
+                    compress_result = subprocess.run(compress_cmd, stdout=output_file,
+                                                stderr=subprocess.PIPE, text=False, timeout=300)
+                
+                if compress_result.returncode != 0:
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+                    error_msg = f"Failed to compress GFF file: {compress_result.stderr.decode()}"
+                    logger.error(error_msg)
+                    raise ExternalToolError(error_msg, tool_name="bgzip")
+                
+                # Verify compressed file was created
+                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                    error_msg = "Compressed GFF file was not created or is empty"
+                    logger.error(error_msg)
+                    raise ExternalToolError(error_msg, tool_name="bgzip")
+                
+                logger.debug(f"Successfully compressed GFF file: {output_path}")
+                logger.debug(f"Compressed file size: {os.path.getsize(output_path)} bytes")
+                
+            finally:
+                # Clean up temporary sorted file
+                if os.path.exists(temp_sorted_path):
+                    os.unlink(temp_sorted_path)
             
             logger.debug(f"Successfully sorted and compressed GFF: {output_path}")
             
+        except subprocess.TimeoutExpired:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+            error_msg = "GFF sorting/compression timed out"
+            logger.error(error_msg)
+            raise ExternalToolError(error_msg, tool_name="sort/bgzip")
         except ExternalToolError:
             raise
         except Exception as e:
+            if os.path.exists(output_path):
+                os.unlink(output_path)
             error_msg = f"Error sorting and compressing GFF file: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
@@ -1589,6 +1872,57 @@ class FilePreparator:
         
         # Note: Individual temporary files are cleaned up in their respective methods
         logger.debug("FilePreparator cleanup completed")
+
+    def _validate_prepared_vcf(self, vcf_file: str, original_issues: List[Dict]) -> List[str]:
+        """
+        Validate that a prepared VCF file actually addresses the original issues.
+        
+        Args:
+            vcf_file: Path to prepared VCF file
+            original_issues: List of issues that should have been fixed
+            
+        Returns:
+            List of remaining issues (empty if all fixed)
+        """
+        remaining_issues = []
+        
+        try:
+            # Check compression
+            if any(issue['type'] == 'vcf_compression' for issue in original_issues):
+                if not self._is_properly_bgzipped(vcf_file):
+                    remaining_issues.append("VCF still not properly bgzipped")
+            
+            # Check indexing
+            if any(issue['type'] == 'vcf_index' for issue in original_issues):
+                if not self._is_vcf_indexed(vcf_file):
+                    remaining_issues.append("VCF still not indexed")
+            
+            # Check AF field
+            if any(issue['type'] == 'vcf_af_field' for issue in original_issues):
+                if not self._has_af_field(vcf_file):
+                    remaining_issues.append("VCF still missing INFO/AF field")
+            
+            # Check normalization
+            if any(issue['type'] == 'vcf_normalization' for issue in original_issues):
+                if not self._is_vcf_normalized(vcf_file):
+                    remaining_issues.append("VCF still not normalized")
+            
+            # Check chromosome mapping
+            mapping_issues = [issue for issue in original_issues if issue['type'] == 'chromosome_mapping']
+            if mapping_issues:
+                # Verify chromosomes were actually renamed
+                vcf_chroms = set(self._get_vcf_chromosomes(vcf_file).keys())
+                mapping = mapping_issues[0].get('mapping', {})
+                expected_chroms = set(mapping.values()) if mapping else set()
+                
+                if expected_chroms and not expected_chroms.issubset(vcf_chroms):
+                    remaining_issues.append("Chromosome mapping was not applied correctly")
+            
+            return remaining_issues
+            
+        except Exception as e:
+            logger.warning(f"Error validating prepared VCF: {str(e)}")
+            return ["Could not validate prepared VCF file"]
 
 
 # Convenience function for integration with main pipeline

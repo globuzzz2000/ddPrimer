@@ -90,29 +90,55 @@ class PrimerProcessor:
         
         initial_count = len(df)
         
-        # Log detailed penalty information in debug mode
+        # Optimized logging - collect statistics instead of logging each primer
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Penalty analysis before filtering:")
+            logger.debug("Analyzing penalty distribution...")
+            failed_primers = []
+            invalid_penalties = 0
+            
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
-                penalty_f = row.get("Penalty F", "N/A")
-                penalty_r = row.get("Penalty R", "N/A") 
                 penalty_pair = row.get("Pair Penalty", "N/A")
                 
                 try:
                     will_pass = float(penalty_pair) <= max_penalty
-                    status = "PASS" if will_pass else "FAIL"
-                    logger.debug(f"Gene {gene}: F={penalty_f}, R={penalty_r}, Pair={penalty_pair} [{status}]")
                     
                     if not will_pass:
-                        primer_f = row.get("Primer F", "N/A")
-                        primer_r = row.get("Primer R", "N/A")
-                        logger.debug(f"  FILTERED: {gene} penalty {penalty_pair} > {max_penalty}")
-                        logger.debug(f"  Forward: {primer_f}")
-                        logger.debug(f"  Reverse: {primer_r}")
+                        failed_primers.append({
+                            'gene': gene,
+                            'penalty': penalty_pair,
+                            'penalty_f': row.get("Penalty F", "N/A"),
+                            'penalty_r': row.get("Penalty R", "N/A"),
+                            'primer_f': row.get("Primer F", "N/A"),
+                            'primer_r': row.get("Primer R", "N/A")
+                        })
+                    
+                    # Sample logging - only log every 100th primer OR first 5 failures
+                    if (index % 100 == 0 or 
+                        (not will_pass and len(failed_primers) <= 5)):
+                        penalty_f = row.get("Penalty F", "N/A")
+                        penalty_r = row.get("Penalty R", "N/A")
+                        status = "PASS" if will_pass else "FAIL"
+                        logger.debug(f"Gene {gene}: F={penalty_f}, R={penalty_r}, Pair={penalty_pair} [{status}]")
+                        
+                        if not will_pass and len(failed_primers) <= 5:
+                            logger.debug(f"  FILTERED: {gene} penalty {penalty_pair} > {max_penalty}")
+                            logger.debug(f"  Forward: {row.get('Primer F', 'N/A')}")
+                            logger.debug(f"  Reverse: {row.get('Primer R', 'N/A')}")
                         
                 except (ValueError, TypeError):
-                    logger.debug(f"Gene {gene}: Invalid penalty values - F={penalty_f}, R={penalty_r}, Pair={penalty_pair}")
+                    invalid_penalties += 1
+                    if invalid_penalties <= 5:  # Only log first 5 invalid penalties
+                        logger.debug(f"Gene {gene}: Invalid penalty values - Pair={penalty_pair}")
+            
+            # Summary logging
+            logger.debug(f"Penalty analysis summary:")
+            logger.debug(f"  Total primers analyzed: {initial_count}")
+            logger.debug(f"  Primers failing penalty filter: {len(failed_primers)}")
+            logger.debug(f"  Invalid penalty values: {invalid_penalties}")
+            
+            if len(failed_primers) > 5:
+                logger.debug(f"  (Detailed logging shown for first 5 failures only)")
         
         # Apply penalty filter
         df_filtered = df[df["Pair Penalty"] <= max_penalty].reset_index(drop=True)
@@ -129,8 +155,11 @@ class PrimerProcessor:
         if logger.isEnabledFor(logging.DEBUG):
             kept_genes = set(df_filtered["Gene"]) if not df_filtered.empty else set()
             removed_genes = set(df["Gene"]) - kept_genes
-            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(sorted(kept_genes))}")
-            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(sorted(removed_genes))}")
+            # Limit gene list display
+            kept_sample = sorted(list(kept_genes)[:10])
+            removed_sample = sorted(list(removed_genes)[:10])
+            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(kept_sample)}{'...' if len(kept_genes) > 10 else ''}")
+            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(removed_sample)}{'...' if len(removed_genes) > 10 else ''}")
         
         logger.debug("=== END PENALTY FILTER DEBUG ===")
         return df_filtered
@@ -159,9 +188,12 @@ class PrimerProcessor:
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
         initial_count = len(df)
         
-        # Debug logging for repeat analysis
+        # Optimized logging - collect statistics instead of logging each primer
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("Analyzing primers for repeat sequences:")
+            logger.debug("Analyzing primers for repeat sequences...")
+            failed_primers = []
+            probe_repeats_count = 0
+            
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
                 primer_f = row.get("Primer F", "")
@@ -175,28 +207,54 @@ class PrimerProcessor:
                 will_fail = has_f_repeats or has_r_repeats
                 
                 if will_fail:
-                    logger.debug(f"Gene {gene}: WILL BE FILTERED due to primer repeats")
-                    if has_f_repeats:
-                        repeat_positions = []
-                        if "GGGG" in primer_f:
-                            repeat_positions.append(f"GGGG at {primer_f.find('GGGG')}")
-                        if "CCCC" in primer_f:
-                            repeat_positions.append(f"CCCC at {primer_f.find('CCCC')}")
-                        logger.debug(f"  Forward primer: {primer_f} ({'; '.join(repeat_positions)})")
+                    repeat_info = {
+                        'gene': gene,
+                        'has_f_repeats': has_f_repeats,
+                        'has_r_repeats': has_r_repeats,
+                        'primer_f': primer_f,
+                        'primer_r': primer_r
+                    }
+                    failed_primers.append(repeat_info)
+                
+                if has_probe_repeats:
+                    probe_repeats_count += 1
+                
+                # Sample logging - only log every 100th primer OR first 5 failures
+                if (index % 100 == 0 or 
+                    (will_fail and len(failed_primers) <= 5)):
                     
-                    if has_r_repeats:
-                        repeat_positions = []
-                        if "GGGG" in primer_r:
-                            repeat_positions.append(f"GGGG at {primer_r.find('GGGG')}")
-                        if "CCCC" in primer_r:
-                            repeat_positions.append(f"CCCC at {primer_r.find('CCCC')}")
-                        logger.debug(f"  Reverse primer: {primer_r} ({'; '.join(repeat_positions)})")
+                    if will_fail and len(failed_primers) <= 5:
+                        logger.debug(f"Gene {gene}: WILL BE FILTERED due to primer repeats")
+                        if has_f_repeats:
+                            repeat_positions = []
+                            if "GGGG" in primer_f:
+                                repeat_positions.append(f"GGGG at {primer_f.find('GGGG')}")
+                            if "CCCC" in primer_f:
+                                repeat_positions.append(f"CCCC at {primer_f.find('CCCC')}")
+                            logger.debug(f"  Forward primer: {primer_f} ({'; '.join(repeat_positions)})")
+                        
+                        if has_r_repeats:
+                            repeat_positions = []
+                            if "GGGG" in primer_r:
+                                repeat_positions.append(f"GGGG at {primer_r.find('GGGG')}")
+                            if "CCCC" in primer_r:
+                                repeat_positions.append(f"CCCC at {primer_r.find('CCCC')}")
+                            logger.debug(f"  Reverse primer: {primer_r} ({'; '.join(repeat_positions)})")
+                        
+                        if has_probe_repeats:
+                            logger.debug(f"  NOTE: Probe has repeats but will NOT cause filtering: {probe}")
                     
-                    # Note probe repeats but don't filter based on them
-                    if has_probe_repeats:
-                        logger.debug(f"  NOTE: Probe has repeats but will NOT cause filtering: {probe}")
-                else:
-                    logger.debug(f"Gene {gene}: PASS - no disallowed repeats in primers")
+                    elif index % 100 == 0 and not will_fail:
+                        logger.debug(f"Gene {gene}: PASS - no disallowed repeats in primers")
+            
+            # Summary logging
+            logger.debug(f"Repeat analysis summary:")
+            logger.debug(f"  Total primers analyzed: {initial_count}")
+            logger.debug(f"  Primers with disallowed repeats: {len(failed_primers)}")
+            logger.debug(f"  Probes with repeats (not filtered): {probe_repeats_count}")
+            
+            if len(failed_primers) > 5:
+                logger.debug(f"  (Detailed logging shown for first 5 failures only)")
         
         # Apply repeat filtering (primers only, not probes)
         df["Has_Repeats_F"] = df["Primer F"].apply(PrimerProcessor.has_disallowed_repeats)
@@ -219,8 +277,11 @@ class PrimerProcessor:
         if logger.isEnabledFor(logging.DEBUG):
             kept_genes = set(df_filtered["Gene"]) if not df_filtered.empty else set()
             removed_genes = set(df["Gene"]) - kept_genes
-            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(sorted(kept_genes))}")
-            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(sorted(removed_genes))}")
+            # Limit gene list display
+            kept_sample = sorted(list(kept_genes)[:10])
+            removed_sample = sorted(list(removed_genes)[:10])
+            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(kept_sample)}{'...' if len(kept_genes) > 10 else ''}")
+            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(removed_sample)}{'...' if len(removed_genes) > 10 else ''}")
         
         logger.debug("=== END REPEAT FILTER DEBUG ===")
         
@@ -262,49 +323,92 @@ class PrimerProcessor:
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
         initial_count = len(df)
         
-        # Check for missing amplicon sequences
+        # Check for missing amplicons
         missing_amplicons = df["Amplicon"].isna() | (df["Amplicon"] == "")
-        if missing_amplicons.any():
-            missing_count = missing_amplicons.sum()
+        missing_count = missing_amplicons.sum()
+        
+        if missing_count > 0:
             logger.warning(f"{missing_count} primers have missing amplicon sequences")
             
+            # Only show details for first few missing amplicons
             if logger.isEnabledFor(logging.DEBUG):
+                missing_samples = []
                 for _, row in df[missing_amplicons].iterrows():
-                    gene = row.get("Gene", "Unknown")
-                    logger.debug(f"Missing amplicon: Gene={gene}, F={row.get('Primer F', 'N/A')}, R={row.get('Primer R', 'N/A')}")
+                    if len(missing_samples) < 5:
+                        gene = row.get("Gene", "Unknown")
+                        missing_samples.append({
+                            'gene': gene,
+                            'primer_f': row.get("Primer F", "N/A"),
+                            'primer_r': row.get("Primer R", "N/A")
+                        })
+                
+                logger.debug("Sample missing amplicons:")
+                for sample in missing_samples:
+                    logger.debug(f"  Gene={sample['gene']}, F={sample['primer_f']}, R={sample['primer_r']}")
+                
+                if missing_count > 5:
+                    logger.debug(f"  ... and {missing_count - 5} more primers with missing amplicons")
         
-        # Debug analysis of GC content
+        # Optimized logging for GC content analysis
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("GC content analysis:")
+            logger.debug("Analyzing GC content distribution...")
+            failed_primers = []
+            gc_values = []
+            
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
                 amplicon = row.get("Amplicon", "")
                 
                 if not amplicon:
-                    logger.debug(f"Gene {gene}: WILL BE FILTERED - no amplicon sequence")
                     continue
                 
                 gc_content = PrimerProcessor.calculate_gc(amplicon)
+                gc_values.append(gc_content)
                 in_range = min_gc <= gc_content <= max_gc
                 
-                # Detailed sequence analysis
-                g_count = amplicon.upper().count('G')
-                c_count = amplicon.upper().count('C')
-                total_gc = g_count + c_count
-                length = len(amplicon)
-                
-                status = "PASS" if in_range else "FAIL"
-                logger.debug(f"Gene {gene}: GC={gc_content:.1f}% ({total_gc}/{length}) [{status}]")
-                
                 if not in_range:
-                    reason = "too low" if gc_content < min_gc else "too high"
-                    logger.debug(f"  FILTERED: GC content {reason} ({gc_content:.1f}% not in {min_gc}-{max_gc}%)")
+                    failed_primers.append({
+                        'gene': gene,
+                        'gc_content': gc_content,
+                        'amplicon': amplicon,
+                        'reason': "too low" if gc_content < min_gc else "too high"
+                    })
+                
+                # Sample logging - only log every 100th primer OR first 5 failures
+                if (index % 100 == 0 or 
+                    (not in_range and len(failed_primers) <= 5)):
                     
-                    # Log amplicon sequence for detailed inspection
-                    if len(amplicon) > 40:
-                        logger.debug(f"  Amplicon: {amplicon[:20]}...{amplicon[-20:]} ({length} bp)")
-                    else:
-                        logger.debug(f"  Amplicon: {amplicon} ({length} bp)")
+                    g_count = amplicon.upper().count('G')
+                    c_count = amplicon.upper().count('C')
+                    total_gc = g_count + c_count
+                    length = len(amplicon)
+                    
+                    status = "PASS" if in_range else "FAIL"
+                    logger.debug(f"Gene {gene}: GC={gc_content:.1f}% ({total_gc}/{length}) [{status}]")
+                    
+                    if not in_range and len(failed_primers) <= 5:
+                        reason = "too low" if gc_content < min_gc else "too high"
+                        logger.debug(f"  FILTERED: GC content {reason} ({gc_content:.1f}% not in {min_gc}-{max_gc}%)")
+                        
+                        # Log amplicon sequence for detailed inspection
+                        if len(amplicon) > 40:
+                            logger.debug(f"  Amplicon: {amplicon[:20]}...{amplicon[-20:]} ({length} bp)")
+                        else:
+                            logger.debug(f"  Amplicon: {amplicon} ({length} bp)")
+            
+            # Summary statistics
+            if gc_values:
+                avg_gc = sum(gc_values) / len(gc_values)
+                min_gc_found = min(gc_values)
+                max_gc_found = max(gc_values)
+                logger.debug(f"GC content analysis summary:")
+                logger.debug(f"  Amplicons analyzed: {len(gc_values)}")
+                logger.debug(f"  GC content range found: {min_gc_found:.1f}% - {max_gc_found:.1f}%")
+                logger.debug(f"  Average GC content: {avg_gc:.1f}%")
+                logger.debug(f"  Primers failing GC filter: {len(failed_primers)}")
+                
+                if len(failed_primers) > 5:
+                    logger.debug(f"  (Detailed logging shown for first 5 failures only)")
         
         # Remove rows with missing amplicons
         df_with_amplicons = df.dropna(subset=["Amplicon"]).copy()
@@ -329,13 +433,17 @@ class PrimerProcessor:
         if logger.isEnabledFor(logging.DEBUG):
             kept_genes = set(df_filtered["Gene"]) if not df_filtered.empty else set()
             removed_genes = set(df["Gene"]) - kept_genes
-            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(sorted(kept_genes))}")
-            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(sorted(removed_genes))}")
+            # Limit gene list display
+            kept_sample = sorted(list(kept_genes)[:10])
+            removed_sample = sorted(list(removed_genes)[:10])
+            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(kept_sample)}{'...' if len(kept_genes) > 10 else ''}")
+            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(removed_sample)}{'...' if len(removed_genes) > 10 else ''}")
         
         logger.debug("=== END GC CONTENT FILTER DEBUG ===")
         
         # Return in original format
         return df_filtered.to_dict('records') if not isinstance(primers, pd.DataFrame) else df_filtered
+    
     
     @staticmethod
     def process_internal_oligos(primers):
@@ -429,10 +537,13 @@ class PrimerProcessor:
             logger.warning(f"Missing BLAST columns: {missing_cols} - skipping BLAST filtering")
             return df.to_dict('records') if not isinstance(primers, pd.DataFrame) else df
         
-        # Debug analysis of BLAST results
+        # Optimized logging for BLAST analysis
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("BLAST specificity analysis:")
-            
+            logger.debug("Analyzing BLAST specificity results...")
+            failed_primers = []
+            no_hits_count = 0
+            unique_hits_count = 0
+        
         keep_indices = []
         
         for i, row in df.iterrows():
@@ -452,39 +563,72 @@ class PrimerProcessor:
             else:
                 keep_p = True
             
-            # Log detailed BLAST analysis
-            if logger.isEnabledFor(logging.DEBUG):
-                f_blast1 = row.get("Primer F BLAST1", "N/A")
-                f_blast2 = row.get("Primer F BLAST2", "N/A") 
-                r_blast1 = row.get("Primer R BLAST1", "N/A")
-                r_blast2 = row.get("Primer R BLAST2", "N/A")
-                
-                logger.debug(f"Gene {gene}:")
-                logger.debug(f"  Forward: Best={f_blast1}, Second={f_blast2}, Pass={keep_f}")
-                logger.debug(f"  Reverse: Best={r_blast1}, Second={r_blast2}, Pass={keep_r}")
-                
-                if "Probe" in df.columns and "Probe BLAST1" in df.columns and not pd.isna(row.get("Probe")):
-                    p_blast1 = row.get("Probe BLAST1", "N/A")
-                    p_blast2 = row.get("Probe BLAST2", "N/A")
-                    logger.debug(f"  Probe: Best={p_blast1}, Second={p_blast2}, Pass={keep_p}")
-            
-            # Keep primer if all components pass
+            # Overall pass/fail
             overall_pass = keep_f and keep_r and keep_p
             
+            # Collect statistics for summary
+            if logger.isEnabledFor(logging.DEBUG):
+                f_blast1 = row.get("Primer F BLAST1")
+                f_blast2 = row.get("Primer F BLAST2")
+                r_blast1 = row.get("Primer R BLAST1")
+                r_blast2 = row.get("Primer R BLAST2")
+                
+                # Count no hits and unique hits
+                if pd.isna(f_blast1) and pd.isna(r_blast1):
+                    no_hits_count += 1
+                elif (pd.isna(f_blast2) and pd.notna(f_blast1)) or (pd.isna(r_blast2) and pd.notna(r_blast1)):
+                    unique_hits_count += 1
+                
+                if not overall_pass:
+                    failure_reasons = []
+                    if not keep_f:
+                        failure_reasons.append("forward primer specificity")
+                    if not keep_r:
+                        failure_reasons.append("reverse primer specificity")
+                    if not keep_p:
+                        failure_reasons.append("probe specificity")
+                    
+                    failed_primers.append({
+                        'gene': gene,
+                        'reasons': failure_reasons,
+                        'f_blast1': f_blast1,
+                        'f_blast2': f_blast2,
+                        'r_blast1': r_blast1,
+                        'r_blast2': r_blast2
+                    })
+                
+                # Sample logging - only log every 100th primer OR first 5 failures
+                if (i % 100 == 0 or 
+                    (not overall_pass and len(failed_primers) <= 5)):
+                    
+                    logger.debug(f"Gene {gene}:")
+                    logger.debug(f"  Forward: Best={f_blast1}, Second={f_blast2}, Pass={keep_f}")
+                    logger.debug(f"  Reverse: Best={r_blast1}, Second={r_blast2}, Pass={keep_r}")
+                    
+                    if "Probe" in df.columns and "Probe BLAST1" in df.columns and not pd.isna(row.get("Probe")):
+                        p_blast1 = row.get("Probe BLAST1", "N/A")
+                        p_blast2 = row.get("Probe BLAST2", "N/A")
+                        logger.debug(f"  Probe: Best={p_blast1}, Second={p_blast2}, Pass={keep_p}")
+                    
+                    if overall_pass:
+                        logger.debug(f"  Result: PASS - primer kept")
+                    elif len(failed_primers) <= 5:
+                        logger.debug(f"  Result: FAIL - filtered due to {', '.join(failed_primers[-1]['reasons'])}")
+            
+            # Keep primer if all components pass
             if overall_pass:
                 keep_indices.append(i)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"  Result: PASS - primer kept")
-            else:
-                if logger.isEnabledFor(logging.DEBUG):
-                    reasons = []
-                    if not keep_f:
-                        reasons.append("forward primer specificity")
-                    if not keep_r:
-                        reasons.append("reverse primer specificity")
-                    if not keep_p:
-                        reasons.append("probe specificity")
-                    logger.debug(f"  Result: FAIL - filtered due to {', '.join(reasons)}")
+        
+        # Summary logging
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"BLAST analysis summary:")
+            logger.debug(f"  Total primers analyzed: {initial_count}")
+            logger.debug(f"  Primers with no BLAST hits: {no_hits_count}")
+            logger.debug(f"  Primers with unique hits: {unique_hits_count}")
+            logger.debug(f"  Primers failing BLAST filter: {len(failed_primers)}")
+            
+            if len(failed_primers) > 5:
+                logger.debug(f"  (Detailed logging shown for first 5 failures only)")
         
         # Apply filtering
         df_filtered = df.loc[keep_indices].reset_index(drop=True)
@@ -501,8 +645,11 @@ class PrimerProcessor:
         if logger.isEnabledFor(logging.DEBUG):
             kept_genes = set(df_filtered["Gene"]) if not df_filtered.empty else set()
             removed_genes = set(df["Gene"]) - kept_genes
-            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(sorted(kept_genes))}")
-            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(sorted(removed_genes))}")
+            # Limit gene list display
+            kept_sample = sorted(list(kept_genes)[:10])
+            removed_sample = sorted(list(removed_genes)[:10])
+            logger.debug(f"  Genes kept ({len(kept_genes)}): {', '.join(kept_sample)}{'...' if len(kept_genes) > 10 else ''}")
+            logger.debug(f"  Genes removed ({len(removed_genes)}): {', '.join(removed_sample)}{'...' if len(removed_genes) > 10 else ''}")
         
         logger.debug("=== END BLAST FILTER DEBUG ===")
         

@@ -595,7 +595,7 @@ class Primer3Processor:
             self._log_primer_pairs_debug(block)
         
         # Filter and limit primer pairs
-        acceptable_pairs = PrimerProcessor.filter_primer_pairs(block['primer_pairs'])
+        acceptable_pairs = PrimerProcessor.filter_primer_pairs(block['primer_pairs'], self.config)
         
         if debug_mode and len(acceptable_pairs) != len(block['primer_pairs']):
             logger.debug(f"Filtered {len(block['primer_pairs'])} → {len(acceptable_pairs)} primer pairs")
@@ -604,7 +604,7 @@ class Primer3Processor:
         records = []
         for pair in acceptable_pairs:
             try:
-                record = PrimerProcessor.create_primer_record(block, pair, fragment_info, debug_mode)
+                record = PrimerProcessor.create_primer_record(block, pair, fragment_info, self.config, debug_mode)
                 if record:
                     records.append(record)
             except Exception as e:

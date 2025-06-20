@@ -198,7 +198,6 @@ class SequenceProcessor:
                 max_length = max(fragment_lengths)
                 logger.debug(f"Fragment length statistics: avg={avg_length:.0f}, min={min_length}, max={max_length}")
         
-        logger.info(f"Restriction site cutting completed: {len(fragments)} fragments generated")
         logger.debug(f"=== END RESTRICTION SITE CUTTING ===")
         
         return fragments
