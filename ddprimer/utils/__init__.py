@@ -7,7 +7,7 @@ This subpackage contains utility functions:
 - ui_utils: User interface utilities
 """
 
-from .file_io import FileIO, TempDirectoryManager
+from .file_io import FileIO
 from .blast_db_manager import BlastDatabaseManager
 from .file_preparator import FilePreparator, prepare_pipeline_files
 

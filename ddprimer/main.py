@@ -156,74 +156,6 @@ def parse_arguments():
     
     return args
 
-
-class TempDirectoryManager:
-    """
-    Context manager for temporary directory creation and cleanup.
-    
-    Provides a safe way to create and automatically clean up temporary
-    directories used during pipeline execution.
-    
-    Attributes:
-        temp_dir: Path to the created temporary directory
-        base_dir: Base directory for temporary directory creation
-        
-    Example:
-        >>> with TempDirectoryManager() as temp_dir:
-        ...     # Use temp_dir for operations
-        ...     pass
-        # temp_dir is automatically cleaned up
-    """
-    
-    def __init__(self, base_dir: Optional[PathLike] = None):
-        """
-        Initialize the temporary directory manager.
-        
-        Args:
-            base_dir: Base directory to create the temp directory in
-        """
-        self.temp_dir = None
-        self.base_dir = str(base_dir) if base_dir else None
-        
-    def __enter__(self):
-        """
-        Create and return the temporary directory path.
-        
-        Returns:
-            Path to the temporary directory
-            
-        Raises:
-            FileError: If temporary directory creation fails
-        """
-        try:
-            import tempfile
-            self.temp_dir = tempfile.mkdtemp(
-                prefix="ddprimer_temp_",
-                dir=self.base_dir
-            )
-            return self.temp_dir
-        except OSError as e:
-            error_msg = f"Failed to create temporary directory: {str(e)}"
-            logger.error(error_msg)
-            raise FileError(error_msg) from e
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Clean up the temporary directory.
-        
-        Args:
-            exc_type: Exception type if an exception was raised
-            exc_val: Exception value if an exception was raised
-            exc_tb: Exception traceback if an exception was raised
-        """
-        if self.temp_dir and Path(self.temp_dir).exists():
-            try:
-                import shutil
-                shutil.rmtree(self.temp_dir)
-            except OSError as e:
-                logger.warning(f"Error cleaning up temporary files: {str(e)}")
-
-
 def prepare_files_for_pipeline(vcf_file, reference_file, gff_file=None, interactive=True):
     """
     Standalone file preparation function.
@@ -818,7 +750,14 @@ def run_standard_mode(args):
         if not args.fasta:
             logger.info("\n>>> Please select FASTA sequence file <<<")
             try:
-                args.fasta = FileIO.select_fasta_file("Select FASTA sequence file")
+                args.fasta = FileIO.select_file(
+                    "Select FASTA sequence file",
+                    [
+                        ("FASTA Files", "*.fasta"), 
+                        ("FASTA Files", "*.fa"), 
+                        ("FASTA Files", "*.fna"), 
+                        ("All Files", "*")]
+                )
             except FileSelectionError as e:
                 error_msg = f"FASTA file selection failed: {str(e)}"
                 logger.error(error_msg)
@@ -830,25 +769,35 @@ def run_standard_mode(args):
             try:
                 args.vcf = FileIO.select_file(
                     "Select VCF variant file", 
-                    [("VCF Files", "*.vcf"), ("Compressed VCF Files", "*.vcf.gz"), ("All Files", "*.*")]
+                    [
+                        ("VCF Files", "*.vcf"),
+                        ("Compressed VCF Files", "*.vcf.gz"),
+                        ("All Files", "*.*")
+                    ]
                 )
             except FileSelectionError as e:
                 error_msg = f"VCF file selection failed: {str(e)}"
                 logger.error(error_msg)
                 return False
 
-        # GFF file selection
-        if not args.noannotation and not args.gff:
-            logger.info("\n>>> Please select GFF annotation file <<<")
-            try:
-                args.gff = FileIO.select_file(
-                    "Select GFF annotation file", 
-                    [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3"), ("Compressed GFF Files", "*.gff.gz"), ("All Files", "*.*")]
-                )
-            except FileSelectionError as e:
-                error_msg = f"GFF file selection failed: {str(e)}"
-                logger.error(error_msg)
-                return False
+            # GFF file selection
+            if not args.noannotation and not args.gff:
+                logger.info("\n>>> Please select GFF annotation file <<<")
+                try:
+                    args.gff = FileIO.select_file(
+                        "Select GFF annotation file", 
+                        [
+                            ("GFF Files", "*.gff"),
+                            ("GFF3 Files", "*.gff3"), 
+                            ("Compressed GFF Files", "*.gff.gz"),
+                            ("Compressed GFF3 Files", "*.gff3.gz"),
+                            ("All Files", "*.*")
+                        ]
+                    )
+                except FileSelectionError as e:
+                    error_msg = f"GFF file selection failed: {str(e)}"
+                    logger.error(error_msg)
+                    return False
         elif args.noannotation:
             logger.info("\nSkipping GFF annotation file selection")
             args.gff = None

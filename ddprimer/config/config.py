@@ -85,19 +85,13 @@ class Config:
     SEQUENCE_MIN_GC = 50.0                    # for amplicon
     SEQUENCE_MAX_GC = 60.0                    # for amplicon
 
-
     #############################################################################
-    #                           VCF/SNP Processing Parameters
+    #                           VCF/SNP Processing Parameters  
     #############################################################################
-    
-    # Core variant processing settings
     VCF_ALLELE_FREQUENCY_THRESHOLD = None    # Minimum AF to mask (e.g., 0.05 for 5%), None = substitute all
     VCF_QUALITY_THRESHOLD = None             # Minimum QUAL score (e.g., 30.0), None = no filtering
     VCF_FLANKING_MASK_SIZE = 0               # Bases to mask around variants (0 = just the variant)
     VCF_USE_SOFT_MASKING = False             # Use lowercase instead of 'N' for masking
-    
-    TEMP_DIR = None                          # Temp directory (None = auto-generate)
-    VCF_KEEP_NORMALIZED = True               # Keep normalized files for debugging
     
     #############################################################################
     #                           ViennaRNA Calculation Settings
@@ -787,45 +781,6 @@ class Config:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
-
-    @classmethod
-    def validate_vcf_dependencies(cls) -> bool:
-        """Validate bcftools is available."""
-        try:
-            import subprocess
-            result = subprocess.run(['bcftools', '--version'], 
-                                  capture_output=True, text=True)
-            if result.returncode != 0:
-                raise ConfigError("bcftools not working properly")
-            logger.debug(f"Found bcftools: {result.stdout.split()[0]}")
-            return True
-        except FileNotFoundError:
-            raise ConfigError(
-                "bcftools not found. Install with:\n"
-                "  Ubuntu/Debian: sudo apt-get install bcftools\n"
-                "  macOS: brew install bcftools\n"
-                "  Conda: conda install -c bioconda bcftools"
-            )
-    
-    @classmethod
-    def get_temp_dir(cls) -> str:
-        """Get temp directory for VCF processing."""
-        if cls.TEMP_DIR:
-            temp_dir = cls.TEMP_DIR
-        else:
-            temp_dir = os.path.join(cls.get_user_config_dir(), "temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        return temp_dir
-    
-    @classmethod
-    def get_vcf_processing_settings(cls) -> dict:
-        """Get VCF processing settings for SNPProcessor."""
-        return {
-            'snp_allele_frequency_threshold': cls.VCF_ALLELE_FREQUENCY_THRESHOLD,
-            'snp_quality_threshold': cls.VCF_QUALITY_THRESHOLD,
-            'snp_flanking_mask_size': cls.VCF_FLANKING_MASK_SIZE,
-            'snp_use_soft_masking': cls.VCF_USE_SOFT_MASKING,
-        }
 
     @classmethod
     def _save_to_json(cls, filepath: str) -> bool:

@@ -65,17 +65,7 @@ class SNPMaskingProcessor:
             raise FileError(error_msg)
         
         self.reference_file = reference_file
-        
-        # Validate bcftools availability
-        try:
-            Config.validate_vcf_dependencies()
-            logger.debug("VCF dependencies validated successfully")
-        except Exception as e:
-            error_msg = f"VCF processing dependencies not available: {str(e)}"
-            logger.error(error_msg)
-            raise ExternalToolError(error_msg, tool_name="bcftools") from e
-        
-        logger.debug("=== END SNP PROCESSOR INITIALIZATION DEBUG ===")
+
     
     def process_sequence_with_vcf(self, sequence: str, vcf_path: str, 
                                 chromosome: str, **kwargs) -> str:

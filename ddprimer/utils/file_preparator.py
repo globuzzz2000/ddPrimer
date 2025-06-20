@@ -24,7 +24,7 @@ import shutil
 import re
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set
 from ..config import Config, FileError, ExternalToolError, SequenceProcessingError
 
 # Set up module logger
@@ -66,7 +66,8 @@ class FilePreparator:
         logger.debug("=== FILE PREPARATOR INITIALIZATION DEBUG ===")
         
         try:
-            self.temp_dir = Config.get_temp_dir()
+            self.temp_dir = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(self.temp_dir, exist_ok=True)
             self.prepared_files = {}
             
             # Validate required dependencies
@@ -141,7 +142,7 @@ class FilePreparator:
             ExternalToolError: If external tools fail
         """
         logger.debug("=== FILE PREPARATION WORKFLOW DEBUG ===")
-        logger.info("\nAnalyzing input files for compatibility and formatting...")
+        logger.info("\nAnalyzing input files for compatibility...")
         
         try:
             # Validate input files exist
@@ -981,7 +982,7 @@ class FilePreparator:
         Returns:
             True if user consents, False otherwise
         """
-        logger.info("\nTo proceed with the pipeline, corrected copies of your files will be created.")
+        logger.info("\nTo proceed with the pipeline, corrected copies of your files need to be created.")
         
         while True:
             try:
@@ -1046,8 +1047,6 @@ class FilePreparator:
         """
         Prepare corrected VCF file addressing all identified issues.
         
-        FIXED: Better error handling, validation, and proper order of operations.
-        
         Args:
             vcf_file: Original VCF file path
             issues: List of VCF-related issues to fix
@@ -1094,37 +1093,51 @@ class FilePreparator:
                 current_file = self._bgzip_vcf(current_file)
                 temp_files.append(current_file)
                 logger.debug(f"Compression complete: {current_file}")
-                
-                # Verify compression worked
-                verify_cmd = ['bcftools', 'view', '-h', current_file]
-                verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
-                if verify_result.returncode != 0:
-                    error_msg = f"bgzip verification failed after compression: {verify_result.stderr}"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bgzip")
             
-            # Step 2: Add AF field if missing
+            # Step 2: Create initial index (this helps with subsequent bcftools operations)
+            index_issues = [issue for issue in issues if issue['type'] == 'vcf_index']
+            if index_issues or needs_compression:
+                logger.debug("Step 2: Creating initial index")
+                try:
+                    self._index_vcf(current_file)
+                    logger.debug("Initial indexing complete")
+                except ExternalToolError as e:
+                    logger.warning(f"Initial indexing failed: {e}. Will retry after processing.")
+            
+            # Step 3: Add AF field if missing (now with indexed file)
             af_issues = [issue for issue in issues if issue['type'] == 'vcf_af_field']
             if af_issues:
-                logger.debug("Step 2: Adding INFO/AF field")
+                logger.debug("Step 3: Adding INFO/AF field")
                 current_file = self._add_af_field(current_file)
                 temp_files.append(current_file)
                 logger.debug(f"AF field addition complete: {current_file}")
+                
+                # Re-index after AF field addition
+                try:
+                    self._index_vcf(current_file)
+                except ExternalToolError:
+                    logger.debug("Re-indexing after AF addition failed, will continue")
             
-            # Step 3: Apply chromosome mapping if needed
+            # Step 4: Apply chromosome mapping if needed
             mapping_issues = [issue for issue in issues if issue['type'] == 'chromosome_mapping']
             if mapping_issues:
-                logger.debug("Step 3: Applying chromosome mapping")
+                logger.debug("Step 4: Applying chromosome mapping")
                 mapping = mapping_issues[0].get('mapping', {})
                 if mapping:
                     current_file = self._apply_chromosome_mapping(current_file, mapping)
                     temp_files.append(current_file)
                     logger.debug(f"Chromosome mapping complete: {current_file}")
+                    
+                    # Re-index after chromosome mapping
+                    try:
+                        self._index_vcf(current_file)
+                    except ExternalToolError:
+                        logger.debug("Re-indexing after mapping failed, will continue")
             
-            # Step 4: Normalize VCF (after chromosome mapping)
+            # Step 5: Normalize VCF (after chromosome mapping)
             norm_issues = [issue for issue in issues if issue['type'] == 'vcf_normalization']
             if norm_issues:
-                logger.debug("Step 4: Normalizing VCF")
+                logger.debug("Step 5: Normalizing VCF")
                 try:
                     current_file = self._normalize_vcf(current_file)
                     temp_files.append(current_file)
@@ -1135,12 +1148,12 @@ class FilePreparator:
                     else:
                         raise
             
-            # Step 5: Copy to final location
-            logger.debug("Step 5: Copying to final location")
+            # Step 6: Copy to final location
+            logger.debug("Step 6: Copying to final location")
             shutil.copy2(current_file, output_path)
             
-            # Step 6: Create index and verify
-            logger.debug("Step 6: Creating index")
+            # Step 7: Create final index and verify
+            logger.debug("Step 7: Creating final index")
             try:
                 self._index_vcf(output_path)
             except ExternalToolError as e:
@@ -1151,8 +1164,8 @@ class FilePreparator:
                     os.unlink(output_path)
                 raise ExternalToolError(error_msg, tool_name="tabix")
             
-            # Step 7: Final verification
-            logger.debug("Step 7: Final verification")
+            # Step 8: Final verification
+            logger.debug("Step 8: Final verification")
             if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
                 error_msg = f"Prepared VCF file is missing or empty: {output_path}"
                 logger.error(error_msg)

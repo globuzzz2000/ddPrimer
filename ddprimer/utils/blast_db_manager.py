@@ -26,7 +26,7 @@ import gzip
 import time
 import re
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple
 from ..config import Config, FileError, ExternalToolError
 
 # Set up module logger
@@ -248,7 +248,9 @@ class BlastDatabaseManager:
         # Create database using temporary directory for safety
         temp_dir = None
         try:
-            temp_dir = tempfile.mkdtemp(prefix="blastdb_")
+            centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(centralized_temp, exist_ok=True)
+            temp_dir = tempfile.mkdtemp(prefix="blastdb_", dir=centralized_temp)
             temp_fasta = os.path.join(temp_dir, os.path.basename(fasta_file))
             shutil.copy2(fasta_file, temp_fasta)
             
@@ -682,7 +684,9 @@ class BlastDatabaseManager:
                 organism_name = organism_data['name']
                 
                 # Create temporary directory for genome download
-                temp_genome_dir = tempfile.mkdtemp(prefix="ddprimer_genomes_")
+                centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
+                os.makedirs(centralized_temp, exist_ok=True)
+                temp_genome_dir = tempfile.mkdtemp(prefix="ddprimer_genomes_", dir=centralized_temp)
                 logger.debug(f"Created temporary genome directory: {temp_genome_dir}")
                 
                 try:

@@ -68,7 +68,10 @@ class BlastProcessor:
         tmp_filename = None
         try:
             # Create temporary file for query sequence
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tmp_query:
+            centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(centralized_temp, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, dir=centralized_temp) as tmp_query:
                 tmp_query.write(f">seq\n{seq}\n")
                 tmp_query.flush()
                 tmp_filename = tmp_query.name
