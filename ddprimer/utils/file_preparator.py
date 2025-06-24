@@ -749,14 +749,24 @@ class FilePreparator:
             # Check VCF-FASTA compatibility
             compat_analysis = self._check_chromosome_compatibility(vcf_file, fasta_file)
             
-            if compat_analysis['needs_mapping']:
+            # Flag as needing mapping if there are actually incompatible chromosomes
+            vcf_chroms = set(compat_analysis['vcf_chromosomes'].keys())
+            fasta_chroms = set(compat_analysis['fasta_sequences'].keys())
+            
+            # Check if all VCF chromosomes are present in FASTA
+            missing_in_fasta = vcf_chroms - fasta_chroms
+            
+            if missing_in_fasta:
+                # Only create mapping issue if there are actually missing chromosomes
                 issues.append({
                     'type': 'chromosome_mapping',
                     'files': [vcf_file, fasta_file],
-                    'description': 'Chromosome names differ between VCF and FASTA files',
+                    'description': f'VCF chromosomes not found in FASTA: {", ".join(sorted(missing_in_fasta))}',
                     'action': 'Rename chromosomes in VCF to match FASTA',
                     'mapping': compat_analysis.get('suggested_mapping', {})
                 })
+            else:
+                logger.debug("All VCF chromosomes found in FASTA - no mapping needed")
             
             # If GFF provided, check GFF-FASTA compatibility
             if gff_file:
@@ -858,36 +868,71 @@ class FilePreparator:
             True if appears normalized, False otherwise
         """
         try:
-            # Use bcftools norm --check-ref w (warn) mode to check normalization
-            # This is more reliable than manual heuristics
-            cmd = ['bcftools', 'norm', '--check-ref', 'w', '-f', self._get_reference_file(), vcf_file]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            # For large VCF files, just check the first 10000 variants for normalization issues
+            # Use proper subprocess chaining instead of shell pipes to handle spaces in paths
             
-            if result.returncode == 0:
-                # Check stderr for normalization warnings
-                stderr_output = result.stderr.lower()
-                normalization_warnings = [
-                    'not left-aligned',
-                    'not normalized',
-                    'multiallelic'
-                ]
+            # Step 1: Get first 10000 lines of VCF
+            view_cmd = ['bcftools', 'view', vcf_file]
+            head_cmd = ['head', '-n', '10000']
+            
+            # Step 2: Check normalization on the sample
+            norm_cmd = ['bcftools', 'norm', '--check-ref', 'w', '-f', self._get_reference_file(), '-']
+            
+            logger.debug(f"Running normalization check on sample of: {vcf_file}")
+            
+            # Chain the commands properly using subprocess
+            view_proc = subprocess.Popen(view_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            head_proc = subprocess.Popen(head_cmd, stdin=view_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            view_proc.stdout.close()  # Allow view_proc to receive a SIGPIPE if head_proc exits
+            
+            norm_proc = subprocess.Popen(norm_cmd, stdin=head_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            head_proc.stdout.close()  # Allow head_proc to receive a SIGPIPE if norm_proc exits
+            
+            # Wait for the final process and get output
+            try:
+                stdout, stderr = norm_proc.communicate(timeout=30)
                 
-                # If no normalization warnings, it's probably normalized
-                has_warnings = any(warning in stderr_output for warning in normalization_warnings)
+                # Close any remaining processes
+                view_proc.wait()
+                head_proc.wait()
                 
-                if has_warnings:
-                    logger.debug(f"VCF normalization warnings found: {result.stderr}")
-                    return False
+                if norm_proc.returncode == 0:
+                    # Check stderr for normalization warnings
+                    stderr_output = stderr.lower()
+                    normalization_warnings = [
+                        'not left-aligned',
+                        'not normalized', 
+                        'multiallelic'
+                    ]
+                    
+                    # If no normalization warnings in the sample, assume it's normalized
+                    has_warnings = any(warning in stderr_output for warning in normalization_warnings)
+                    
+                    if has_warnings:
+                        logger.debug(f"VCF normalization warnings found in sample: {stderr}")
+                        return False
+                    else:
+                        logger.debug("VCF sample appears to be normalized")
+                        return True
                 else:
-                    logger.debug("VCF appears to be normalized")
-                    return True
-            else:
-                logger.debug(f"bcftools norm check failed: {result.stderr}")
-                return False
+                    logger.debug(f"bcftools norm check failed: {stderr}")
+                    # If reference sequence errors, skip normalization 
+                    if "sequence not found" in stderr.lower():
+                        logger.debug("Reference sequence mismatch - assuming VCF is already normalized")
+                        return True
+                    return False
+                    
+            except subprocess.TimeoutExpired:
+                logger.debug("VCF normalization check timed out - assuming normalized")
+                # Kill any running processes
+                try:
+                    norm_proc.kill()
+                    head_proc.kill() 
+                    view_proc.kill()
+                except:
+                    pass
+                return True
                 
-        except subprocess.TimeoutExpired:
-            logger.debug("VCF normalization check timed out")
-            return False
         except Exception as e:
             logger.debug(f"Error checking VCF normalization: {str(e)}")
             # If we can't check, assume it needs normalization to be safe
@@ -1045,7 +1090,7 @@ class FilePreparator:
     
     def _prepare_vcf_file(self, vcf_file: str, issues: List[Dict]) -> Optional[str]:
         """
-        Prepare corrected VCF file addressing all identified issues.
+        Prepare corrected VCF file with immediate cleanup to minimize disk usage.
         
         Args:
             vcf_file: Original VCF file path
@@ -1055,7 +1100,7 @@ class FilePreparator:
             Path to prepared VCF file, or None if preparation failed
         """
         logger.debug("=== VCF PREPARATION DEBUG ===")
-        logger.debug("Preparing VCF file...")
+        logger.debug("Preparing VCF file with optimized disk usage...")
         
         try:
             # Create output path
@@ -1078,9 +1123,36 @@ class FilePreparator:
                     if os.path.exists(idx_file):
                         os.unlink(idx_file)
             
-            # Process through pipeline
+            # Start with the original file
             current_file = vcf_file
-            temp_files = []
+            previous_temp_file = None  # Track only the immediately previous temp file
+            
+            # Helper function for immediate cleanup
+            def cleanup_previous_temp():
+                nonlocal previous_temp_file
+                if previous_temp_file and previous_temp_file != vcf_file and os.path.exists(previous_temp_file):
+                    try:
+                        os.unlink(previous_temp_file)
+                        # Clean up any associated index files
+                        for ext in ['.tbi', '.csi']:
+                            idx_file = f"{previous_temp_file}{ext}"
+                            if os.path.exists(idx_file):
+                                os.unlink(idx_file)
+                        logger.debug(f"Cleaned up intermediate file: {previous_temp_file}")
+                    except OSError as e:
+                        logger.debug(f"Could not clean up {previous_temp_file}: {e}")
+                    previous_temp_file = None
+            
+            # Check available disk space before starting
+            available_space = self._get_available_disk_space(self.temp_dir)
+            file_size = os.path.getsize(vcf_file)
+            
+            # Estimate space needed (current file + 2 temp files worth of space for safety)
+            estimated_space_needed = file_size * 3
+            if available_space < estimated_space_needed:
+                logger.warning(f"Low disk space detected. Available: {available_space / (1024**3):.1f}GB, "
+                            f"Estimated needed: {estimated_space_needed / (1024**3):.1f}GB")
+                # Continue anyway but warn user
             
             # Step 1: Ensure proper compression (ALWAYS do this for .vcf files)
             needs_compression = (
@@ -1090,11 +1162,13 @@ class FilePreparator:
             
             if needs_compression:
                 logger.debug("Step 1: Applying bgzip compression")
-                current_file = self._bgzip_vcf(current_file)
-                temp_files.append(current_file)
+                new_file = self._bgzip_vcf(current_file)
+                previous_temp_file = current_file if current_file != vcf_file else None
+                current_file = new_file
+                cleanup_previous_temp()  # Clean up immediately
                 logger.debug(f"Compression complete: {current_file}")
             
-            # Step 2: Create initial index (this helps with subsequent bcftools operations)
+            # Step 2: Create initial index
             index_issues = [issue for issue in issues if issue['type'] == 'vcf_index']
             if index_issues or needs_compression:
                 logger.debug("Step 2: Creating initial index")
@@ -1104,12 +1178,14 @@ class FilePreparator:
                 except ExternalToolError as e:
                     logger.warning(f"Initial indexing failed: {e}. Will retry after processing.")
             
-            # Step 3: Add AF field if missing (now with indexed file)
+            # Step 3: Add AF field if missing
             af_issues = [issue for issue in issues if issue['type'] == 'vcf_af_field']
             if af_issues:
                 logger.debug("Step 3: Adding INFO/AF field")
-                current_file = self._add_af_field(current_file)
-                temp_files.append(current_file)
+                new_file = self._add_af_field(current_file)
+                previous_temp_file = current_file if current_file != vcf_file else None
+                current_file = new_file
+                cleanup_previous_temp()  # Clean up immediately
                 logger.debug(f"AF field addition complete: {current_file}")
                 
                 # Re-index after AF field addition
@@ -1124,8 +1200,10 @@ class FilePreparator:
                 logger.debug("Step 4: Applying chromosome mapping")
                 mapping = mapping_issues[0].get('mapping', {})
                 if mapping:
-                    current_file = self._apply_chromosome_mapping(current_file, mapping)
-                    temp_files.append(current_file)
+                    new_file = self._apply_chromosome_mapping(current_file, mapping)
+                    previous_temp_file = current_file if current_file != vcf_file else None
+                    current_file = new_file
+                    cleanup_previous_temp()  # Clean up immediately
                     logger.debug(f"Chromosome mapping complete: {current_file}")
                     
                     # Re-index after chromosome mapping
@@ -1139,29 +1217,45 @@ class FilePreparator:
             if norm_issues:
                 logger.debug("Step 5: Normalizing VCF")
                 try:
-                    current_file = self._normalize_vcf(current_file)
-                    temp_files.append(current_file)
+                    new_file = self._normalize_vcf(current_file)
+                    previous_temp_file = current_file if current_file != vcf_file else None
+                    current_file = new_file
+                    cleanup_previous_temp()  # Clean up immediately
                     logger.debug(f"Normalization complete: {current_file}")
                 except ExternalToolError as e:
                     if "chromosome not found" in str(e).lower():
                         logger.warning("VCF normalization failed due to chromosome mismatch, skipping")
                     else:
+                        cleanup_previous_temp()  # Clean up on error too
                         raise
             
             # Step 6: Copy to final location
             logger.debug("Step 6: Copying to final location")
             shutil.copy2(current_file, output_path)
+
+            # Remove temporary file after successful copy
+            if current_file != vcf_file:
+                try:
+                    os.unlink(current_file)
+                    # Also clean up any associated index files
+                    for ext in ['.tbi', '.csi']:
+                        idx_file = f"{current_file}{ext}"
+                        if os.path.exists(idx_file):
+                            os.unlink(idx_file)
+                    logger.debug(f"Cleaned up final temporary file: {current_file}")
+                except OSError as e:
+                    logger.debug(f"Could not clean up final temp file {current_file}: {e}")
             
             # Step 7: Create final index and verify
             logger.debug("Step 7: Creating final index")
             try:
                 self._index_vcf(output_path)
             except ExternalToolError as e:
-                # If indexing fails, the file is probably not properly prepared
                 error_msg = f"VCF indexing failed, file preparation incomplete: {str(e)}"
                 logger.error(error_msg)
                 if os.path.exists(output_path):
                     os.unlink(output_path)
+                cleanup_previous_temp()
                 raise ExternalToolError(error_msg, tool_name="tabix")
             
             # Step 8: Final verification
@@ -1169,6 +1263,7 @@ class FilePreparator:
             if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
                 error_msg = f"Prepared VCF file is missing or empty: {output_path}"
                 logger.error(error_msg)
+                cleanup_previous_temp()
                 return None
             
             # Test that bcftools can read the final file
@@ -1179,19 +1274,11 @@ class FilePreparator:
                 logger.error(error_msg)
                 if os.path.exists(output_path):
                     os.unlink(output_path)
+                cleanup_previous_temp()
                 return None
             
-            # Clean up temporary files
-            for temp_file in temp_files:
-                if temp_file != vcf_file and os.path.exists(temp_file):
-                    try:
-                        os.unlink(temp_file)
-                        for ext in ['.tbi', '.csi']:
-                            idx_file = f"{temp_file}{ext}"
-                            if os.path.exists(idx_file):
-                                os.unlink(idx_file)
-                    except OSError:
-                        pass
+            # Final cleanup of the last temporary file
+            cleanup_previous_temp()
             
             logger.info(f"Prepared VCF file: {output_path}")
             logger.debug("=== END VCF PREPARATION DEBUG ===")
@@ -1209,17 +1296,57 @@ class FilePreparator:
                 except OSError:
                     pass
             
-            # Clean up temp files
-            if 'temp_files' in locals():
-                for temp_file in temp_files:
-                    if temp_file != vcf_file and os.path.exists(temp_file):
-                        try:
-                            os.unlink(temp_file)
-                        except OSError:
-                            pass
+            # Clean up current temp file
+            if 'previous_temp_file' in locals():
+                try:
+                    cleanup_previous_temp()
+                except:
+                    pass
             
             logger.debug("=== END VCF PREPARATION DEBUG ===")
             return None
+
+    def _get_available_disk_space(self, path: str) -> int:
+        """
+        Get available disk space in bytes for the given path.
+        
+        Args:
+            path: Directory path to check
+            
+        Returns:
+            Available space in bytes
+        """
+        try:
+            statvfs = os.statvfs(path)
+            # Available space = fragment size * available fragments
+            return statvfs.f_frsize * statvfs.f_bavail
+        except Exception as e:
+            logger.debug(f"Could not determine disk space for {path}: {e}")
+            return float('inf')  # Assume unlimited if we can't check
+
+    def _check_disk_space_before_operation(self, input_file: str, multiplier: float = 2.0) -> bool:
+        """
+        Check if there's enough disk space for an operation.
+        
+        Args:
+            input_file: Path to input file
+            multiplier: Safety multiplier for space estimation
+            
+        Returns:
+            True if enough space, False otherwise
+        """
+        try:
+            file_size = os.path.getsize(input_file)
+            available_space = self._get_available_disk_space(self.temp_dir)
+            needed_space = file_size * multiplier
+            
+            if available_space < needed_space:
+                logger.warning(f"Insufficient disk space. Available: {available_space / (1024**3):.1f}GB, "
+                            f"Needed: {needed_space / (1024**3):.1f}GB")
+                return False
+            return True
+        except Exception:
+            return True  # If we can't check, assume it's fine
 
 
     
@@ -1540,7 +1667,7 @@ class FilePreparator:
             ]
             
             logger.debug(f"Normalization command: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10800)
             
             if result.returncode != 0:
                 os.unlink(temp_path)

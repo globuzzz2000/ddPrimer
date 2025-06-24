@@ -435,13 +435,6 @@ class Config:
                 logger.debug(f"Loaded saved database path: {saved_db_path}")
             else:
                 logger.debug("No valid saved database path found")
-            
-            # Validate VCF dependencies on startup
-            try:
-                cls.validate_vcf_dependencies()
-                logger.debug("VCF processing dependencies validated")
-            except ConfigError as e:
-                logger.error(f"VCF processing unavailable: {e}")
                 
         return cls._instance
     

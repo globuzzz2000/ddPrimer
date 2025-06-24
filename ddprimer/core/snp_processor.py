@@ -243,8 +243,9 @@ class SNPMaskingProcessor:
                 'af': af_value
             }
             
-            logger.debug(f"Parsed variant: {variant}")
-            return variant
+            # Sample 1:10000 variants for debugging
+            if hash(f"{chrom}:{pos}:{ref}:{alt}") % 10000 == 0:
+                logger.debug(f"Parsed variant: {variant}")
             
         except (ValueError, IndexError) as e:
             error_msg = f"Error parsing variant line '{line}': {str(e)}"
@@ -345,7 +346,7 @@ class SNPMaskingProcessor:
                 
                 # Sample logging - only log every 100th variant or first/last few
                 if (logger.isEnabledFor(logging.DEBUG) and 
-                    (i % 100 == 0 or i < 5 or i >= len(sorted_variants) - 5)):
+                    (i % 10000 == 0 or i < 5 or i >= len(sorted_variants) - 5)):
                     logger.debug(f"Applied variant {i+1}/{len(sorted_variants)} at position {variant['pos']} ({action})")
                 
             except Exception as e:

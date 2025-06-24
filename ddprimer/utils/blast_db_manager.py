@@ -23,7 +23,6 @@ import shutil
 import logging
 import urllib.request
 import gzip
-import time
 import re
 from pathlib import Path
 from typing import Optional, Dict, Tuple
@@ -100,14 +99,6 @@ class BlastDatabaseManager:
         }
     }
     
-    def __init__(self):
-        """Initialize the BLAST database manager."""
-        self.logger = logger
-        
-    #############################################################################
-    #                           PUBLIC API METHODS
-    #############################################################################
-    
     def verify_database(self) -> bool:
         """
         Verify that a valid BLAST database exists and can be accessed.
@@ -127,7 +118,6 @@ class BlastDatabaseManager:
         db_path = Config.DB_PATH
         logger.debug(f"Checking database path: {db_path}")
         
-        # If no database path is set, verification fails
         if db_path is None:
             logger.info("No BLAST database configured.")
             return False
@@ -360,7 +350,7 @@ class BlastDatabaseManager:
         search_locations = [
             "/usr/local/share/ddprimer/blast_db",
             os.path.join(Path.home(), ".ddprimer", "blast_db"),
-            "/Library/Application Support/Blast_DBs"  # macOS location
+            "/Library/Application Support/Blast_DBs"
         ]
         
         for location in search_locations:
@@ -415,10 +405,6 @@ class BlastDatabaseManager:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return False
-    
-    #############################################################################
-    #                           PRIVATE HELPER METHODS
-    #############################################################################
     
     def _check_database_files(self, db_path: str) -> bool:
         """Check if required BLAST database files exist."""
@@ -509,7 +495,7 @@ class BlastDatabaseManager:
     
     def _get_default_db_directory(self) -> str:
         """Get the default directory for storing BLAST databases."""
-        if os.geteuid() == 0:  # Running as root
+        if os.geteuid() == 0:
             return "/usr/local/share/ddprimer/blast_db"
         else:
             return os.path.join(Path.home(), ".ddprimer", "blast_db")
@@ -537,7 +523,6 @@ class BlastDatabaseManager:
             return False
         
         if organism_key == 'existing_db':
-            # User selected existing database
             return self.set_active_database(fasta_file)
         
         try:
@@ -554,7 +539,6 @@ class BlastDatabaseManager:
             
             # Set as active database
             if self.set_active_database(db_path):
-                # Clean up genome file if from model organism
                 if organism_key is not None:
                     self._cleanup_genome_file(fasta_file)
                 return True
@@ -574,7 +558,10 @@ class BlastDatabaseManager:
         try:
             from ..utils import FileIO
             logger.info("\n>>> Please select a FASTA file for BLAST database creation <<<")
-            fasta_file = FileIO.select_fasta_file("Select FASTA file for BLAST database creation")
+            fasta_file = FileIO.select_file(
+                "Select FASTA file for BLAST database creation",
+                [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna")]
+            )
             
             if fasta_file is None:
                 logger.info("File selection canceled.")
@@ -627,20 +614,21 @@ class BlastDatabaseManager:
             return False
     
     def _handle_custom_file_selection(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-            """Handle custom file selection."""
-            try:
-                from ..utils import FileIO
-                logger.info("\n>>> Please select a FASTA file <<<")
-                fasta_file = FileIO.select_fasta_file("Select FASTA file")
-                if fasta_file:
-                    # Generate a database name from the filename
-                    db_name = os.path.splitext(os.path.basename(fasta_file))[0]
-                    return None, "Custom file", fasta_file
-                else:
-                    return None, None, None
-            except Exception as e:
-                logger.error(f"Error selecting custom file: {str(e)}")
+        """Handle custom file selection."""
+        try:
+            from ..utils import FileIO
+            logger.info("\n>>> Please select a FASTA file <<<")
+            fasta_file = FileIO.select_file(
+                "Select FASTA file",
+                [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna")]
+            )
+            if fasta_file:
+                return None, "Custom file", fasta_file
+            else:
                 return None, None, None
+        except Exception as e:
+            logger.error(f"Error selecting custom file: {str(e)}")
+            return None, None, None
     
     def _handle_existing_database_selection(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """Handle existing database selection."""
@@ -677,31 +665,31 @@ class BlastDatabaseManager:
             return None, None, None
     
     def _handle_model_organism_selection(self, choice: int) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-            """Handle model organism selection and download."""
+        """Handle model organism selection and download."""
+        try:
+            organism_key = list(self.MODEL_ORGANISMS.keys())[choice - 1]
+            organism_data = self.MODEL_ORGANISMS[organism_key]
+            organism_name = organism_data['name']
+            
+            # Create temporary directory for genome download
+            centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(centralized_temp, exist_ok=True)
+            temp_genome_dir = tempfile.mkdtemp(prefix="ddprimer_genomes_", dir=centralized_temp)
+            logger.debug(f"Created temporary genome directory: {temp_genome_dir}")
+            
             try:
-                organism_key = list(self.MODEL_ORGANISMS.keys())[choice - 1]
-                organism_data = self.MODEL_ORGANISMS[organism_key]
-                organism_name = organism_data['name']
-                
-                # Create temporary directory for genome download
-                centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
-                os.makedirs(centralized_temp, exist_ok=True)
-                temp_genome_dir = tempfile.mkdtemp(prefix="ddprimer_genomes_", dir=centralized_temp)
-                logger.debug(f"Created temporary genome directory: {temp_genome_dir}")
-                
-                try:
-                    # Fetch the genome
-                    fasta_file = self._fetch_model_organism(organism_key, temp_genome_dir)
-                    return organism_key, organism_name, fasta_file
-                except Exception as e:
-                    # Clean up temp directory on error
-                    if os.path.exists(temp_genome_dir):
-                        shutil.rmtree(temp_genome_dir)
-                    raise e
-                
+                # Fetch the genome
+                fasta_file = self._fetch_model_organism(organism_key, temp_genome_dir)
+                return organism_key, organism_name, fasta_file
             except Exception as e:
-                logger.error(f"Error fetching model organism: {str(e)}")
-                return None, None, None
+                # Clean up temp directory on error
+                if os.path.exists(temp_genome_dir):
+                    shutil.rmtree(temp_genome_dir)
+                raise e
+            
+        except Exception as e:
+            logger.error(f"Error fetching model organism: {str(e)}")
+            return None, None, None
     
     def _fetch_model_organism(self, organism_key: str, output_dir: str) -> str:
         """Fetch genome file for a model organism."""
@@ -775,36 +763,35 @@ class BlastDatabaseManager:
             raise FileError(error_msg) from e
     
     def _cleanup_genome_file(self, file_path: str) -> None:
-            """Clean up downloaded genome files and their temporary directory."""
-            if not file_path:
-                return
-                
-            try:
-                # Get the directory containing the genome file
-                genome_dir = os.path.dirname(file_path)
-                
-                # If it's a temporary directory (contains ddprimer_genomes_), remove the whole directory
-                if "ddprimer_genomes_" in genome_dir:
-                    logger.debug(f"Cleaning up temporary genome directory: {genome_dir}")
-                    if os.path.exists(genome_dir):
-                        shutil.rmtree(genome_dir)
-                else:
-                    # Fallback: just remove the specific file (for backwards compatibility)
-                    if os.path.exists(file_path):
-                        logger.debug(f"Cleaning up genome file: {file_path}")
-                        os.remove(file_path)
+        """Clean up downloaded genome files and their temporary directory."""
+        if not file_path:
+            return
+            
+        try:
+            # Get the directory containing the genome file
+            genome_dir = os.path.dirname(file_path)
+            
+            # If it's a temporary directory (contains ddprimer_genomes_), remove the whole directory
+            if "ddprimer_genomes_" in genome_dir:
+                logger.debug(f"Cleaning up temporary genome directory: {genome_dir}")
+                if os.path.exists(genome_dir):
+                    shutil.rmtree(genome_dir)
+            else:
+                # Fallback: just remove the specific file (for backwards compatibility)
+                if os.path.exists(file_path):
+                    logger.debug(f"Cleaning up genome file: {file_path}")
+                    os.remove(file_path)
+                    
+                    # Also remove .gz file if this was decompressed
+                    if not file_path.endswith('.gz'):
+                        gz_file = f"{file_path}.gz"
+                        if os.path.exists(gz_file):
+                            os.remove(gz_file)
                         
-                        # Also remove .gz file if this was decompressed
-                        if not file_path.endswith('.gz'):
-                            gz_file = f"{file_path}.gz"
-                            if os.path.exists(gz_file):
-                                os.remove(gz_file)
-                            
-            except OSError as e:
-                logger.warning(f"Error cleaning up genome files: {str(e)}")
+        except OSError as e:
+            logger.warning(f"Error cleaning up genome files: {str(e)}")
 
 
-# Convenience functions for backward compatibility and ease of use
 def verify_blast_database() -> bool:
     """
     Verify that a valid BLAST database exists and can be accessed.

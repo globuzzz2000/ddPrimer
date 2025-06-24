@@ -371,7 +371,7 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         raise LoggingConfigError(error_msg) from e
 
 
-def _cleanup_old_logs(files_to_keep: int = 30):
+def _cleanup_old_logs(files_to_keep: int = 10):
     """
     Clean up old log files.
     

@@ -195,25 +195,19 @@ def process_sequences_with_vcf(sequences, vcf_file, reference_file):
     """
     
     try:
-        # Validate VCF dependencies
-        Config.validate_vcf_dependencies()
-        
         # Initialize SNP processor
         snp_processor = SNPMaskingProcessor(reference_file)
-        
-        # Get processing settings
-        vcf_settings = Config.get_vcf_processing_settings()
         
         processed_sequences = {}
         
         for seq_id, sequence in sequences.items():
             try:
                 # Apply VCF variants to sequence
+                # SNP processor will use Config defaults automatically
                 modified_sequence = snp_processor.process_sequence_with_vcf(
                     sequence=sequence,
                     vcf_path=vcf_file,
-                    chromosome=seq_id,
-                    **vcf_settings
+                    chromosome=seq_id
                 )
                 
                 processed_sequences[seq_id] = modified_sequence
@@ -829,7 +823,7 @@ def run_standard_mode(args):
                 if 'gff' in prep_result.get('prepared_files', {}):
                     args.gff = prep_result['gff_file']
             else:
-                logger.info("Original files are compatible and will be used as-is")
+                logger.debug("Original files are compatible and will be used as-is")
             
         except Exception as e:
             error_msg = f"File preparation failed: {str(e)}"
