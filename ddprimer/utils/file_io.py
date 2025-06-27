@@ -579,7 +579,6 @@ class FileIO:
             logger.error(error_msg)
             raise FileFormatError(error_msg)
     
-    @staticmethod
     def _prepare_output_dataframe(df, mode='standard'):
         """
         Prepare DataFrame for output by formatting columns and adding derived fields.
@@ -600,13 +599,10 @@ class FileIO:
             elif 'Sequence (A)' in output_df.columns:  # Use final column name
                 output_df['Length'] = output_df['Sequence (A)'].apply(lambda x: len(str(x)) if pd.notna(x) else 0)
 
-        # 2. LOCATION: Combine 'Start' and 'End' -> 'Location'
-        if 'Start' in output_df.columns and 'End' in output_df.columns:
-            output_df['Location'] = output_df.apply(
-                lambda row: f"{row['Start']}-{row['End']}" 
-                if pd.notna(row['Start']) and pd.notna(row['End']) 
-                else "", 
-                axis=1
+        # 2. LOCATION: Use only 'Start' coordinate
+        if 'Start' in output_df.columns:
+            output_df['Location'] = output_df['Start'].apply(
+                lambda start: str(int(start)) if pd.notna(start) else ""
             )
         
         return output_df
