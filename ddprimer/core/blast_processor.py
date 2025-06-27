@@ -120,7 +120,7 @@ class BlastProcessor:
                 logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
                 return None
             
-            logger.debug(f"BLAST specificity analysis complete: {len(df)}/{initial_count} primers passed")
+            logger.info(f"Retained {len(df)} primer pairs after BLAST specificity filtering.")
             logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
             
             return df

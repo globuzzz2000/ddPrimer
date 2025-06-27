@@ -549,45 +549,73 @@ class FileIO:
         return sequences
     
     @staticmethod
-    def save_fasta(sequences, filepath):
+    def load_sequences_from_table(file_path):
         """
-        Save sequences to a FASTA file.
+        Load sequences from CSV or Excel file with flexible column detection.
+        
+        This method provides compatibility with the existing FileIO interface
+        while using the enhanced DirectModeProcessor for flexible column detection.
         
         Args:
-            sequences: Dictionary of sequence ID to sequence
-            filepath: Path to save the FASTA file
+            file_path: Path to CSV or Excel file containing sequences
+            
+        Returns:
+            Dictionary mapping sequence IDs to sequences
             
         Raises:
-            FileFormatError: If there's an error writing the FASTA file
+            FileError: If file cannot be accessed
+            FileFormatError: If file format is invalid or columns cannot be detected
+            SequenceProcessingError: If sequences are invalid
         """
-        if not sequences:
-            logger.warning("No sequences provided to save_fasta")
-            
         try:
-            with open(filepath, 'w') as f:
-                for seq_id, sequence in sequences.items():
-                    if not seq_id or not sequence:
-                        logger.warning(f"Skipping invalid sequence: id='{seq_id}', seq_len={len(sequence) if sequence else 0}")
-                        continue
-                        
-                    f.write(f">{seq_id}\n")
-                    # Write sequence in chunks of 60 characters for readability
-                    for i in range(0, len(sequence), 60):
-                        f.write(f"{sequence[i:i+60]}\n")
-                        
-        except (OSError, IOError) as e:
-            error_msg = f"Error writing FASTA file {filepath}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(error_msg) from e
-        except Exception as e:
-            error_msg = f"Unexpected error writing FASTA file {filepath}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(error_msg) from e
+            # Import DirectModeProcessor to avoid circular imports
+            from ..utils.direct_mode import DirectModeProcessor
             
-        logger.debug(f"Successfully saved FASTA file: {filepath}")
+            # Delegate to the DirectModeProcessor for enhanced functionality
+            return DirectModeProcessor.load_sequences_from_table(file_path)
+        except ImportError:
+            # Fallback for cases where direct_mode is not available
+            error_msg = f"Direct mode functionality not available. Cannot load sequences from table: {file_path}"
+            logger.error(error_msg)
+            raise FileFormatError(error_msg)
     
+    @staticmethod
+    def _prepare_output_dataframe(df, mode='standard'):
+        """
+        Prepare DataFrame for output by formatting columns and adding derived fields.
+        
+        Args:
+            df: Input DataFrame with primer records
+            mode: Pipeline mode ('standard' or 'direct')
+            
+        Returns:
+            DataFrame with properly formatted columns for output
+        """
+        # Create a copy to avoid modifying the original
+        output_df = df.copy()
+        
+        # 1. AMPLICON LENGTH: Map 'Amplicon Length' -> 'Length'
+        if 'Amplicon Length' in output_df.columns:
+            output_df['Length'] = output_df['Amplicon Length']
+        elif 'Amplicon' in output_df.columns:
+            # Fallback: calculate length from amplicon sequence if needed
+            output_df['Length'] = output_df['Amplicon'].apply(lambda x: len(str(x)) if pd.notna(x) else 0)
+        
+        # 2. CHROMOSOME: Map 'Chr' -> 'Chromosome'
+        if 'Chr' in output_df.columns:
+            output_df['Chromosome'] = output_df['Chr']
+        
+        # 3. LOCATION: Combine 'Start' and 'End' -> 'Location'
+        if 'Start' in output_df.columns and 'End' in output_df.columns:
+            output_df['Location'] = output_df.apply(
+                lambda row: f"{row['Start']}-{row['End']}" 
+                if pd.notna(row['Start']) and pd.notna(row['End']) 
+                else "", 
+                axis=1
+            )
+        
+        return output_df
+
     @staticmethod
     def format_excel(df, output_file):
         """
@@ -730,105 +758,6 @@ class FileIO:
             raise FileFormatError(error_msg) from e
 
     @staticmethod
-    def load_sequences_from_table(file_path):
-        """
-        Load sequences from a CSV or Excel file with improved column detection.
-        
-        Args:
-            file_path: Path to CSV or Excel file
-            
-        Returns:
-            Dictionary of sequence ID to sequence
-            
-        Raises:
-            FileError: If the file doesn't exist
-            FileFormatError: If there's an error parsing the file
-        """
-        if not os.path.exists(file_path):
-            error_msg = f"Table file not found: {file_path}"
-            logger.error(error_msg)
-            raise FileError(error_msg)
-            
-        try:
-            # Use SequenceAnalyzer to analyze the file structure
-            analysis = SequenceAnalyzer.analyze_file(file_path)
-            
-            if "error" in analysis:
-                error_msg = f"Error analyzing file: {analysis['error']}"
-                logger.error(error_msg)
-                raise FileFormatError(error_msg)
-                
-            # Get recommended columns from analysis
-            name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
-            
-            # Load with pandas
-            try:
-                if file_path.endswith('.csv'):
-                    df = pd.read_csv(file_path)
-                elif file_path.endswith(('.xlsx', '.xls')):
-                    df = pd.read_excel(file_path)
-                else:
-                    error_msg = f"Unsupported file format: {file_path}. Must be CSV or Excel."
-                    logger.error(error_msg)
-                    raise FileFormatError(error_msg)
-            except Exception as e:
-                error_msg = f"Error reading file {file_path}: {str(e)}"
-                logger.error(error_msg)
-                logger.debug(f"Error details: {str(e)}", exc_info=True)
-                raise FileFormatError(error_msg) from e
-            
-            # Remove empty columns and rows
-            df = df.dropna(axis=1, how='all')
-            df = df.dropna(axis=0, how='all')
-            
-            sequences = {}
-            
-            if not seq_col:
-                error_msg = "Could not identify a sequence column in the file"
-                logger.error(error_msg)
-                raise FileFormatError(error_msg)
-                
-            # Generate IDs if no name column
-            if not name_col:
-                for idx, row in df.iterrows():
-                    sequence = str(row[seq_col]).strip().upper()
-                    
-                    if pd.isna(sequence) or not sequence:
-                        continue
-                    
-                    seq_id = f"Seq_{idx+1}"
-                    sequences[seq_id] = sequence
-            else:
-                # Use name and sequence columns
-                for idx, row in df.iterrows():
-                    seq_id = str(row[name_col]).strip()
-                    sequence = str(row[seq_col]).strip().upper()
-                    
-                    if pd.isna(seq_id) or pd.isna(sequence) or not seq_id or not sequence:
-                        continue
-                    
-                    # Handle duplicate IDs
-                    original_seq_id = seq_id
-                    if seq_id in sequences:
-                        suffix = 1
-                        while f"{seq_id}_{suffix}" in sequences:
-                            suffix += 1
-                        seq_id = f"{seq_id}_{suffix}"
-                    
-                    sequences[seq_id] = sequence
-            
-            logger.debug(f"Successfully loaded {len(sequences)} sequences from table file")
-            return sequences
-            
-        except (FileFormatError, FileError):
-            raise
-        except Exception as e:
-            error_msg = f"Error parsing sequence table {file_path}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileFormatError(error_msg) from e
-
-    @staticmethod
     def save_results(df, output_dir, input_file, mode='standard'):
         """
         Save results to an Excel file with correct naming based on input files and mode.
@@ -859,10 +788,11 @@ class FileIO:
         root, _ = os.path.splitext(basename)
         output_filename = f"Primers_{root}.xlsx"
         output_file = os.path.join(output_dir, output_filename)
-        
+        df = FileIO._prepare_output_dataframe(df, mode)
+
         # Define columns based on mode
         if mode == 'direct':
-            # Direct mode excludes location columns (NOT YET IMPLEMENTED)
+            # Direct mode excludes location columns
             columns = [
                 "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
                 "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",

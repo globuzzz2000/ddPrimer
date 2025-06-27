@@ -1,568 +1,367 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Direct mode processor for ddPrimer pipeline.
+Direct Mode Implementation for ddPrimer Pipeline
+
+Handles target-sequence based primer design workflow using CSV/Excel input.
+This mode bypasses SNP masking and annotation processing, directly proceeding
+from sequence input to restriction cutting and primer design.
 
 Contains functionality for:
-1. Target sequence-based primer design workflow
-2. CSV/Excel input file processing with sequence analysis
-3. Optional VCF variant masking for direct sequences
-4. Simplified fragment preparation bypassing restriction sites
-5. Integration with existing core processors
+1. Flexible sequence table loading with automatic column detection
+2. Sequence validation and preprocessing
+3. Integration with existing pipeline components
+4. Workflow orchestration for direct mode execution
 
-This module provides an alternative workflow for primer design when users
-have specific target sequences rather than genomic regions, enabling
-direct primer design with optional variant consideration.
+This module provides a streamlined workflow for users who have pre-processed
+target sequences and want to skip genome-based variant processing.
 """
 
 import os
 import logging
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Union
+from typing import Dict, List, Tuple, Optional
 
-from ..config import Config, SequenceProcessingError, PrimerDesignError, FileError
-from .file_io import FileIO
-from ..core import SNPMaskingProcessor, Primer3Processor, PrimerProcessor, ThermoProcessor, BlastProcessor
+# Import package modules
+from ..config import FileError, FileFormatError, SequenceProcessingError, PrimerDesignError
+from ..utils import FileIO
 
 # Set up module logger
 logger = logging.getLogger(__name__)
 
-# Type alias for path inputs
-PathLike = Union[str, Path]
 
-
-class SequenceAnalyzer:
+class DirectModeProcessor:
     """
-    Analyzes sequence table files to identify sequence and name columns.
+    Handles direct mode workflow execution with sequence table input.
     
-    This class provides intelligent analysis of CSV and Excel files containing
-    sequence data, automatically detecting the most likely sequence and identifier
-    columns based on content patterns and column names.
+    This processor manages the simplified workflow for direct sequence input,
+    bypassing genome-based processing while maintaining compatibility with
+    the existing pipeline architecture.
     
     Example:
-        >>> analysis = SequenceAnalyzer.analyze_file("sequences.csv")
-        >>> name_col, seq_col = SequenceAnalyzer.get_recommended_columns(analysis)
+        >>> processor = DirectModeProcessor()
+        >>> sequences = processor.load_sequences_from_table("sequences.csv")
+        >>> success = processor.run_direct_workflow(sequences, output_dir)
     """
+
+    # Common column name patterns for flexible detection
+    SEQUENCE_ID_PATTERNS = [
+        'id', 'name', 'gene', 'target', 'sequence_id', 'seq_id', 
+        'gene_name', 'target_name', 'identifier', 'label'
+    ]
     
-    @staticmethod
-    def analyze_file(file_path: PathLike) -> Dict[str, Any]:
+    SEQUENCE_PATTERNS = [
+        'sequence', 'seq', 'dna', 'nucleotide', 'target_sequence',
+        'dna_sequence', 'genomic_sequence', 'template'
+    ]
+
+    def __init__(self):
+        """Initialize the DirectModeProcessor."""
+        logger.debug("DirectModeProcessor initialized")
+
+    @classmethod
+    def detect_columns(cls, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
         """
-        Analyze a sequence table file to identify column structure.
+        Automatically detect sequence ID and sequence columns in DataFrame.
+        
+        Uses flexible pattern matching to identify the most likely columns
+        containing sequence identifiers and DNA sequences.
         
         Args:
-            file_path: Path to CSV or Excel file
+            df: Input DataFrame from CSV/Excel file
             
         Returns:
-            Dictionary containing analysis results with column recommendations
-            
-        Raises:
-            FileError: If file cannot be read
+            Tuple of (id_column_name, sequence_column_name) or (None, None) if not found
         """
-        logger.debug(f"=== SEQUENCE FILE ANALYSIS ===")
-        logger.debug(f"Analyzing file: {file_path}")
+        logger.debug("Detecting sequence columns in DataFrame")
         
-        try:
-            # Load file based on extension
-            if str(file_path).endswith('.csv'):
-                df = pd.read_csv(file_path)
-            elif str(file_path).endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(file_path)
-            else:
-                error_msg = f"Unsupported file format: {file_path}"
-                logger.error(error_msg)
-                return {"error": error_msg}
-            
-            # Remove completely empty columns and rows
-            df = df.dropna(axis=1, how='all')
-            df = df.dropna(axis=0, how='all')
-            
-            if df.empty:
-                error_msg = "File contains no data"
-                logger.error(error_msg)
-                return {"error": error_msg}
-            
-            logger.debug(f"File contains {len(df)} rows and {len(df.columns)} columns")
-            
-            analysis = {
-                "file_path": str(file_path),
-                "num_rows": len(df),
-                "num_columns": len(df.columns),
-                "columns": list(df.columns),
-                "column_analysis": {}
-            }
-            
-            # Analyze each column
-            for col in df.columns:
-                col_analysis = SequenceAnalyzer._analyze_column(df[col], col)
-                analysis["column_analysis"][col] = col_analysis
-                logger.debug(f"Column '{col}': {col_analysis['type']} (confidence: {col_analysis['confidence']:.2f})")
-            
-            logger.debug("=== END SEQUENCE FILE ANALYSIS ===")
-            return analysis
-            
-        except Exception as e:
-            error_msg = f"Error analyzing file {file_path}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            return {"error": error_msg}
-    
-    @staticmethod
-    def _analyze_column(series: pd.Series, column_name: str) -> Dict[str, Any]:
-        """
-        Analyze a single column to determine its likely content type.
-        
-        Args:
-            series: Pandas series to analyze
-            column_name: Name of the column
-            
-        Returns:
-            Dictionary with column analysis results
-        """
-        # Remove null values for analysis
-        non_null_values = series.dropna()
-        
-        if len(non_null_values) == 0:
-            return {
-                "type": "empty",
-                "confidence": 0.0,
-                "sample_values": [],
-                "avg_length": 0,
-                "nucleotide_ratio": 0.0
-            }
-        
-        # Convert to strings and clean
-        str_values = [str(val).strip().upper() for val in non_null_values]
-        sample_values = str_values[:3]  # First 3 values for display
-        
-        # Calculate basic statistics
-        avg_length = sum(len(val) for val in str_values) / len(str_values)
-        
-        # Check for DNA sequence patterns
-        nucleotide_count = 0
-        total_chars = 0
-        
-        for val in str_values:
-            for char in val:
-                if char in 'ATCGN':
-                    nucleotide_count += 1
-                total_chars += 1
-        
-        nucleotide_ratio = nucleotide_count / total_chars if total_chars > 0 else 0.0
-        
-        # Determine column type and confidence
-        type_scores = {
-            "sequence": SequenceAnalyzer._score_sequence_column(column_name, str_values, nucleotide_ratio, avg_length),
-            "name": SequenceAnalyzer._score_name_column(column_name, str_values, avg_length),
-            "position": SequenceAnalyzer._score_position_column(column_name, str_values),
-            "other": 0.1  # Base score for unrecognized columns
-        }
-        
-        # Get the type with highest score
-        best_type = max(type_scores.keys(), key=lambda k: type_scores[k])
-        confidence = type_scores[best_type]
-        
-        return {
-            "type": best_type,
-            "confidence": confidence,
-            "sample_values": sample_values,
-            "avg_length": avg_length,
-            "nucleotide_ratio": nucleotide_ratio,
-            "type_scores": type_scores
-        }
-    
-    @staticmethod
-    def _score_sequence_column(name: str, values: List[str], nucleotide_ratio: float, avg_length: float) -> float:
-        """Score how likely a column is to contain DNA sequences."""
-        score = 0.0
-        
-        # Name-based scoring
-        name_lower = name.lower()
-        if 'seq' in name_lower or 'dna' in name_lower or 'sequence' in name_lower:
-            score += 0.4
-        elif 'target' in name_lower or 'template' in name_lower:
-            score += 0.3
-        
-        # Content-based scoring
-        if nucleotide_ratio > 0.8:  # >80% nucleotides
-            score += 0.4
-        elif nucleotide_ratio > 0.6:  # >60% nucleotides
-            score += 0.2
-        
-        # Length-based scoring (typical sequences are 50-500 bp)
-        if 50 <= avg_length <= 500:
-            score += 0.2
-        elif 20 <= avg_length <= 1000:
-            score += 0.1
-        
-        return min(score, 1.0)
-    
-    @staticmethod
-    def _score_name_column(name: str, values: List[str], avg_length: float) -> float:
-        """Score how likely a column is to contain sequence identifiers."""
-        score = 0.0
-        
-        # Name-based scoring
-        name_lower = name.lower()
-        if name_lower in ['id', 'name', 'identifier', 'gene', 'target']:
-            score += 0.4
-        elif 'id' in name_lower or 'name' in name_lower:
-            score += 0.3
-        
-        # Content-based scoring (short, alphanumeric identifiers)
-        if 3 <= avg_length <= 30:
-            score += 0.3
-        
-        # Check if values look like identifiers
-        identifier_patterns = 0
-        for val in values[:10]:  # Check first 10 values
-            if len(val) < 50 and ('_' in val or val.isalnum()):
-                identifier_patterns += 1
-        
-        if identifier_patterns > len(values[:10]) * 0.7:  # >70% look like IDs
-            score += 0.3
-        
-        return min(score, 1.0)
-    
-    @staticmethod
-    def _score_position_column(name: str, values: List[str]) -> float:
-        """Score position columns (not used in direct mode but kept for completeness)."""
-        # Direct mode doesn't use position information, always return low score
-        return 0.0
-    
-    @staticmethod
-    def get_recommended_columns(analysis: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Get recommended name and sequence columns from analysis.
-        
-        Args:
-            analysis: Analysis results from analyze_file()
-            
-        Returns:
-            Tuple of (name_column, sequence_column) - either may be None
-        """
-        if "error" in analysis:
-            logger.error(f"Cannot get recommendations due to analysis error: {analysis['error']}")
+        if df.empty:
+            logger.warning("DataFrame is empty")
             return None, None
         
-        column_analysis = analysis.get("column_analysis", {})
+        columns = [col.lower().strip() for col in df.columns]
+        original_columns = list(df.columns)
         
-        # Find best sequence column
-        sequence_candidates = []
-        name_candidates = []
+        # Create mapping from lowercase to original column names
+        col_mapping = {col.lower().strip(): original for col, original in zip(columns, original_columns)}
         
-        for col, col_data in column_analysis.items():
-            if col_data["type"] == "sequence":
-                sequence_candidates.append((col, col_data["confidence"]))
-            elif col_data["type"] == "name":
-                name_candidates.append((col, col_data["confidence"]))
+        # Detect sequence ID column
+        id_column = None
+        id_column_lower = None
+        for pattern in cls.SEQUENCE_ID_PATTERNS:
+            for col in columns:
+                if pattern in col:
+                    id_column = col_mapping[col]
+                    id_column_lower = col
+                    logger.debug(f"Detected ID column: '{id_column}' (matched pattern: '{pattern}')")
+                    break
+            if id_column:
+                break
         
-        # Sort by confidence
-        sequence_candidates.sort(key=lambda x: x[1], reverse=True)
-        name_candidates.sort(key=lambda x: x[1], reverse=True)
+        # Detect sequence column - make sure it's different from ID column
+        seq_column = None
+        for pattern in cls.SEQUENCE_PATTERNS:
+            for col in columns:
+                # Skip if this is the same column we already identified as ID
+                if col == id_column_lower:
+                    logger.debug(f"Skipping column '{col_mapping[col]}' for sequence detection (already used as ID)")
+                    continue
+                    
+                if pattern in col:
+                    seq_column = col_mapping[col]
+                    logger.debug(f"Detected sequence column: '{seq_column}' (matched pattern: '{pattern}')")
+                    break
+            if seq_column:
+                break
         
-        # Get best candidates
-        best_sequence = sequence_candidates[0][0] if sequence_candidates else None
-        best_name = name_candidates[0][0] if name_candidates else None
+        # Fallback: use first two columns if detection fails and they're different
+        if not id_column and len(original_columns) >= 1:
+            id_column = original_columns[0]
+            logger.debug(f"Fallback: Using first column as ID: '{id_column}'")
+            
+        if not seq_column and len(original_columns) >= 2:
+            # Make sure sequence column is different from ID column
+            candidate_seq_col = original_columns[1]
+            if candidate_seq_col != id_column:
+                seq_column = candidate_seq_col
+                logger.debug(f"Fallback: Using second column as sequence: '{seq_column}'")
+            elif len(original_columns) >= 3:
+                # Try third column if second is same as first
+                seq_column = original_columns[2]
+                logger.debug(f"Fallback: Using third column as sequence: '{seq_column}'")
+        elif not seq_column and len(original_columns) == 1:
+            # If only one column, assume it contains sequences and generate IDs
+            seq_column = original_columns[0]
+            id_column = None  # Will generate automatic IDs
+            logger.debug(f"Single column detected, treating as sequences: '{seq_column}'")
         
-        # Log recommendations
-        if best_sequence:
-            seq_confidence = sequence_candidates[0][1]
-            logger.debug(f"Recommended sequence column: '{best_sequence}' (confidence: {seq_confidence:.2f})")
-        else:
-            logger.warning("No sequence column identified")
+        # Final validation - make sure we don't have the same column for both
+        if id_column and seq_column and id_column == seq_column:
+            logger.warning(f"ID and sequence columns are the same: '{id_column}'. Using fallback logic.")
+            if len(original_columns) >= 2:
+                id_column = original_columns[0]
+                seq_column = original_columns[1]
+                logger.debug(f"Fallback correction: ID='{id_column}', Sequence='{seq_column}'")
+            else:
+                # Only one column available
+                seq_column = original_columns[0]
+                id_column = None
+                logger.debug(f"Fallback correction: Auto-generate IDs, Sequence='{seq_column}'")
         
-        if best_name:
-            name_confidence = name_candidates[0][1]
-            logger.debug(f"Recommended name column: '{best_name}' (confidence: {name_confidence:.2f})")
-        else:
-            logger.debug("No name column identified - will generate sequence IDs")
-        
-        return best_name, best_sequence
+        return id_column, seq_column
 
-
-class DirectMode:
-    """
-    Processes primer design workflow for direct sequence input mode.
-    
-    This class handles the complete direct mode workflow including sequence
-    loading from tables, optional VCF processing, simplified fragment
-    preparation, and integration with existing primer design components.
-    
-    Attributes:
-        vcf_file: Optional VCF file for variant masking
-        reference_file: Reference genome for VCF processing
-        
-    Example:
-        >>> processor = DirectMode(vcf_file="variants.vcf", reference_file="genome.fasta")
-        >>> success = processor.run_workflow("sequences.csv", "output_dir")
-    """
-    
-    def __init__(self, vcf_file: Optional[PathLike] = None, reference_file: Optional[PathLike] = None):
+    @classmethod
+    def load_sequences_from_table(cls, file_path: str) -> Dict[str, str]:
         """
-        Initialize DirectMode.
+        Load sequences from CSV or Excel file with flexible column detection.
+        
+        Automatically detects sequence ID and sequence columns, validates
+        sequences, and returns a dictionary compatible with the pipeline.
         
         Args:
-            vcf_file: Optional VCF file for variant masking
-            reference_file: Reference genome file (required if vcf_file provided)
-        """
-        self.vcf_file = vcf_file
-        self.reference_file = reference_file
-        
-        # Validate VCF requirements
-        if self.vcf_file and not self.reference_file:
-            error_msg = "Reference genome file required when VCF file is provided"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-        
-        logger.debug(f"DirectMode initialized with VCF={bool(vcf_file)}, Reference={bool(reference_file)}")
-    
-    def load_sequences_from_table(self, table_file: PathLike) -> Dict[str, str]:
-        """
-        Load sequences from CSV or Excel table using intelligent column detection.
-        
-        Args:
-            table_file: Path to CSV or Excel file
+            file_path: Path to CSV or Excel file containing sequences
             
         Returns:
             Dictionary mapping sequence IDs to sequences
             
         Raises:
-            FileError: If file loading fails
-            SequenceProcessingError: If sequence processing fails
+            FileError: If file cannot be accessed
+            FileFormatError: If file format is invalid or columns cannot be detected
+            SequenceProcessingError: If sequences are invalid
         """
-        logger.debug("=== SEQUENCE TABLE LOADING ===")
-        logger.debug(f"Loading sequences from: {table_file}")
+        logger.debug("=== DIRECT MODE: SEQUENCE TABLE LOADING ===")
+        logger.debug(f"Loading sequences from table: {file_path}")
+        
+        if not os.path.exists(file_path):
+            error_msg = f"Sequence table file not found: {file_path}"
+            logger.error(error_msg)
+            raise FileError(error_msg)
         
         try:
-            sequences = FileIO.load_sequences_from_table(table_file)
+            # Load DataFrame based on file extension
+            file_ext = Path(file_path).suffix.lower()
+            
+            if file_ext == '.csv':
+                # Try different encodings and separators for CSV
+                for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                    for sep in [',', ';', '\t']:
+                        try:
+                            df = pd.read_csv(file_path, encoding=encoding, sep=sep)
+                            if len(df.columns) > 1 or (len(df.columns) == 1 and len(df) > 0):
+                                logger.debug(f"Successfully loaded CSV with encoding={encoding}, sep='{sep}'")
+                                break
+                        except Exception as e:
+                            logger.debug(f"Failed to load CSV with encoding={encoding}, sep='{sep}': {str(e)}")
+                            continue
+                    else:
+                        continue
+                    break
+                else:
+                    error_msg = f"Could not parse CSV file with any encoding/separator combination: {file_path}"
+                    logger.error(error_msg)
+                    raise FileFormatError(error_msg)
+                    
+            elif file_ext in ['.xlsx', '.xls']:
+                df = pd.read_excel(file_path)
+                logger.debug(f"Successfully loaded Excel file")
+            else:
+                error_msg = f"Unsupported file format: {file_ext}. Supported formats: .csv, .xlsx, .xls"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
+            if df.empty:
+                error_msg = f"No data found in file: {file_path}"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
+            logger.debug(f"Loaded DataFrame with {len(df)} rows and {len(df.columns)} columns")
+            logger.debug(f"Columns: {list(df.columns)}")
+            
+            # Detect sequence columns
+            id_column, seq_column = cls.detect_columns(df)
+            
+            if not seq_column:
+                error_msg = (f"Could not detect sequence column in file: {file_path}. "
+                           f"Available columns: {list(df.columns)}")
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
+            logger.debug(f"Using columns - ID: '{id_column}', Sequence: '{seq_column}'")
+            
+            # Extract sequences
+            sequences = {}
+            
+            for idx, row in df.iterrows():
+                # Get sequence ID
+                if id_column:
+                    seq_id = str(row[id_column]).strip()
+                    if not seq_id or seq_id.lower() in ['nan', 'none', '']:
+                        seq_id = f"Sequence_{idx + 1}"
+                else:
+                    seq_id = f"Sequence_{idx + 1}"
+                
+                # Get sequence
+                sequence = str(row[seq_column]).strip().upper()
+                
+                # Skip empty sequences
+                if not sequence or sequence.lower() in ['nan', 'none', '']:
+                    logger.warning(f"Skipping empty sequence for ID: {seq_id}")
+                    continue
+                
+                # Basic sequence validation
+                if not cls.validate_sequence(sequence):
+                    logger.warning(f"Skipping invalid sequence for ID: {seq_id} (contains non-DNA characters)")
+                    continue
+                
+                # Handle duplicate IDs
+                original_id = seq_id
+                counter = 1
+                while seq_id in sequences:
+                    seq_id = f"{original_id}_{counter}"
+                    counter += 1
+                
+                sequences[seq_id] = sequence
+                logger.debug(f"Added sequence: {seq_id} ({len(sequence)} bp)")
             
             if not sequences:
-                error_msg = "No valid sequences found in table file"
+                error_msg = f"No valid sequences found in file: {file_path}"
                 logger.error(error_msg)
                 raise SequenceProcessingError(error_msg)
             
-            logger.debug(f"Successfully loaded {len(sequences)} sequences")
-            logger.debug("=== END SEQUENCE TABLE LOADING ===")
+            logger.debug(f"Successfully loaded {len(sequences)} sequences from table")
+            logger.debug("=== END DIRECT MODE: SEQUENCE TABLE LOADING ===")
+            
             return sequences
             
+        except (FileError, FileFormatError, SequenceProcessingError):
+            raise
         except Exception as e:
-            error_msg = f"Failed to load sequences from table: {str(e)}"
+            error_msg = f"Error loading sequences from table {file_path}: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(error_msg) from e
-    
-    def process_sequences_with_vcf(self, sequences: Dict[str, str]) -> Dict[str, str]:
+            logger.debug("=== END DIRECT MODE: SEQUENCE TABLE LOADING ===")
+            raise FileFormatError(error_msg) from e
+
+    @staticmethod
+    def validate_sequence(sequence: str) -> bool:
         """
-        Apply VCF variants to sequences using sequence similarity matching.
+        Validate that a sequence contains only valid DNA characters.
         
-        For each input sequence, finds the best match in the reference genome
-        and applies variants from that region.
+        Uses a simple but robust approach that handles various input formats
+        and provides clear validation.
         
         Args:
-            sequences: Dictionary of sequence ID to sequence
+            sequence: DNA sequence string to validate
             
         Returns:
-            Dictionary of processed sequences with variants applied
-            
-        Raises:
-            SequenceProcessingError: If VCF processing fails
+            True if sequence is valid, False otherwise
         """
-        if not self.vcf_file:
-            logger.debug("No VCF file provided, returning original sequences")
-            return sequences
-        
-        logger.debug("=== VCF SEQUENCE PROCESSING ===")
-        logger.debug(f"Processing {len(sequences)} sequences with VCF variants")
+        if not sequence:
+            return False
         
         try:
-            # Initialize SNP processor
-            snp_processor = SNPMaskingProcessor(self.reference_file)
+            # Convert to string, strip whitespace, and convert to uppercase
+            sequence_str = str(sequence).strip().upper()
             
-            # Load reference genome for sequence matching
-            reference_sequences = FileIO.load_fasta(self.reference_file)
+            if not sequence_str:
+                return False
             
-            processed_sequences = {}
+            # Remove any internal whitespace
+            sequence_clean = ''.join(sequence_str.split())
             
-            for seq_id, sequence in sequences.items():
-                try:
-                    # Find best matching chromosome/region
-                    best_match = self._find_best_sequence_match(sequence, reference_sequences)
-                    
-                    if not best_match:
-                        logger.warning(f"No suitable reference match found for sequence {seq_id}, keeping original")
-                        processed_sequences[seq_id] = sequence
-                        continue
-                    
-                    chr_name, match_start, match_end = best_match
-                    logger.debug(f"Sequence {seq_id} matched to {chr_name}:{match_start}-{match_end}")
-                    
-                    # Extract the matching reference region
-                    ref_sequence = reference_sequences[chr_name][match_start:match_end]
-                    
-                    # Apply VCF variants to the reference region
-                    modified_sequence = snp_processor.process_sequence_with_vcf(
-                        sequence=ref_sequence,
-                        vcf_path=self.vcf_file,
-                        chromosome=chr_name,
-                        start_offset=match_start
-                    )
-                    
-                    processed_sequences[seq_id] = modified_sequence
-                    
-                except Exception as e:
-                    logger.warning(f"Error processing sequence {seq_id} with VCF: {e}")
-                    # Keep original sequence if processing fails
-                    processed_sequences[seq_id] = sequence
+            if not sequence_clean:
+                return False
             
-            logger.debug(f"Successfully processed {len(processed_sequences)} sequences with VCF")
-            logger.debug("=== END VCF SEQUENCE PROCESSING ===")
-            return processed_sequences
+            # Check minimum length (at least 10 bp for meaningful primers)
+            if len(sequence_clean) < 10:
+                logger.debug(f"Sequence too short: {len(sequence_clean)} bp")
+                return False
+            
+            # Simple character validation - only allow standard DNA bases
+            # Start with strict validation, can be relaxed if needed
+            allowed_chars = set('ATCG')
+            sequence_chars = set(sequence_clean)
+            
+            # Check if all characters are valid
+            if not sequence_chars.issubset(allowed_chars):
+                invalid_chars = sequence_chars - allowed_chars
+                logger.debug(f"Invalid DNA characters found: {sorted(invalid_chars)}")
+                
+                # Allow some common ambiguous bases if present
+                extended_chars = set('ATCGRYSWKMBDHVN')
+                if sequence_chars.issubset(extended_chars):
+                    logger.debug("Sequence contains ambiguous bases but is acceptable")
+                    return True
+                else:
+                    return False
+            
+            return True
             
         except Exception as e:
-            error_msg = f"VCF processing failed: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(error_msg) from e
-    
-    def _find_best_sequence_match(self, query_sequence: str, reference_sequences: Dict[str, str]) -> Optional[Tuple[str, int, int]]:
+            logger.debug(f"Error in sequence validation: {str(e)}")
+            return False
+
+    @classmethod
+    def run_direct_workflow(cls, sequences: Dict[str, str], output_dir: str, 
+                           input_file: str, enable_internal_oligo: bool = True,
+                           enable_snp_masking: bool = False, vcf_file: str = None, 
+                           fasta_file: str = None) -> bool:
         """
-        Find the best matching region in reference genome for a query sequence.
+        Execute the direct mode primer design workflow.
         
-        Uses sliding window approach to find the best match based on sequence similarity.
+        Runs the streamlined workflow that bypasses SNP masking and annotation
+        processing, proceeding directly from input sequences to primer design.
+        Optionally supports SNP masking if enabled.
         
         Args:
-            query_sequence: Query sequence to match
-            reference_sequences: Dictionary of reference sequences
-            
-        Returns:
-            Tuple of (chromosome, start, end) for best match, or None if no good match
-        """
-        logger.debug(f"=== SEQUENCE MATCHING ===")
-        logger.debug(f"Finding reference match for sequence of length {len(query_sequence)}")
-        
-        query_seq = query_sequence.upper().strip()
-        query_len = len(query_seq)
-        
-        if query_len < 20:
-            logger.warning("Query sequence too short for reliable matching")
-            return None
-        
-        best_match = None
-        best_score = 0.0
-        min_similarity = 0.8  # Minimum 80% similarity required
-        
-        # Search each reference chromosome
-        for chr_name, ref_seq in reference_sequences.items():
-            ref_seq = ref_seq.upper()
-            ref_len = len(ref_seq)
-            
-            # Skip if reference is shorter than query
-            if ref_len < query_len:
-                continue
-            
-            # Use step size for efficiency (every 10 bp for sequences > 100bp)
-            step_size = max(1, min(10, query_len // 10))
-            
-            # Sliding window search
-            for start in range(0, ref_len - query_len + 1, step_size):
-                ref_window = ref_seq[start:start + query_len]
-                
-                # Calculate similarity score
-                similarity = self._calculate_sequence_similarity(query_seq, ref_window)
-                
-                if similarity > best_score:
-                    best_score = similarity
-                    best_match = (chr_name, start, start + query_len)
-                    
-                    # Early exit if we find a perfect or near-perfect match
-                    if similarity >= 0.98:
-                        break
-            
-            # Early exit if we found a very good match
-            if best_score >= 0.98:
-                break
-        
-        if best_match and best_score >= min_similarity:
-            chr_name, start, end = best_match
-            logger.debug(f"Best match: {chr_name}:{start}-{end} (similarity: {best_score:.3f})")
-            logger.debug("=== END SEQUENCE MATCHING ===")
-            return best_match
-        else:
-            logger.debug(f"No suitable match found (best score: {best_score:.3f})")
-            logger.debug("=== END SEQUENCE MATCHING ===")
-            return None
-    
-    def _calculate_sequence_similarity(self, seq1: str, seq2: str) -> float:
-        """
-        Calculate sequence similarity as fraction of matching nucleotides.
-        
-        Args:
-            seq1: First sequence
-            seq2: Second sequence
-            
-        Returns:
-            Similarity score between 0.0 and 1.0
-        """
-        if len(seq1) != len(seq2):
-            return 0.0
-        
-        matches = sum(1 for a, b in zip(seq1, seq2) if a == b)
-        return matches / len(seq1)
-    
-    def prepare_fragments_for_primer_design(self, sequences: Dict[str, str]) -> List[Dict[str, Any]]:
-        """
-        Prepare sequence fragments for primer design using restriction site cutting.
-        
-        Args:
-            sequences: Dictionary of processed sequences
-            
-        Returns:
-            List of restriction fragments ready for primer design
-            
-        Raises:
-            SequenceProcessingError: If fragment preparation fails
-        """
-        logger.debug("=== FRAGMENT PREPARATION ===")
-        logger.debug(f"Preparing {len(sequences)} sequences for primer design")
-        
-        try:
-            # Import here to avoid circular imports
-            from ..core import SequenceProcessor
-            
-            # Use restriction site cutting from standard pipeline
-            restriction_fragments = SequenceProcessor.cut_at_restriction_sites(sequences)
-            
-            # Convert to simplified fragments (no gene overlap filtering)
-            simplified_fragments = []
-            for fragment in restriction_fragments:
-                simplified_fragment = {
-                    "id": fragment["id"],
-                    "sequence": fragment["sequence"],
-                    "chr": fragment.get("chr", ""),
-                    "start": fragment.get("start", 1),
-                    "end": fragment.get("end", len(fragment["sequence"])),
-                    "Gene": fragment["id"].split("_")[0]  # Use the original sequence ID as gene name
-                }
-                simplified_fragments.append(simplified_fragment)
-            
-            logger.debug(f"Generated {len(simplified_fragments)} fragments after restriction site cutting")
-            logger.debug("=== END FRAGMENT PREPARATION ===")
-            return simplified_fragments
-            
-        except Exception as e:
-            error_msg = f"Fragment preparation failed: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(error_msg) from e
-    
-    def run_workflow(self, table_file: PathLike, output_dir: PathLike) -> bool:
-        """
-        Execute the complete direct mode primer design workflow.
-        
-        Args:
-            table_file: Path to CSV/Excel file with target sequences
-            output_dir: Output directory for results
+            sequences: Dictionary of sequence IDs to sequences
+            output_dir: Output directory path
+            input_file: Original input file path (for naming output)
+            enable_internal_oligo: Whether to design internal oligos (probes)
+            enable_snp_masking: Whether to apply SNP masking to sequences
+            vcf_file: Path to VCF file (required if enable_snp_masking=True)
+            fasta_file: Path to FASTA file (required if enable_snp_masking=True)
             
         Returns:
             True if workflow completed successfully, False otherwise
@@ -571,142 +370,492 @@ class DirectMode:
             SequenceProcessingError: If sequence processing fails
             PrimerDesignError: If primer design fails
         """
-        logger.info("=== Direct Mode Workflow ===")
+        logger.debug("=== DIRECT MODE WORKFLOW: PRIMER DESIGN PIPELINE ===")
+        logger.debug(f"Processing {len(sequences)} input sequences")
+        logger.debug(f"Internal oligo design: {enable_internal_oligo}")
+        logger.debug(f"SNP masking enabled: {enable_snp_masking}")
+        
+        # Import required processors
+        from ..core import (SequenceProcessor, Primer3Processor, 
+                           PrimerProcessor, ThermoProcessor, BlastProcessor)
+        from ..config import Config
         
         try:
-            # Step 1: Load sequences from table
-            logger.info("Loading target sequences from table...")
-            sequences = self.load_sequences_from_table(table_file)
+            processed_sequences = sequences
             
-            if not sequences:
-                logger.warning("No valid sequences found in input table")
+            # Step 1: Apply SNP masking if enabled
+            if enable_snp_masking:
+                if not vcf_file or not fasta_file:
+                    error_msg = "SNP masking requires both VCF and FASTA files"
+                    logger.error(error_msg)
+                    logger.debug("=== END DIRECT MODE WORKFLOW ===")
+                    return False
+                
+                logger.debug("DIRECT: Applying SNP masking to sequences")
+                processed_sequences = cls._apply_snp_masking_to_sequences(
+                    sequences, vcf_file, fasta_file
+                )
+                
+                if not processed_sequences:
+                    logger.warning("No sequences remained after SNP masking. Exiting.")
+                    logger.debug("=== END DIRECT MODE WORKFLOW ===")
+                    return False
+            
+            # Step 2: Process restriction sites (reuse existing functionality)
+            logger.debug("DIRECT: Processing restriction sites")
+            restriction_fragments = SequenceProcessor.process_restriction_sites_workflow(processed_sequences)
+            
+            if not restriction_fragments:
+                logger.warning("No valid fragments after restriction site processing. Exiting.")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return False
             
-            # Step 2: Process with VCF if provided
-            if self.vcf_file:
-                logger.info("Processing sequences with VCF variants...")
-                sequences = self.process_sequences_with_vcf(sequences)
-            else:
-                logger.info("Skipping VCF processing (no VCF file provided)")
+            # Step 3: Skip gene overlap filtering (direct mode)
+            logger.debug("DIRECT: Skipping gene overlap filtering (direct mode)")
+            filtered_fragments = restriction_fragments
             
-            # Step 3: Prepare fragments using restriction site cutting
-            logger.info("Preparing fragments with restriction site cutting...")
-            fragments = self.prepare_fragments_for_primer_design(sequences)
+            # Step 4: Design primers with Primer3
+            logger.debug("DIRECT: Designing primers with Primer3")
+            primer3_processor = Primer3Processor(Config, enable_internal_oligo=enable_internal_oligo)
+            primer_records = primer3_processor.design_primers_workflow(filtered_fragments)
             
-            if not fragments:
-                logger.warning("No valid fragments after restriction site cutting")
-                return False
-            
-            # Step 4: Design primers using existing workflow components
-            logger.info("Designing primers with Primer3...")
-            primer_results = self._design_primers_with_primer3(fragments)
-            
-            if not primer_results:
-                logger.warning("No primers were designed by Primer3")
+            if not primer_records:
+                logger.warning("No primers were designed by Primer3. Exiting.")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return False
             
             # Step 5: Filter primers
-            logger.info("Filtering primers...")
-            df = self._filter_primers(primer_results)
+            logger.debug("DIRECT: Filtering primers")
+            df = PrimerProcessor.filter_primers_workflow(primer_records)
             
             if df is None or len(df) == 0:
-                logger.warning("No primers passed filtering criteria")
+                logger.warning("No primers passed filtering criteria. Exiting.")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return False
             
             # Step 6: Calculate thermodynamic properties
-            logger.info("Calculating thermodynamic properties...")
-            df = self._calculate_thermodynamics(df)
+            logger.debug("DIRECT: Calculating thermodynamic properties")
+            df = ThermoProcessor.calculate_thermodynamics_workflow(df)
             
             # Step 7: Run BLAST for specificity
-            logger.info("Running BLAST for specificity checking...")
-            df = self._run_blast_specificity(df)
+            logger.debug("DIRECT: Running BLAST specificity checks")
+            df = BlastProcessor.run_blast_specificity_workflow(df)
             
             if df is None or len(df) == 0:
-                logger.warning("No primers passed BLAST filtering")
+                logger.warning("No primers passed BLAST filtering. Exiting.")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return False
             
-            # Step 8: Save results
+            # Step 8: Save results to Excel file (using direct mode)
+            logger.debug("DIRECT: Saving results")
             output_path = FileIO.save_results(
                 df, 
                 output_dir, 
-                table_file, 
-                mode='direct'
+                input_file, 
+                mode='direct'  # Use direct mode for output formatting
             )
             
             if output_path:
-                logger.info(f"Results saved to: {output_path}")
+                logger.info(f"\nResults saved to: {output_path}")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return True
             else:
-                logger.error("Failed to save results")
+                logger.error("Failed to save results.")
+                logger.debug("=== END DIRECT MODE WORKFLOW ===")
                 return False
                 
         except SequenceProcessingError as e:
-            logger.error(f"Sequence processing error: {str(e)}")
+            error_msg = f"Sequence processing error in direct mode: {str(e)}"
+            logger.error(error_msg)
+            logger.debug("=== END DIRECT MODE WORKFLOW ===")
             return False
         except PrimerDesignError as e:
-            logger.error(f"Primer design error: {str(e)}")
+            error_msg = f"Primer design error in direct mode: {str(e)}"
+            logger.error(error_msg)
+            logger.debug("=== END DIRECT MODE WORKFLOW ===")
             return False
         except Exception as e:
-            logger.error(f"Error in direct mode workflow: {str(e)}")
+            error_msg = f"Error in direct mode workflow: {str(e)}"
+            logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END DIRECT MODE WORKFLOW ===")
             return False
-    
-    def _design_primers_with_primer3(self, fragments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+    @classmethod
+    def _apply_snp_masking_to_sequences(cls, sequences: Dict[str, str], 
+                                       vcf_file: str, fasta_file: str) -> Dict[str, str]:
         """
-        Design primers using Primer3 (reuses existing functionality).
+        Apply SNP masking to direct mode sequences by mapping them to reference.
+        
+        This method attempts to identify where each input sequence maps to the
+        reference genome, then applies VCF-based variant masking to those regions.
         
         Args:
-            fragments: List of sequence fragments
+            sequences: Dictionary of sequence IDs to sequences
+            vcf_file: Path to VCF file with variants
+            fasta_file: Path to reference FASTA file
             
         Returns:
-            List of primer design results
+            Dictionary of masked sequences
+            
+        Raises:
+            SequenceProcessingError: If SNP masking fails
         """
-        # Import here to avoid circular imports
-        from ..main import design_primers_with_primer3
+        logger.debug("=== DIRECT MODE: SNP MASKING ===")
+        logger.debug(f"Applying SNP masking to {len(sequences)} sequences")
         
-        return design_primers_with_primer3(fragments)
-    
-    def _filter_primers(self, primer_results: List[Dict[str, Any]]) -> Optional[pd.DataFrame]:
+        try:
+            from ..core import SNPMaskingProcessor
+            from ..utils import FileIO
+            
+            # Load reference sequences
+            logger.debug("Loading reference genome")
+            reference_sequences = FileIO.load_fasta(fasta_file)
+            
+            masked_sequences = {}
+            mapping_stats = {"mapped": 0, "unmapped": 0, "total_masked": 0, "total_substituted": 0}
+            
+            for seq_id, sequence in sequences.items():
+                try:
+                    # Find the best match for this sequence in the reference
+                    match_info = cls._find_sequence_in_reference(
+                        sequence, reference_sequences, seq_id
+                    )
+                    
+                    if not match_info:
+                        logger.debug(f"Could not map sequence {seq_id} to reference - discarding")
+                        mapping_stats["unmapped"] += 1
+                        continue  # Skip unmapped sequences
+                    
+                    ref_chrom = match_info['chromosome']
+                    ref_start = match_info['start']
+                    ref_end = match_info['end']
+                    
+                    logger.debug(f"Mapped {seq_id} to {ref_chrom}:{ref_start}-{ref_end}")
+                    mapping_stats["mapped"] += 1
+                    
+                    # Extract the reference region
+                    ref_sequence = reference_sequences[ref_chrom][ref_start:ref_end]
+                    
+                    # Apply SNP masking to the reference region
+                    processor = SNPMaskingProcessor(fasta_file)
+                    masked_ref_sequence, seq_stats = processor.process_sequence_with_vcf(
+                        sequence=ref_sequence,
+                        vcf_path=vcf_file,
+                        chromosome=ref_chrom,
+                        return_stats=True
+                    )
+                    
+                    masked_sequences[seq_id] = masked_ref_sequence
+                    mapping_stats["total_masked"] += seq_stats.get("masked", 0)
+                    mapping_stats["total_substituted"] += seq_stats.get("substituted", 0)
+                    logger.debug(f"Applied SNP masking to {seq_id}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error masking sequence {seq_id}: {str(e)}")
+                    mapping_stats["unmapped"] += 1
+                    continue  # Skip sequences that error during processing
+            
+            # SNP masking summary logs
+            if mapping_stats["mapped"] > 0:
+                logger.info(f"Successfully mapped and processed {mapping_stats['mapped']} sequences")
+            if mapping_stats["unmapped"] > 0:
+                logger.info(f"{mapping_stats['unmapped']} sequences could not be mapped to reference and were discarded")
+            
+            if mapping_stats["total_masked"] > 0 or mapping_stats["total_substituted"] > 0:
+                logger.info(f"Masked {mapping_stats['total_masked']} variable variants, substituted {mapping_stats['total_substituted']} fixed variants")
+            
+            logger.debug(f"SNP masking complete: {len(masked_sequences)} sequences processed")
+            logger.debug("=== END DIRECT MODE: SNP MASKING ===")
+
+            return masked_sequences
+            
+        except Exception as e:
+            error_msg = f"Error in SNP masking for direct mode: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END DIRECT MODE: SNP MASKING ===")
+            raise SequenceProcessingError(error_msg) from e
+
+    @classmethod
+    def _find_sequence_in_reference(cls, query_sequence: str, 
+                                   reference_sequences: Dict[str, str], 
+                                   seq_id: str) -> Optional[Dict]:
         """
-        Filter primers using existing filtering logic.
+        Find where a query sequence maps to in the reference genome.
+        
+        Uses exact string matching to locate the query sequence within the
+        reference genome. This is suitable for sequences that are extracted
+        directly from the reference.
         
         Args:
-            primer_results: List of primer results from Primer3
+            query_sequence: The sequence to find
+            reference_sequences: Dictionary of reference chromosome sequences
+            seq_id: Sequence identifier for logging
             
         Returns:
-            Filtered primer DataFrame, or None if no primers pass filtering
+            Dictionary with mapping info: {'chromosome': str, 'start': int, 'end': int}
+            or None if no match found
         """
-        # Import here to avoid circular imports
-        from ..main import filter_primers
+        logger.debug(f"Searching for {seq_id} ({len(query_sequence)} bp) in reference")
         
-        return filter_primers(primer_results)
-    
-    def _calculate_thermodynamics(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Convert query to uppercase for matching
+        query_upper = query_sequence.upper()
+        
+        # Search each chromosome
+        for chrom_name, chrom_sequence in reference_sequences.items():
+            chrom_upper = chrom_sequence.upper()
+            
+            # Look for exact match
+            pos = chrom_upper.find(query_upper)
+            if pos != -1:
+                logger.debug(f"Found exact match for {seq_id} on {chrom_name} at position {pos}")
+                return {
+                    'chromosome': chrom_name,
+                    'start': pos,
+                    'end': pos + len(query_sequence)
+                }
+            
+            # Also try reverse complement
+            reverse_complement = cls._reverse_complement(query_upper)
+            pos = chrom_upper.find(reverse_complement)
+            if pos != -1:
+                logger.debug(f"Found reverse complement match for {seq_id} on {chrom_name} at position {pos}")
+                return {
+                    'chromosome': chrom_name,
+                    'start': pos,
+                    'end': pos + len(reverse_complement)
+                }
+        
+        logger.debug(f"No exact match found for {seq_id} in reference genome")
+        
+        # Try partial matching (at least 80% of sequence length)
+        min_match_length = max(50, int(len(query_sequence) * 0.8))
+        
+        for chrom_name, chrom_sequence in reference_sequences.items():
+            chrom_upper = chrom_sequence.upper()
+            
+            # Sliding window search for partial matches
+            for i in range(len(query_upper) - min_match_length + 1):
+                query_fragment = query_upper[i:i + min_match_length]
+                pos = chrom_upper.find(query_fragment)
+                
+                if pos != -1:
+                    # Found a partial match, extend it
+                    logger.debug(f"Found partial match for {seq_id} on {chrom_name} at position {pos}")
+                    
+                    # Use the original query sequence coordinates but map to reference position
+                    ref_start = max(0, pos - i)
+                    ref_end = min(len(chrom_sequence), ref_start + len(query_sequence))
+                    
+                    return {
+                        'chromosome': chrom_name,
+                        'start': ref_start,
+                        'end': ref_end
+                    }
+        
+        return None
+
+    @staticmethod
+    def _reverse_complement(sequence: str) -> str:
         """
-        Calculate thermodynamic properties using existing functionality.
+        Generate reverse complement of a DNA sequence.
         
         Args:
-            df: DataFrame with primer information
+            sequence: DNA sequence
             
         Returns:
-            DataFrame with added thermodynamic properties
+            Reverse complement sequence
         """
-        # Import here to avoid circular imports
-        from ..main import calculate_thermodynamics
+        complement_map = {
+            'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C',
+            'R': 'Y', 'Y': 'R', 'S': 'S', 'W': 'W',
+            'K': 'M', 'M': 'K', 'B': 'V', 'V': 'B',
+            'D': 'H', 'H': 'D', 'N': 'N', '-': '-'
+        }
         
-        return calculate_thermodynamics(df)
+        return ''.join(complement_map.get(base, base) for base in reversed(sequence))
+
+
+#############################################################################
+#                         Direct Mode Main Execution
+#############################################################################
+
+def run_direct_mode(args):
+    """
+    Execute the direct mode workflow with input file handling.
     
-    def _run_blast_specificity(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        Run BLAST specificity checking using existing functionality.
+    Handles file selection, sequence loading, and workflow execution
+    for the direct mode pipeline. Supports optional SNP masking.
+    
+    Args:
+        args: Parsed command line arguments
         
-        Args:
-            df: DataFrame with primer information
+    Returns:
+        True if workflow completed successfully, False otherwise
+    """
+    logger.info("=== Direct Mode Workflow ===")
+    logger.debug("=== MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+    
+    try:
+        # Handle input file selection
+        input_file = None
+        
+        # Check if direct mode was called with a file argument
+        if isinstance(args.direct, str):
+            # Direct mode was called with a file path: --direct file.csv
+            input_file = args.direct
+            if not os.path.exists(input_file):
+                error_msg = f"Direct mode input file not found: {input_file}"
+                logger.error(error_msg)
+                logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                return False
+        else:
+            # Direct mode was called without file: --direct
+            # Prompt for file selection
+            logger.info("\n>>> Please select sequence table file (CSV/Excel) <<<")
+            try:
+                input_file = FileIO.select_file(
+                    "Select sequence table file",
+                    [
+                        ("CSV Files", "*.csv"),
+                        ("Excel Files", "*.xlsx"),
+                        ("Excel Files", "*.xls"),
+                        ("All Files", "*.*")
+                    ]
+                )
+            except Exception as e:
+                error_msg = f"File selection failed: {str(e)}"
+                logger.error(error_msg)
+                logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                return False
+        
+        # Handle SNP masking file selection if enabled
+        vcf_file = None
+        fasta_file = None
+        enable_snp_masking = hasattr(args, 'snp') and args.snp
+        
+        if enable_snp_masking:
+            # Get VCF file if not provided in args
+            if not hasattr(args, 'vcf') or not args.vcf:
+                logger.info("\n>>> Please select VCF variant file <<<")
+                try:
+                    vcf_file = FileIO.select_file(
+                        "Select VCF variant file", 
+                        [
+                            ("VCF Files", "*.vcf"),
+                            ("Compressed VCF Files", "*.vcf.gz"),
+                            ("All Files", "*.*")
+                        ]
+                    )
+                except Exception as e:
+                    error_msg = f"VCF file selection failed: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                    return False
+            else:
+                vcf_file = args.vcf
             
-        Returns:
-            DataFrame with BLAST results, or None if no primers pass filtering
-        """
-        # Import here to avoid circular imports
-        from ..main import run_blast_specificity
+            # Get FASTA file if not provided in args
+            if not hasattr(args, 'fasta') or not args.fasta:
+                logger.info("\n>>> Please select reference FASTA file <<<")
+                try:
+                    fasta_file = FileIO.select_file(
+                        "Select reference FASTA file",
+                        [
+                            ("FASTA Files", "*.fasta"), 
+                            ("FASTA Files", "*.fa"), 
+                            ("FASTA Files", "*.fna"), 
+                            ("All Files", "*")]
+                    )
+                except Exception as e:
+                    error_msg = f"FASTA file selection failed: {str(e)}"
+                    logger.error(error_msg)
+                    logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                    return False
+            else:
+                fasta_file = args.fasta
+            
+            # Prepare VCF and FASTA files for compatibility
+            logger.info("\nPreparing files for SNP masking...")
+            try:
+                from ..utils import FilePreparator
+                
+                logger.debug("DIRECT: Delegating file preparation for SNP masking")
+                prep_result = FilePreparator.prepare_pipeline_files_workflow(
+                    vcf_file=vcf_file,
+                    fasta_file=fasta_file,
+                    gff_file=None  # No GFF needed for direct mode
+                )
+                
+                if not prep_result['success']:
+                    error_msg = f"File preparation failed: {prep_result.get('reason', 'Unknown error')}"
+                    logger.error(error_msg)
+                    logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                    return False
+                
+                # Update file paths to use prepared files
+                if prep_result.get('changes_made', False):
+                    vcf_file = prep_result['vcf_file']
+                    fasta_file = prep_result['fasta_file']
+                    logger.debug("Files successfully prepared for SNP masking")
+                else:
+                    logger.debug("Files are compatible and ready for SNP masking")
+                
+            except Exception as e:
+                error_msg = f"File preparation failed: {str(e)}"
+                logger.error(error_msg)
+                logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+                return False
         
-        return run_blast_specificity(df)
+        # Signal that file selection is complete
+        FileIO.mark_selection_complete()
+        
+        # Load sequences from the table
+        logger.debug(f"\nLoading sequences from: {input_file}")
+        try:
+            processor = DirectModeProcessor()
+            sequences = processor.load_sequences_from_table(input_file)
+            logger.info(f"\nLoaded {len(sequences)} sequences from table")
+        except Exception as e:
+            error_msg = f"Failed to load sequences from table: {str(e)}"
+            logger.error(error_msg)
+            logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+            return False
+        
+        # Set up output directory
+        if hasattr(args, 'output') and args.output:
+            output_dir = args.output
+        else:
+            # Use the directory of the input file
+            input_dir = os.path.dirname(os.path.abspath(input_file))
+            output_dir = os.path.join(input_dir, "Primers")
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Determine internal oligo setting from args
+        enable_internal_oligo = not (hasattr(args, 'nooligo') and args.nooligo)
+        
+        # Run the direct workflow with optional SNP masking
+        logger.debug("DIRECT: Delegating to direct mode workflow")
+        processor = DirectModeProcessor()
+        success = processor.run_direct_workflow(
+            sequences=sequences,
+            output_dir=output_dir,
+            input_file=input_file,
+            enable_internal_oligo=enable_internal_oligo,
+            enable_snp_masking=enable_snp_masking,
+            vcf_file=vcf_file,
+            fasta_file=fasta_file
+        )
+        
+        logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+        return success
+        
+    except Exception as e:
+        error_msg = f"Error in direct mode execution: {str(e)}"
+        logger.error(error_msg)
+        logger.debug(f"Error details: {str(e)}", exc_info=True)
+        logger.debug("=== END MAIN WORKFLOW: DIRECT MODE EXECUTION ===")
+        return False

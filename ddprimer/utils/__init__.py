@@ -10,7 +10,7 @@ This subpackage contains utility functions:
 from .file_io import FileIO
 from .blast_db_manager import BlastDatabaseManager
 from .file_preparator import FilePreparator
-from .direct_mode import SequenceAnalyzer, DirectMode
+from .direct_mode import DirectModeProcessor, run_direct_mode
 
 __all__ = [
     'BlastDatabaseManager',
@@ -18,5 +18,7 @@ __all__ = [
     'TempDirectoryManager',
     'FilePreparator',
     'SequenceAnalyzer', 
-    'DirectMode'
+    'DirectMode',
+    'DirectModeProcessor',
+    'run_direct_mode'
 ]

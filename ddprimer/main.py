@@ -37,6 +37,7 @@ from tqdm import tqdm
 
 # Import package modules
 from .config import Config, setup_logging, display_config, display_primer3_settings, DDPrimerError, FileError, ExternalToolError, SequenceProcessingError, PrimerDesignError, FileSelectionError
+from .utils import run_direct_mode
 
 # Type alias for path inputs
 PathLike = Union[str, Path]
@@ -67,8 +68,8 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         usage='ddprimer [-h] [--debug [MODULE...]] [--config [.json]] [--db [.fasta, .fna, .fa] [DB_NAME]]\n'
             '                [--cli]  [--nooligo] [--noannotation]\n'
-            '                [--direct [.csv, .xlsx]] [--vcf [.vcf, .vcf.gz]]\n'        
-            '                [--fasta [.fasta, .fna, .fa]] [--gff [.gff, .gff3]] \n'
+            '                [--direct [.csv, .xlsx]] [--snp]\n'        
+            '                [--fasta [.fasta, .fna, .fa]] [--gff [.gff, .gff3]] [--vcf [.vcf, .vcf.gz]]\\n'
             '                [--output <output_dir>]'
     )
 
@@ -98,6 +99,8 @@ def parse_arguments():
     # Direct Mode
     option_group.add_argument('--direct', metavar='[.csv, .xlsx]', nargs='?', const=True, 
                             help=   'Enable target-sequence based primer design workflow using CSV/Excel input.')
+    option_group.add_argument('--snp', action='store_true', 
+                            help=   'Enable SNP masking in direct mode. Requires VCF and FASTA files.')
 
     # Input files
     input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', 
@@ -130,14 +133,12 @@ def parse_arguments():
             logger.error("Direct mode cannot use GFF files (--gff). Gene filtering is automatically disabled.")
             sys.exit(1)
         
-        # If VCF is provided, FASTA is required for reference matching
-        if args.vcf and not args.fasta:
-            logger.error("Direct mode with VCF requires a reference FASTA file (--fasta) for sequence matching.")
+    # SNP mode enables filtering in direct mode
+    if args.snp:
+        if not args.direct:
+            logger.error("--snp flag can only be used with --direct mode.")
             sys.exit(1)
-        
-        # Force noannotation in direct mode
-        args.noannotation = True
-    
+            
     # Process --db arguments (existing code remains the same)
     if args.db is not None:
         # Set the db output directory if provided
@@ -710,10 +711,17 @@ def run_pipeline():
             logger.debug("=== END MAIN WORKFLOW: PIPELINE EXECUTION ===")
             raise ExternalToolError(error_msg, tool_name="blastn") from e
         
-        # Execute the standard mode workflow (only mode currently supported)
-        logger.debug("MAIN: Delegating to standard mode workflow")
-        success = run_standard_mode(args)
-        
+        # Validate direct mode arguments
+        if args.direct:
+            # Execute direct mode workflow
+            logger.debug("MAIN: Delegating to direct mode workflow")
+            from .utils.direct_mode import run_direct_mode
+            success = run_direct_mode(args)
+        else:
+            # Execute standard mode workflow
+            logger.debug("MAIN: Delegating to standard mode workflow")
+            success = run_standard_mode(args)
+            
         if success:
             logger.info("\n=== Pipeline execution completed successfully! ===\n")
             logger.debug("=== END MAIN WORKFLOW: PIPELINE EXECUTION ===")
