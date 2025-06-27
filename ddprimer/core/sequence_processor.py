@@ -235,31 +235,19 @@ class SequenceProcessor:
     @staticmethod
     def cut_at_restriction_sites(sequences, restriction_site=None):
         """
-        Cut sequences at restriction sites to generate fragments with 0-based coordinates.
-        
-        Processes DNA sequences by identifying restriction enzyme cut sites
-        and generating fragments suitable for primer design, with consistent
-        0-based coordinate system throughout.
+        Cut sequences at restriction sites to generate fragments with proper genomic coordinates.
         
         Args:
-            sequences: Dictionary mapping sequence IDs to DNA sequences
+            sequences: Dictionary mapping sequence IDs to DNA sequences OR sequence data with coordinates
             restriction_site: Restriction site pattern, defaults to Config.RESTRICTION_SITE
             
         Returns:
-            List of fragment dictionaries with 0-based coordinates
-            
-        Raises:
-            SequenceProcessingError: If restriction site pattern is invalid or processing fails
-            
-        Example:
-            >>> sequences = {"chr1": "GAATTCATCGAATTCGCTA"}
-            >>> fragments = SequenceProcessor.cut_at_restriction_sites(sequences, "GAATTC")
-            >>> # All fragments will have 0-based coordinates: start, end, length
-        """
+            List of fragment dictionaries with 0-based genomic coordinates
+            """
         logger.info("\nFiltering sequences by restriction sites...")       
         logger.debug(f"=== RESTRICTION SITE CUTTING ===")
         logger.debug(f"Processing {len(sequences)} sequences for restriction site cutting")
-        logger.debug("COORDINATE SYSTEM: All fragments will use 0-based coordinates")
+        logger.debug("COORDINATE SYSTEM: All fragments use 0-based genomic coordinates [start, end)")
         
         if restriction_site is None:
             restriction_site = Config.RESTRICTION_SITE
@@ -269,28 +257,23 @@ class SequenceProcessor:
             fragments = []
             
             for seq_id, sequence in sequences.items():
-                # Validate sequence first
                 if not sequence or not isinstance(sequence, str):
-                    logger.warning(f"Invalid sequence for {seq_id}: empty or not string")
+                    if DebugLogLimiter.should_log('invalid_sequence_warning', interval=100, max_initial=3):
+                        logger.warning(f"Invalid sequence for {seq_id}: empty or not string")
                     continue
                 
+                # The entire chromosome is a single fragment
                 fragment = {
                     "id": seq_id,
                     "sequence": sequence,
                     "chromosome": seq_id,
-                    "start": 0,                    # 0-based start
-                    "end": len(sequence),          # 0-based end (exclusive)
+                    "start": 0,  # 0-based genomic start
+                    "end": len(sequence),  # 0-based genomic end
                     "length": len(sequence)
                 }
+                fragments.append(fragment)
                 
-                # Validate the created fragment
-                validation_result = SequenceProcessor._validate_fragment_coordinates(fragment)
-                if validation_result["valid"]:
-                    fragments.append(fragment)
-                else:
-                    logger.warning(f"Created fragment for {seq_id} failed validation: {validation_result['errors']}")
-                
-            logger.debug(f"Created {len(fragments)} intact fragments with 0-based coordinates")
+            logger.debug(f"Created {len(fragments)} intact chromosome fragments")
             return fragments
             
         try:
@@ -299,105 +282,79 @@ class SequenceProcessor:
         except re.error as e:
             error_msg = f"Invalid restriction site regex pattern: {restriction_site}"
             logger.error(error_msg)
-            logger.debug(f"Regex compilation error: {str(e)}", exc_info=True)
             raise SequenceProcessingError(error_msg) from e
         
         fragments = []
-        total_sites_found = 0
-        sequences_with_sites = 0
+        total_restriction_sites = 0
         total_fragments_created = 0
-        coordinate_validation_errors = 0
+        sequences_with_sites = 0
+        sequences_without_sites = 0
         
         for seq_num, (seq_id, sequence) in enumerate(sequences.items()):
             try:
-                # Validate input sequence
                 if not sequence or not isinstance(sequence, str):
-                    logger.warning(f"Invalid sequence for {seq_id}: empty or not string")
+                    if DebugLogLimiter.should_log('invalid_sequence_warning', interval=100, max_initial=3):
+                        logger.warning(f"Invalid sequence for {seq_id}: empty or not string")
                     continue
                 
-                if (logger.isEnabledFor(logging.DEBUG) and 
-                    DebugLogLimiter.should_log('restriction_sequence_processing', interval=200, max_initial=3)):
-                    logger.debug(f"Processing sequence {seq_num+1}/{len(sequences)}: {seq_id} ({len(sequence)} bp)")
+                if DebugLogLimiter.should_log('sequence_processing', interval=50, max_initial=3):
+                    logger.debug(f"Processing chromosome {seq_id} ({len(sequence)} bp)")
                 
                 matches = list(restriction_pattern.finditer(sequence))
-                sites_in_sequence = len(matches)
-                total_sites_found += sites_in_sequence
+                total_restriction_sites += len(matches)
                 
                 if not matches:
-                    # No restriction sites - keep entire sequence
+                    # No restriction sites - keep entire chromosome
                     fragment = {
                         "id": seq_id,
                         "sequence": sequence,
                         "chromosome": seq_id,
-                        "start": 0,                # 0-based start
-                        "end": len(sequence),      # 0-based end (exclusive) 
+                        "start": 0,
+                        "end": len(sequence),
                         "length": len(sequence)
                     }
+                    fragments.append(fragment)
+                    total_fragments_created += 1
+                    sequences_without_sites += 1
                     
-                    # Validate fragment coordinates
-                    validation_result = SequenceProcessor._validate_fragment_coordinates(fragment)
-                    if validation_result["valid"]:
-                        fragments.append(fragment)
-                        total_fragments_created += 1
-                    else:
-                        coordinate_validation_errors += 1
-                        logger.warning(f"Fragment validation failed for {seq_id}: {validation_result['errors']}")
-                    
-                    if (logger.isEnabledFor(logging.DEBUG) and 
-                        DebugLogLimiter.should_log('restriction_no_sites', interval=500, max_initial=2)):
-                        logger.debug(f"No restriction sites found in {seq_id} - keeping entire sequence")
+                    if DebugLogLimiter.should_log('no_restriction_sites', interval=20, max_initial=2):
+                        logger.debug(f"No restriction sites found in {seq_id}, keeping entire sequence")
                     continue
                 
                 sequences_with_sites += 1
-                
-                if (logger.isEnabledFor(logging.DEBUG) and 
-                    DebugLogLimiter.should_log('restriction_sites_found', interval=100, max_initial=3)):
-                    logger.debug(f"Found {sites_in_sequence} restriction sites in {seq_id}")
+                if DebugLogLimiter.should_log('restriction_sites_found', interval=20, max_initial=3):
+                    logger.debug(f"Found {len(matches)} restriction sites in {seq_id}")
                 
                 fragment_count = 0
                 last_end = 0
-                fragments_for_sequence = []
+                fragments_below_min_length = 0
                 
                 # Process fragments between restriction sites
                 for i, match in enumerate(matches):
-                    # Calculate fragment boundaries in 0-based coordinates
-                    frag_start = last_end         # 0-based start
-                    frag_end = match.start()      # 0-based end (exclusive)
+                    frag_start = last_end         # Position in chromosome sequence (0-based)
+                    frag_end = match.start()      # Position in chromosome sequence (0-based)
                     fragment_length = frag_end - frag_start
                     
                     if fragment_length >= Config.MIN_SEGMENT_LENGTH:
-                        # Validate sequence boundaries before extraction
-                        boundary_validation = SequenceProcessor._validate_sequence_boundaries(
-                            sequence, frag_start, frag_end
-                        )
+                        fragment = {
+                            "id": f"{seq_id}_frag{fragment_count}",
+                            "sequence": sequence[frag_start:frag_end],
+                            "chromosome": seq_id,
+                            "start": frag_start,  # TRUE 0-based genomic position
+                            "end": frag_end,      # TRUE 0-based genomic position
+                            "length": fragment_length
+                        }
+                        fragments.append(fragment)
+                        total_fragments_created += 1
+                        fragment_count += 1
                         
-                        if boundary_validation["valid"]:
-                            fragment = {
-                                "id": f"{seq_id}_frag{fragment_count}",
-                                "sequence": sequence[frag_start:frag_end],
-                                "chromosome": seq_id,
-                                "start": frag_start,      # 0-based start
-                                "end": frag_end,          # 0-based end (exclusive)
-                                "length": fragment_length
-                            }
-                            
-                            # Final validation of created fragment
-                            validation_result = SequenceProcessor._validate_fragment_coordinates(fragment)
-                            if validation_result["valid"]:
-                                fragments.append(fragment)
-                                fragments_for_sequence.append(fragment)
-                                fragment_count += 1
-                                
-                                if (logger.isEnabledFor(logging.DEBUG) and 
-                                    DebugLogLimiter.should_log('restriction_fragment_creation', interval=500, max_initial=3)):
-                                    logger.debug(f"Created fragment {fragment['id']}: {fragment_length} bp "
-                                               f"(coordinates: [{frag_start}, {frag_end}))")
-                            else:
-                                coordinate_validation_errors += 1
-                                logger.warning(f"Fragment validation failed for {fragment['id']}: {validation_result['errors']}")
-                        else:
-                            coordinate_validation_errors += 1
-                            logger.warning(f"Boundary validation failed for fragment at {frag_start}-{frag_end}: {boundary_validation['errors']}")
+                        if DebugLogLimiter.should_log('fragment_creation', interval=200, max_initial=3):
+                            logger.debug(f"Created fragment {fragment['id']}: {fragment_length} bp "
+                                    f"(genomic: {seq_id}:{frag_start}-{frag_end})")
+                    else:
+                        fragments_below_min_length += 1
+                        if DebugLogLimiter.should_log('fragment_too_short', interval=100, max_initial=2):
+                            logger.debug(f"Fragment {seq_id}_frag{fragment_count} too short: {fragment_length} bp < {Config.MIN_SEGMENT_LENGTH} bp")
                     
                     last_end = match.end()
                 
@@ -407,78 +364,42 @@ class SequenceProcessor:
                 final_length = final_end - final_start
                 
                 if final_length >= Config.MIN_SEGMENT_LENGTH:
-                    # Validate sequence boundaries
-                    boundary_validation = SequenceProcessor._validate_sequence_boundaries(
-                        sequence, final_start, final_end
-                    )
+                    fragment = {
+                        "id": f"{seq_id}_frag{fragment_count}",
+                        "sequence": sequence[final_start:final_end],
+                        "chromosome": seq_id,
+                        "start": final_start,  # TRUE 0-based genomic position
+                        "end": final_end,      # TRUE 0-based genomic position
+                        "length": final_length
+                    }
+                    fragments.append(fragment)
+                    total_fragments_created += 1
                     
-                    if boundary_validation["valid"]:
-                        fragment = {
-                            "id": f"{seq_id}_frag{fragment_count}",
-                            "sequence": sequence[final_start:final_end],
-                            "chromosome": seq_id,
-                            "start": final_start,     # 0-based start
-                            "end": final_end,         # 0-based end (exclusive)
-                            "length": final_length
-                        }
-                        
-                        # Final validation of created fragment
-                        validation_result = SequenceProcessor._validate_fragment_coordinates(fragment)
-                        if validation_result["valid"]:
-                            fragments.append(fragment)
-                            fragments_for_sequence.append(fragment)
-                            fragment_count += 1
+                    if DebugLogLimiter.should_log('final_fragment_creation', interval=200, max_initial=2):
+                        logger.debug(f"Created final fragment: {final_length} bp "
+                                f"(genomic: {seq_id}:{final_start}-{final_end})")
+                else:
+                    fragments_below_min_length += 1
+                    if DebugLogLimiter.should_log('final_fragment_too_short', interval=100, max_initial=2):
+                        logger.debug(f"Final fragment too short: {final_length} bp < {Config.MIN_SEGMENT_LENGTH} bp")
+                
+                if DebugLogLimiter.should_log('sequence_summary', interval=20, max_initial=2):
+                    logger.debug(f"Sequence {seq_id}: {len(matches)} sites, {fragment_count + 1} valid fragments, "
+                            f"{fragments_below_min_length} fragments below minimum length")
                             
-                            if (logger.isEnabledFor(logging.DEBUG) and 
-                                DebugLogLimiter.should_log('restriction_final_fragment', interval=500, max_initial=2)):
-                                logger.debug(f"Created final fragment {fragment['id']}: {final_length} bp "
-                                           f"(coordinates: [{final_start}, {final_end}))")
-                        else:
-                            coordinate_validation_errors += 1
-                            logger.warning(f"Final fragment validation failed for {fragment['id']}: {validation_result['errors']}")
-                    else:
-                        coordinate_validation_errors += 1
-                        logger.warning(f"Final fragment boundary validation failed for {final_start}-{final_end}: {boundary_validation['errors']}")
-                
-                total_fragments_created += len(fragments_for_sequence)
-                
-                if (logger.isEnabledFor(logging.DEBUG) and 
-                    (fragment_count > 10 or DebugLogLimiter.should_log('restriction_sequence_summary', interval=50, max_initial=3))):
-                    logger.debug(f"Generated {fragment_count} valid fragments from {seq_id}")
-                    
             except Exception as e:
-                error_msg = f"Error processing sequence {seq_id} for restriction sites"
-                logger.error(error_msg)
-                logger.debug(f"Processing error: {str(e)}", exc_info=True)
+                if DebugLogLimiter.should_log('sequence_processing_error', interval=50, max_initial=2):
+                    logger.error(f"Error processing sequence {seq_id} for restriction sites: {str(e)}")
                 continue
 
         logger.info(f"Generated {len(fragments)} fragments after restriction site cutting")
-        logger.debug(f"=== RESTRICTION SITE CUTTING RESULTS ===")
-        logger.debug(f"Input sequences: {len(sequences)}")
-        logger.debug(f"Sequences with restriction sites: {sequences_with_sites}")
-        logger.debug(f"Total restriction sites found: {total_sites_found}")
-        logger.debug(f"Output fragments: {len(fragments)} (all with 0-based coordinates)")
-        logger.debug(f"Coordinate validation errors: {coordinate_validation_errors}")
-        logger.debug(f"Minimum fragment length: {Config.MIN_SEGMENT_LENGTH} bp")
-        
-        if logger.isEnabledFor(logging.DEBUG) and fragments:
-            fragment_lengths = [frag['length'] for frag in fragments]
-            avg_length = sum(fragment_lengths) / len(fragment_lengths)
-            min_length = min(fragment_lengths)
-            max_length = max(fragment_lengths)
-            logger.debug(f"Fragment length statistics: avg={avg_length:.0f}, min={min_length}, max={max_length}")
-            
-            # Validate a sample of coordinates to ensure consistency
-            sample_size = min(5, len(fragments))
-            logger.debug(f"Sample coordinate validation (showing {sample_size} fragments):")
-            for i, frag in enumerate(fragments[:sample_size]):
-                expected_len = frag['end'] - frag['start']
-                actual_len = len(frag['sequence'])
-                coord_consistent = expected_len == actual_len == frag.get('length', -1)
-                logger.debug(f"  {frag['id']}: [{frag['start']}, {frag['end']}) = {expected_len}bp, "
-                           f"seq_len={actual_len}bp, consistent={coord_consistent}")
-        
-        logger.debug(f"=== END RESTRICTION SITE CUTTING ===")
+        logger.debug(f"Restriction site cutting summary:")
+        logger.debug(f"  Total sequences processed: {len(sequences)}")
+        logger.debug(f"  Sequences with restriction sites: {sequences_with_sites}")
+        logger.debug(f"  Sequences without restriction sites: {sequences_without_sites}")
+        logger.debug(f"  Total restriction sites found: {total_restriction_sites}")
+        logger.debug(f"  Total fragments created: {total_fragments_created}")
+        logger.debug(f"All fragments have genomic coordinates relative to chromosome")
         
         return fragments
     

@@ -63,11 +63,41 @@ class BlastProcessor:
         """
         logger.info("\nRunning BLAST for specificity checking...")
         logger.debug("=== WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+        logger.debug(f"DataFrame columns: {df.columns.tolist()}")
         
         try:
+            # Detect column naming convention
+            if "Sequence (F)" in df.columns:
+                forward_col = "Sequence (F)"
+                reverse_col = "Sequence (R)"
+                probe_col = "Sequence (P)"
+                forward_blast1_col = "Sequence (F) BLAST1"
+                forward_blast2_col = "Sequence (F) BLAST2"
+                reverse_blast1_col = "Sequence (R) BLAST1"
+                reverse_blast2_col = "Sequence (R) BLAST2"
+                probe_blast1_col = "Sequence (P) BLAST1"
+                probe_blast2_col = "Sequence (P) BLAST2"
+            elif "Primer F" in df.columns:
+                forward_col = "Primer F"
+                reverse_col = "Primer R"
+                probe_col = "Probe"
+                forward_blast1_col = "Primer F BLAST1"
+                forward_blast2_col = "Primer F BLAST2"
+                reverse_blast1_col = "Primer R BLAST1"
+                reverse_blast2_col = "Primer R BLAST2"
+                probe_blast1_col = "Probe BLAST1"
+                probe_blast2_col = "Probe BLAST2"
+            else:
+                error_msg = "No primer sequence columns found (expected 'Sequence (F)' or 'Primer F')"
+                logger.error(error_msg)
+                logger.debug(f"Available columns: {df.columns.tolist()}")
+                raise PrimerDesignError(error_msg)
+            
+            logger.debug(f"Using column naming convention: forward='{forward_col}', reverse='{reverse_col}', probe='{probe_col}'")
+            
             # Run BLAST for forward primers
             blast_results_f = []
-            primers_f = df["Primer F"].tolist()
+            primers_f = df[forward_col].tolist()
             if Config.SHOW_PROGRESS:
                 primers_f_iter = tqdm(primers_f, total=len(primers_f), desc="BLASTing forward primers")
             else:
@@ -77,11 +107,11 @@ class BlastProcessor:
                 blast1, blast2 = cls.blast_short_seq(primer_f)
                 blast_results_f.append((blast1, blast2))
             
-            df["Primer F BLAST1"], df["Primer F BLAST2"] = zip(*blast_results_f)
+            df[forward_blast1_col], df[forward_blast2_col] = zip(*blast_results_f)
             
             # Run BLAST for reverse primers
             blast_results_r = []
-            primers_r = df["Primer R"].tolist()
+            primers_r = df[reverse_col].tolist()
             if Config.SHOW_PROGRESS:
                 primers_r_iter = tqdm(primers_r, total=len(primers_r), desc="BLASTing reverse primers")
             else:
@@ -91,12 +121,12 @@ class BlastProcessor:
                 blast1, blast2 = cls.blast_short_seq(primer_r)
                 blast_results_r.append((blast1, blast2))
             
-            df["Primer R BLAST1"], df["Primer R BLAST2"] = zip(*blast_results_r)
+            df[reverse_blast1_col], df[reverse_blast2_col] = zip(*blast_results_r)
             
             # Run BLAST for probes if present
-            if "Probe" in df.columns:
+            if probe_col in df.columns:
                 blast_results_p = []
-                probes = df["Probe"].tolist()
+                probes = df[probe_col].tolist()
                 if Config.SHOW_PROGRESS:
                     probes_iter = tqdm(probes, total=len(probes), desc="BLASTing probes")
                 else:
@@ -109,7 +139,7 @@ class BlastProcessor:
                         blast1, blast2 = None, None
                     blast_results_p.append((blast1, blast2))
                 
-                df["Probe BLAST1"], df["Probe BLAST2"] = zip(*blast_results_p)
+                df[probe_blast1_col], df[probe_blast2_col] = zip(*blast_results_p)
             
             # Filter by BLAST specificity using FilterProcessor
             initial_count = len(df)

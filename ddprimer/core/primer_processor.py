@@ -80,6 +80,7 @@ class PrimerProcessor:
                 if not fragment or not primer_pairs:
                     continue
                 
+                for pair_index, pair_data in enumerate(primer_pairs):
                     try:
                         primer_record = processor.create_primer_record(
                             fragment, pair_data, pair_index
@@ -136,97 +137,98 @@ class PrimerProcessor:
     
     def create_primer_record(self, fragment: Dict, pair_data: Dict, pair_index: int) -> Optional[Dict]:
         """
-        Create a primer record from fragment and primer pair data.
-        
+        Create a primer record from fragment and primer pair data, calculating
+        correct genomic coordinates for the amplicon.
+
         Args:
-            fragment: Fragment dictionary containing template sequence and metadata
-            pair_data: Primer pair data from Primer3
-            pair_index: Index of the primer pair
-            
+            fragment: Fragment dictionary containing template sequence and metadata,
+                        including its 0-based genomic start coordinate in the 'start' field.
+            pair_data: Primer pair data from Primer3.
+            pair_index: Index of the primer pair.
+
         Returns:
-            Complete primer record dictionary or None if creation fails
+            Complete primer record dictionary or None if creation fails.
         """
         if DebugLogLimiter.should_log('primer_record_creation', interval=200, max_initial=2):
             logger.debug(f"Creating primer record for pair {pair_index}")
-            
+
         try:
             forward_primer = pair_data.get("left_sequence")
             reverse_primer = pair_data.get("right_sequence")
-            
+
             if not forward_primer or not reverse_primer:
                 if DebugLogLimiter.should_log('primer_record_missing_sequences', interval=100, max_initial=1):
                     logger.debug(f"Missing primer sequences for pair {pair_index}")
                 return None
-            
-            # Get primer coordinates
-            forward_start = pair_data.get("left_start", 0)
+
+            # Get primer coordinates relative to the fragment (0-based)
+            forward_start_relative = pair_data.get("left_start", 0)
             forward_length = len(forward_primer)
-            reverse_start = pair_data.get("right_start", 0)
+            # The 'right_start' from primer3 is the 0-based index of the 3' (last) base
+            reverse_end_relative = pair_data.get("right_start", 0)
             reverse_length = len(reverse_primer)
-            
-            # Process probe sequence safely
+
+            # Get Tm values
+            forward_tm = pair_data.get("left_tm", 0.0)
+            reverse_tm = pair_data.get("right_tm", 0.0)
+
+            # Process probe
             probe_seq = self._process_probe_sequence_safe(pair_data, pair_index)
+            probe_tm = pair_data.get("internal_tm", 0.0) if probe_seq else 0.0
+
+            # --- CORRECTED GENOMIC COORDINATE CALCULATION ---
+            # Get the TRUE 0-based genomic start position of this fragment.
+            # This is now reliably stored in the 'start' field.
+            fragment_genomic_start = fragment.get("start", 0)
+            fragment_chromosome = fragment.get("chromosome", "")
             
-            # Get fragment information
-            fragment_info = self._get_location_info(fragment)
-            
+            # Calculate the TRUE 0-based genomic coordinates of the amplicon.
+            # Add the relative primer positions to the fragment's true genomic start.
+            # We add 1 to the start to convert from 0-based to 1-based for the final output.
+            amplicon_genomic_start = fragment_genomic_start + forward_start_relative + 1
+            # The end coordinate is the fragment's start + the relative end of the reverse primer.
+            amplicon_genomic_end = fragment_genomic_start + reverse_end_relative + 1
+
+            # Debugging coordinate calculation
+            if DebugLogLimiter.should_log('genomic_coordinate_debug', interval=500, max_initial=3):
+                logger.debug(f"Coordinate calculation for {fragment.get('id', 'unknown')}:")
+                logger.debug(f"  Fragment genomic start (0-based): {fragment_genomic_start}")
+                logger.debug(f"  Forward relative start (0-based): {forward_start_relative}")
+                logger.debug(f"  Calculated amplicon genomic start (1-based): {amplicon_genomic_start}")
+
             # Extract and validate amplicon
             amplicon_result = self._extract_and_validate_amplicon(
-                fragment, forward_start, forward_length, reverse_start, reverse_length
+                fragment, forward_start_relative, forward_length, reverse_end_relative, reverse_length
             )
             
-            # Validate that Primer3 sequences match extracted sequences
-            primer_sequence_validation = self._validate_primer3_sequences(
-                forward_primer, reverse_primer, 
-                amplicon_result.get("forward_primer_extracted", ""),
-                amplicon_result.get("reverse_primer_extracted", "")
-            )
-            
-            if not primer_sequence_validation["valid"]:
-                if DebugLogLimiter.should_log('primer_sequence_mismatch', interval=100, max_initial=1):
-                    logger.warning(f"Primer3 sequence mismatch for pair {pair_index}")
-            
-            pair_penalty = pair_data.get("penalty", 0.0)
-            left_penalty = pair_data.get("left_penalty", 0.0)
-            right_penalty = pair_data.get("right_penalty", 0.0)
-            
-            # Create basic primer record
+            # Create primer record
             primer_record = {
                 "Fragment ID": fragment.get("id", "unknown"),
                 "Fragment": fragment.get("sequence", ""),
-                "Primer F": forward_primer,
-                "Primer R": reverse_primer,
-                "Penalty": pair_penalty,  
-                "Pair Penalty": pair_penalty,  
-                "Penalty F": left_penalty,  
-                "Penalty R": right_penalty,
-                **fragment_info
+                "Sequence (F)": forward_primer,
+                "Sequence (R)": reverse_primer,
+                "Tm (F)": forward_tm,
+                "Tm (R)": reverse_tm,
+                "Penalty": pair_data.get("penalty", 0.0),
+                "Penalty (F)": pair_data.get("left_penalty", 0.0),
+                "Penalty (R)": pair_data.get("right_penalty", 0.0),
+                "Chr": fragment_chromosome,
+                "Start": amplicon_genomic_start, # Correct genomic start (1-based)
+                "End": amplicon_genomic_end,     # Correct genomic end (1-based)
+                "Gene": fragment.get("Gene", fragment.get("gene", "")),
             }
-            
+
             # Add probe if available
             if probe_seq:
-                primer_record["Probe"] = probe_seq
-            
-            primer_record["Amplicon"] = amplicon_result["amplicon"]
-            primer_record["Amplicon Length"] = amplicon_result["amplicon_length"]
-            primer_record["Amplicon Validated"] = amplicon_result["validated"]
-            primer_record["Primer Sequence Match"] = primer_sequence_validation["valid"]
-            
-            # Add primer-specific information
-            primer_record.update({
-                "Forward Start": forward_start,
-                "Forward Length": forward_length,
-                "Reverse Start": reverse_start,
-                "Reverse Length": reverse_length,
-                "Primer F Length": forward_length,
-                "Primer R Length": reverse_length,
-                "Pair Index": pair_index,
-                "Forward Primer Extracted": amplicon_result.get("forward_primer_extracted", ""),
-                "Reverse Primer Extracted": amplicon_result.get("reverse_primer_extracted", "")
-            })
+                primer_record["Sequence (P)"] = probe_seq
+                primer_record["Tm (P)"] = probe_tm
+
+            # Add amplicon
+            primer_record["Sequence (A)"] = amplicon_result["amplicon"]
+            primer_record["Length"] = amplicon_result["amplicon_length"]
             
             return primer_record
-            
+
         except Exception as e:
             if DebugLogLimiter.should_log('primer_record_creation_errors', interval=50, max_initial=1):
                 logger.error(f"Error creating primer record for pair {pair_index}: {str(e)}")
@@ -307,41 +309,7 @@ class PrimerProcessor:
             if DebugLogLimiter.should_log('probe_processing_error', interval=100, max_initial=1):
                 logger.warning(f"Failed to process probe sequence for pair {pair_index}: {str(e)}")
             return None
-    
-    def _get_location_info(self, fragment: Dict) -> Dict[str, Any]:
-        """
-        Extract location information from fragment for primer record.
         
-        Args:
-            fragment: Fragment dictionary
-            
-        Returns:
-            Dictionary containing location information
-        """
-        location_info = {}
-        
-        # Extract basic location information
-        if "chromosome" in fragment:
-            location_info["Chr"] = fragment["chromosome"]
-        elif "chr" in fragment:
-            location_info["Chr"] = fragment["chr"]
-        
-        # Use genomic coordinates (1-based)
-        if "genomic_start" in fragment:
-            location_info["Start"] = fragment["genomic_start"]
-        elif "start" in fragment:
-            location_info["Start"] = fragment["start"]
-        
-        if "genomic_end" in fragment:
-            location_info["End"] = fragment["genomic_end"]
-        elif "end" in fragment:
-            location_info["End"] = fragment["end"]
-        
-        # Add gene information if available
-        if "Gene" in fragment:
-            location_info["Gene"] = fragment["Gene"]
-        
-        return location_info
     
     def _extract_and_validate_amplicon(self, fragment: Dict, forward_start: int, forward_length: int,
                                      reverse_start: int, reverse_length: int) -> Dict:

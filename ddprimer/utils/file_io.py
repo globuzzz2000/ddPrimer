@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Optional import for Excel formatting
 try:
     import openpyxl
-    from openpyxl.styles import PatternFill, Alignment, Font
+    from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
     from openpyxl.utils import get_column_letter
     HAS_OPENPYXL = True
 except ImportError:
@@ -591,21 +591,16 @@ class FileIO:
         Returns:
             DataFrame with properly formatted columns for output
         """
-        # Create a copy to avoid modifying the original
         output_df = df.copy()
         
-        # 1. AMPLICON LENGTH: Map 'Amplicon Length' -> 'Length'
-        if 'Amplicon Length' in output_df.columns:
-            output_df['Length'] = output_df['Amplicon Length']
-        elif 'Amplicon' in output_df.columns:
-            # Fallback: calculate length from amplicon sequence if needed
-            output_df['Length'] = output_df['Amplicon'].apply(lambda x: len(str(x)) if pd.notna(x) else 0)
-        
-        # 2. CHROMOSOME: Map 'Chr' -> 'Chromosome'
-        if 'Chr' in output_df.columns:
-            output_df['Chromosome'] = output_df['Chr']
-        
-        # 3. LOCATION: Combine 'Start' and 'End' -> 'Location'
+        # 1. AMPLICON LENGTH: Create 'Length' from 'Amplicon Length' if it doesn't exist
+        if 'Length' not in output_df.columns:
+            if 'Amplicon Length' in output_df.columns:
+                output_df['Length'] = output_df['Amplicon Length']
+            elif 'Sequence (A)' in output_df.columns:  # Use final column name
+                output_df['Length'] = output_df['Sequence (A)'].apply(lambda x: len(str(x)) if pd.notna(x) else 0)
+
+        # 2. LOCATION: Combine 'Start' and 'End' -> 'Location'
         if 'Start' in output_df.columns and 'End' in output_df.columns:
             output_df['Location'] = output_df.apply(
                 lambda row: f"{row['Start']}-{row['End']}" 
@@ -619,7 +614,7 @@ class FileIO:
     @staticmethod
     def format_excel(df, output_file):
         """
-        Save DataFrame to Excel with comprehensive formatting.
+        Save DataFrame to Excel with comprehensive formatting including number formats.
         
         Args:
             df: DataFrame with primer results
@@ -659,13 +654,24 @@ class FileIO:
             centered_alignment = Alignment(horizontal='center', vertical='center')
             left_alignment = Alignment(horizontal='left', vertical='center')
             
+            # Create border styles for group separators
+            thin_border_left = Border(left=Side(style='thin'))
+            thin_border_right = Border(right=Side(style='thin'))
+            thin_border_both = Border(left=Side(style='thin'), right=Side(style='thin'))
+            
+            # Clear all default borders first
+            no_border = Border()
+            for row_num in range(1, max_row + 1):
+                for col_num in range(1, max_col + 1):
+                    cell = worksheet.cell(row=row_num, column=col_num)
+                    cell.border = no_border
+            
             column_map = {}
             header_texts = []
             
             # Apply basic formatting
             for col_num in range(1, max_col + 1):
                 col_letter = get_column_letter(col_num)
-                worksheet.column_dimensions[col_letter].width = 15
                 
                 # Set header row formatting
                 cell2 = worksheet.cell(row=2, column=col_num)
@@ -679,37 +685,67 @@ class FileIO:
                     cell1.font = header_font
                     cell1.alignment = centered_alignment
                     worksheet.merge_cells(start_row=1, start_column=col_num, end_row=2, end_column=col_num)
+                    # Set wider width for Gene column
+                    worksheet.column_dimensions[col_letter].width = 15
+                else:
+                    # Set narrower width for non-Gene, non-sequence columns
+                    header_text = cell2.value
+                    if header_text in ["Sequence (F)", "Sequence (R)", "Sequence (P)", "Sequence (A)"]:
+                        worksheet.column_dimensions[col_letter].width = 15
+                    else:
+                        worksheet.column_dimensions[col_letter].width = 10
 
                 header_text = cell2.value
                 header_texts.append(header_text)
                 column_map[header_text] = col_num
                 
-                # Format data cells
+                # Apply number formatting based on column type
                 for row_num in range(3, max_row + 1):
                     cell = worksheet.cell(row=row_num, column=col_num)
                     
                     # Apply sequence fill to sequence columns
-                    if header_text in ["Primer F", "Primer R", "Probe", "Amplicon"]:
+                    if header_text in ["Sequence (F)", "Sequence (R)", "Sequence (P)", "Sequence (A)"]:
                         cell.fill = sequence_fill
                     
-                    # Handle "No suitable primers found" cells
-                    if cell.value == "No suitable primers found":
-                        cell.alignment = left_alignment
-                    else:
+                    # Apply number formatting
+                    if header_text and "BLAST" in header_text:
+                        # Scientific notation for BLAST columns (e.g., 1.23E-05)
+                        cell.number_format = '0.00E+00'
                         cell.alignment = centered_alignment
+                    elif header_text and any(col_type in header_text for col_type in ["Tm (", "Penalty (", "dG ("]):
+                        # One decimal place for Tm, Penalty, and dG columns
+                        cell.number_format = '0.0'
+                        cell.alignment = centered_alignment
+                    elif header_text == "Length":
+                        # Integer format for Length
+                        cell.number_format = '0'
+                        cell.alignment = centered_alignment
+                    elif header_text == "GC%":
+                        # One decimal place for GC%
+                        cell.number_format = '0.0'
+                        cell.alignment = centered_alignment
+                    else:
+                        # Handle "No suitable primers found" cells and other text
+                        if cell.value == "No suitable primers found":
+                            cell.alignment = left_alignment
+                        else:
+                            cell.alignment = centered_alignment
             
             # Freeze panes
             worksheet.freeze_panes = 'B3'
             
-            # Group columns
+            # Group columns with updated header names using position indicators
             header_groups = {
                 "Gene": [],
-                "Forward Primer": ["Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2"],
-                "Reverse Primer": ["Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2", "Pair Penalty"],
-                "Probe": ["Probe", "Probe Tm", "Probe Penalty", "Probe dG", "Probe BLAST1", "Probe BLAST2"],
-                "Amplicon": ["Amplicon", "Length", "Amplicon GC%", "Amplicon dG"],
-                "Location": ["Chromosome", "Location"]
+                "Forward Primer": ["Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)"],
+                "Reverse Primer": ["Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)"],
+                "Probe": ["Sequence (P)", "Tm (P)", "Penalty (P)", "dG (P)", "BLAST (P)"],
+                "Amplicon": ["Sequence (A)", "Length", "GC%", "dG (A)"],
+                "Location": ["Chr", "Location"]
             }
+            
+            # Track group boundaries for border application
+            group_boundaries = []
             
             for group_name, headers in header_groups.items():
                 existing_headers = [h for h in headers if h in header_texts]
@@ -723,6 +759,9 @@ class FileIO:
                     start_col = min(col_indices)
                     end_col = max(col_indices)
                     
+                    # Store group boundaries
+                    group_boundaries.append((start_col, end_col))
+                    
                     group_cell = worksheet.cell(row=1, column=start_col)
                     group_cell.value = group_name
                     group_cell.font = header_font
@@ -734,6 +773,71 @@ class FileIO:
                             worksheet.merge_cells(merge_range)
                         except Exception as e:
                             logger.warning(f"Could not merge range {merge_range}: {str(e)}")
+            
+            # Apply borders to group boundaries
+            for start_col, end_col in group_boundaries:
+                # Apply left border to start of group
+                for row_num in range(1, max_row + 1):
+                    cell = worksheet.cell(row=row_num, column=start_col)
+                    cell.border = Border(
+                        left=Side(style='thin'),
+                        top=cell.border.top,
+                        bottom=cell.border.bottom,
+                        right=cell.border.right
+                    )
+                
+                # Apply right border to end of group
+                for row_num in range(1, max_row + 1):
+                    cell = worksheet.cell(row=row_num, column=end_col)
+                    cell.border = Border(
+                        left=cell.border.left,
+                        right=Side(style='thin'),
+                        top=cell.border.top,
+                        bottom=cell.border.bottom
+                    )
+            
+            # Add medium border around the entire populated table
+            medium_border_side = Side(style='medium')
+            
+            # Top border
+            for col_num in range(1, max_col + 1):
+                cell = worksheet.cell(row=1, column=col_num)
+                cell.border = Border(
+                    top=medium_border_side,
+                    left=cell.border.left,
+                    right=cell.border.right,
+                    bottom=cell.border.bottom
+                )
+            
+            # Bottom border
+            for col_num in range(1, max_col + 1):
+                cell = worksheet.cell(row=max_row, column=col_num)
+                cell.border = Border(
+                    bottom=medium_border_side,
+                    left=cell.border.left,
+                    right=cell.border.right,
+                    top=cell.border.top
+                )
+            
+            # Left border
+            for row_num in range(1, max_row + 1):
+                cell = worksheet.cell(row=row_num, column=1)
+                cell.border = Border(
+                    left=medium_border_side,
+                    top=cell.border.top,
+                    right=cell.border.right,
+                    bottom=cell.border.bottom
+                )
+            
+            # Right border
+            for row_num in range(1, max_row + 1):
+                cell = worksheet.cell(row=row_num, column=max_col)
+                cell.border = Border(
+                    right=medium_border_side,
+                    left=cell.border.left,
+                    top=cell.border.top,
+                    bottom=cell.border.bottom
+                )
             
             workbook.save(output_file)
             return output_file
@@ -756,23 +860,25 @@ class FileIO:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise FileFormatError(error_msg) from e
+            
 
     @staticmethod
-    def save_results(df, output_dir, input_file, mode='standard'):
+    def save_results(df, output_dir, input_file, mode='standard', chromosome_map=None):
         """
-        Save results to an Excel file with correct naming based on input files and mode.
-        
+        Save results to an Excel file with correct naming and standardized chromosome output.
+
         Args:
-            df: DataFrame with primer results
-            output_dir: Output directory
-            input_file: Path to the input file (FASTA, CSV, etc.)
-            mode: Pipeline mode ('standard' or 'direct')
-            
+            df: DataFrame with primer results.
+            output_dir: Output directory.
+            input_file: Path to the input file (FASTA, CSV, etc.).
+            mode: Pipeline mode ('standard' or 'direct').
+            chromosome_map (dict, optional): Map of original to standardized chromosome names.
+
         Returns:
-            Path to the output file
-            
+            Path to the output file.
+
         Raises:
-            FileFormatError: If there's an error saving the results
+            FileFormatError: If there's an error saving the results.
         """
         # Make sure output directory exists
         try:
@@ -782,7 +888,12 @@ class FileIO:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise FileFormatError(error_msg) from e
-        
+
+        # Apply chromosome name standardization for the output file
+        if chromosome_map and 'Chr' in df.columns:
+            logger.debug("Applying standardized chromosome names to output.")
+            df['Chr'] = df['Chr'].map(chromosome_map).fillna(df['Chr'])
+
         # Set output filename
         basename = os.path.basename(input_file)
         root, _ = os.path.splitext(basename)
@@ -790,40 +901,37 @@ class FileIO:
         output_file = os.path.join(output_dir, output_filename)
         df = FileIO._prepare_output_dataframe(df, mode)
 
-        # Define columns based on mode
+        # Define final column order
         if mode == 'direct':
-            # Direct mode excludes location columns
             columns = [
-                "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
-                "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
-                "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG"
+                "Gene", "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
+                "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
+                "Sequence (A)", "Length", "GC%", "dG (A)"
             ]
         else:
-            # Standard mode includes location columns
             columns = [
-                "Gene", "Primer F", "Tm F", "Penalty F", "Primer F dG", "Primer F BLAST1", "Primer F BLAST2",
-                "Primer R", "Tm R", "Penalty R", "Primer R dG", "Primer R BLAST1", "Primer R BLAST2",
-                "Pair Penalty", "Amplicon", "Length", "Amplicon GC%", "Amplicon dG",
-                "Chromosome", "Location"
+                "Gene", "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
+                "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
+                "Sequence (A)", "Length", "GC%", "dG (A)",
+                "Chr", "Location"
             ]
         
         # Add probe columns if present
-        if "Probe" in df.columns:
-            probe_cols = [
-                "Probe", "Probe Tm", "Probe Penalty", "Probe dG", 
-                "Probe BLAST1", "Probe BLAST2"
-            ]
-            # Insert probe columns after primer columns
-            idx = columns.index("Pair Penalty") + 1
-            for col in reversed(probe_cols):
-                if col in df.columns:
-                    columns.insert(idx, col)
+        if "Sequence (P)" in df.columns:
+            probe_cols = ["Sequence (P)", "Tm (P)", "Penalty (P)", "dG (P)", "BLAST (P)"]
+            # Insert probe columns after reverse primer columns
+            try:
+                idx = columns.index("BLAST (R)") + 1
+                for col in reversed(probe_cols):
+                    if col in df.columns:
+                        columns.insert(idx, col)
+            except ValueError:
+                for col in probe_cols:
+                    if col in df.columns:
+                        columns.append(col)
         
-        # Ensure all columns exist in DataFrame
-        columns = [col for col in columns if col in df.columns]
-        
-        # Reorder the columns
-        df = df[columns]
+        available_columns = [col for col in columns if col in df.columns]
+        df = df[available_columns]
         
         # Save with formatting
         try:

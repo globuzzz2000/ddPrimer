@@ -73,47 +73,75 @@ class ThermoProcessor:
         """
         logger.info("\nCalculating thermodynamic properties with ViennaRNA...")
         logger.debug("=== WORKFLOW: THERMODYNAMIC CALCULATIONS ===")
+        logger.debug(f"DataFrame columns: {df.columns.tolist()}")
         
         try:
-            # Add empty columns to maintain DataFrame structure
-            df["Primer F dG"] = None
-            df["Primer R dG"] = None
-            if "Probe" in df.columns:
-                df["Probe dG"] = None
-            df["Amplicon dG"] = None
+            # Detect column naming convention
+            if "Sequence (F)" in df.columns:
+                forward_col = "Sequence (F)"
+                reverse_col = "Sequence (R)"
+                probe_col = "Sequence (P)"
+                amplicon_col = "Sequence (A)"
+                forward_dg_col = "Sequence (F) dG"
+                reverse_dg_col = "Sequence (R) dG"
+                probe_dg_col = "Sequence (P) dG"
+                amplicon_dg_col = "Sequence (A) dG"
+            elif "Primer F" in df.columns:
+                forward_col = "Primer F"
+                reverse_col = "Primer R"
+                probe_col = "Probe"
+                amplicon_col = "Amplicon"
+                forward_dg_col = "Primer F dG"
+                reverse_dg_col = "Primer R dG"
+                probe_dg_col = "Probe dG"
+                amplicon_dg_col = "Amplicon dG"
+            else:
+                error_msg = "No primer sequence columns found (expected 'Sequence (F)' or 'Primer F')"
+                logger.error(error_msg)
+                logger.debug(f"Available columns: {df.columns.tolist()}")
+                raise PrimerDesignError(error_msg)
+            
+            logger.debug(f"Using column naming convention: forward='{forward_col}', reverse='{reverse_col}', amplicon='{amplicon_col}'")
+            
+            # Initialize ΔG columns
+            df[forward_dg_col] = None
+            df[reverse_dg_col] = None
+            if probe_col in df.columns:
+                df[probe_dg_col] = None
+            df[amplicon_dg_col] = None
             
             # Calculate deltaG for forward primers
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing forward primers")
-                df["Primer F dG"] = df["Primer F"].progress_apply(cls.calc_deltaG)
+                df[forward_dg_col] = df[forward_col].progress_apply(cls.calc_deltaG)
             else:
-                df["Primer F dG"] = df["Primer F"].apply(cls.calc_deltaG)
+                df[forward_dg_col] = df[forward_col].apply(cls.calc_deltaG)
             
             # Calculate deltaG for reverse primers
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing reverse primers")
-                df["Primer R dG"] = df["Primer R"].progress_apply(cls.calc_deltaG)
+                df[reverse_dg_col] = df[reverse_col].progress_apply(cls.calc_deltaG)
             else:
-                df["Primer R dG"] = df["Primer R"].apply(cls.calc_deltaG)
+                df[reverse_dg_col] = df[reverse_col].apply(cls.calc_deltaG)
             
             # Calculate deltaG for probes if present
-            if "Probe" in df.columns:
+            if probe_col in df.columns:
                 if Config.SHOW_PROGRESS:
                     tqdm.pandas(desc="Processing probes")
-                    df["Probe dG"] = df["Probe"].progress_apply(lambda x: 
+                    df[probe_dg_col] = df[probe_col].progress_apply(lambda x: 
                                                 cls.calc_deltaG(x) 
                                                 if pd.notnull(x) and x else None)
                 else:
-                    df["Probe dG"] = df["Probe"].apply(lambda x: 
-                                                   cls.calc_deltaG(x) 
-                                                   if pd.notnull(x) and x else None)
+                    df[probe_dg_col] = df[probe_col].apply(lambda x: 
+                                                cls.calc_deltaG(x) 
+                                                if pd.notnull(x) and x else None)
             
             # Calculate deltaG for amplicons
             if Config.SHOW_PROGRESS:
                 tqdm.pandas(desc="Processing amplicons")
-                df["Amplicon dG"] = df["Amplicon"].progress_apply(cls.calc_deltaG)
+                df[amplicon_dg_col] = df[amplicon_col].progress_apply(cls.calc_deltaG)
             else:
-                df["Amplicon dG"] = df["Amplicon"].apply(cls.calc_deltaG)
+                df[amplicon_dg_col] = df[amplicon_col].apply(cls.calc_deltaG)
             
             logger.debug("Thermodynamic calculations complete for all primer components")
             logger.debug("=== END WORKFLOW: THERMODYNAMIC CALCULATIONS ===")

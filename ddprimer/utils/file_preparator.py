@@ -59,46 +59,53 @@ class FilePreparator:
     #############################################################################
     
     @classmethod
-    def prepare_pipeline_files_workflow(cls, vcf_file: str, fasta_file: str, 
+    def prepare_pipeline_files_workflow(cls, vcf_file: str, fasta_file: str,
                                        gff_file: Optional[str] = None) -> Dict:
         """
         Prepare and validate all pipeline input files for workflow integration.
-        
+
         Analyzes input files for compatibility and formatting issues, then
-        creates corrected versions with user consent when needed. Ensures
-        all files are properly formatted for downstream processing.
-        
+        creates corrected versions with user consent when needed. Also generates
+        a chromosome name map for standardized output.
+
         Args:
             vcf_file: Path to VCF file
             fasta_file: Path to FASTA file
             gff_file: Optional path to GFF file
-            
+
         Returns:
             Dictionary with preparation results and final file paths:
             {
                 'success': bool,
                 'vcf_file': str,
-                'fasta_file': str, 
+                'fasta_file': str,
                 'gff_file': str,
                 'changes_made': bool,
-                'issues_found': List[Dict]
+                'issues_found': List[Dict],
+                'chromosome_map': Dict[str, str]
             }
-            
+
         Raises:
             FileError: If input files cannot be accessed
             ExternalToolError: If required tools are missing or fail
         """
         logger.debug("=== WORKFLOW: FILE PREPARATION ===")
         logger.debug(f"Preparing files: VCF={vcf_file}, FASTA={fasta_file}, GFF={gff_file}")
-        
+        preparator = None
         try:
             # Initialize preparator
             preparator = cls()
             preparator.set_reference_file(fasta_file)
-            
+
+            # Generate the standardized chromosome map for the output file
+            vcf_chroms = preparator._get_vcf_chromosomes(vcf_file)
+            fasta_seqs = preparator._get_fasta_sequences(fasta_file)
+            chromosome_map = preparator._generate_standardized_chromosome_map(vcf_chroms, fasta_seqs)
+
             # Run comprehensive file preparation
             result = preparator.prepare_files(vcf_file, fasta_file, gff_file)
-            
+            result['chromosome_map'] = chromosome_map # Add map to the final result
+
             if result['success']:
                 if result.get('changes_made', False):
                     logger.debug(f"File preparation completed with corrections")
@@ -107,10 +114,10 @@ class FilePreparator:
                     logger.debug("File preparation completed - no changes needed")
             else:
                 logger.error(f"File preparation failed: {result.get('reason', 'Unknown error')}")
-            
+
             logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
             return result
-            
+
         except Exception as e:
             error_msg = f"Error in file preparation workflow: {str(e)}"
             logger.error(error_msg)
@@ -119,7 +126,7 @@ class FilePreparator:
             raise
         finally:
             # Ensure cleanup happens
-            if 'preparator' in locals():
+            if preparator:
                 preparator.cleanup()
     
     #############################################################################
@@ -695,7 +702,53 @@ class FilePreparator:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise SequenceProcessingError(error_msg) from e
-    
+
+    def _generate_standardized_chromosome_map(self, vcf_chroms: Dict[str, int],
+                                             fasta_seqs: Dict[str, int]) -> Dict[str, str]:
+        """
+        Generates a mapping from original chromosome names to standardized names (e.g., 1, 2, X).
+
+        This map is intended for final output formatting and does not affect internal processing.
+
+        Args:
+            vcf_chroms: Dictionary of chromosome names from the VCF file.
+            fasta_seqs: Dictionary of sequence names from the FASTA file.
+
+        Returns:
+            A dictionary mapping original chromosome names to standardized names.
+        """
+        logger.debug("Generating standardized chromosome map for output.")
+
+        # Use VCF chromosomes as the primary source for the map
+        chrom_names = sorted(vcf_chroms.keys(),
+                             key=lambda x: (self._extract_numeric_component(x), x))
+
+        standardized_map = {}
+        for i, name in enumerate(chrom_names):
+            numeric_comp = self._extract_numeric_component(name)
+            # Handle special chromosomes based on numeric component extraction
+            if numeric_comp == 100:
+                standardized_name = 'X'
+            elif numeric_comp == 101:
+                standardized_name = 'Y'
+            elif numeric_comp == 102:
+                standardized_name = 'MT'
+            elif numeric_comp < float('inf'):
+                # Use the extracted number if it's a simple integer
+                if name.isdigit():
+                    standardized_name = name
+                elif name.upper().startswith('CHR') and name[3:].isdigit():
+                    standardized_name = name[3:]
+                else: # Fallback to sorted order for complex names
+                    standardized_name = str(i + 1)
+            else: # For completely unrecognized names
+                standardized_name = name # Keep original name if it can't be simplified
+
+            standardized_map[name] = standardized_name
+
+        logger.debug(f"Generated output map for {len(standardized_map)} chromosomes.")
+        return standardized_map
+
     def _analyze_vcf_file(self, vcf_file: str) -> List[Dict]:
         """
         Analyze VCF file for formatting and content issues.

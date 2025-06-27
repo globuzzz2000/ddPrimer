@@ -75,6 +75,7 @@ class FilterProcessor:
             # Convert to DataFrame for filtering
             df = pd.DataFrame(primer_results)
             logger.debug(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
+            logger.debug(f"DataFrame columns: {df.columns.tolist()}")
             
             # Step 1: Filter by penalty scores
             logger.debug("Applying penalty filter...")
@@ -119,6 +120,11 @@ class FilterProcessor:
         """
         Filter primers by penalty scores.
         
+        CLEANED PENALTY HANDLING:
+        - Uses only the "Penalty" column (overall primer pair penalty)
+        - No more complex logic with "Pair Penalty" vs "Penalty"
+        - Single source of truth for penalty filtering
+        
         Args:
             df: DataFrame containing primer data with penalty information
             max_penalty: Maximum allowed penalty score, defaults to Config.PENALTY_MAX
@@ -135,18 +141,12 @@ class FilterProcessor:
             logger.warning("Empty DataFrame provided for penalty filtering")
             return df
         
-        # Ensure Pair Penalty column exists
-        if "Pair Penalty" not in df.columns:
-            logger.warning("'Pair Penalty' column not found - attempting to create from individual penalties")
-            
-            if "Penalty F" in df.columns and "Penalty R" in df.columns:
-                logger.debug("Creating 'Pair Penalty' from individual F and R penalties")
-                df["Pair Penalty"] = df["Penalty F"] + df["Penalty R"]
-            else:
-                error_msg = "Cannot create 'Pair Penalty' - missing individual penalty columns"
-                logger.error(error_msg)
-                logger.debug(f"Available columns: {df.columns.tolist()}")
-                raise ValueError(error_msg)
+        # Check for the penalty column
+        if "Penalty" not in df.columns:
+            error_msg = "Required 'Penalty' column not found in DataFrame"
+            logger.error(error_msg)
+            logger.debug(f"Available columns: {df.columns.tolist()}")
+            raise ValueError(error_msg)
         
         initial_count = len(df)
         
@@ -157,32 +157,32 @@ class FilterProcessor:
             
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
-                penalty_pair = row.get("Pair Penalty", "N/A")
+                penalty = row.get("Penalty", "N/A")
                 
                 try:
-                    will_pass = float(penalty_pair) <= max_penalty
+                    will_pass = float(penalty) <= max_penalty
                     
                     if not will_pass:
                         failed_primers.append({
                             'gene': gene,
-                            'penalty': penalty_pair,
+                            'penalty': penalty,
                         })
                     
                     if DebugLogLimiter.should_log('penalty_filter_analysis', interval=500, max_initial=2):
-                        penalty_f = row.get("Penalty F", "N/A")
-                        penalty_r = row.get("Penalty R", "N/A")
+                        penalty_f = row.get("Penalty (F)", "N/A")
+                        penalty_r = row.get("Penalty (R)", "N/A")
                         status = "PASS" if will_pass else "FAIL"
-                        logger.debug(f"Gene {gene}: F={penalty_f}, R={penalty_r}, Pair={penalty_pair} [{status}]")
+                        logger.debug(f"Gene {gene}: F={penalty_f}, R={penalty_r}, Overall={penalty} [{status}]")
                         
                 except (ValueError, TypeError):
                     invalid_penalties += 1
                     if DebugLogLimiter.should_log('penalty_filter_invalid', interval=200, max_initial=1):
-                        logger.debug(f"Gene {gene}: Invalid penalty values - Pair={penalty_pair}")
+                        logger.debug(f"Gene {gene}: Invalid penalty value - Overall={penalty}")
             
             logger.debug(f"Penalty analysis: {len(failed_primers)} failed, {invalid_penalties} invalid from {initial_count} total")
         
-        # Apply penalty filter
-        df_filtered = df[df["Pair Penalty"] <= max_penalty].reset_index(drop=True)
+        # Apply penalty filter - simple and clean
+        df_filtered = df[df["Penalty"] <= max_penalty].reset_index(drop=True)
         
         filtered_count = len(df_filtered)
         removed_count = initial_count - filtered_count
@@ -209,14 +209,40 @@ class FilterProcessor:
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
         initial_count = len(df)
         
+        # Check for expected columns - handle both possible naming conventions
+        forward_col = None
+        reverse_col = None
+        
+        if "Sequence (F)" in df.columns:
+            forward_col = "Sequence (F)"
+        elif "Primer F" in df.columns:
+            forward_col = "Primer F"
+        else:
+            error_msg = "No forward primer sequence column found (expected 'Sequence (F)' or 'Primer F')"
+            logger.error(error_msg)
+            logger.debug(f"Available columns: {df.columns.tolist()}")
+            raise ValueError(error_msg)
+        
+        if "Sequence (R)" in df.columns:
+            reverse_col = "Sequence (R)"
+        elif "Primer R" in df.columns:
+            reverse_col = "Primer R"
+        else:
+            error_msg = "No reverse primer sequence column found (expected 'Sequence (R)' or 'Primer R')"
+            logger.error(error_msg)
+            logger.debug(f"Available columns: {df.columns.tolist()}")
+            raise ValueError(error_msg)
+        
+        logger.debug(f"Using columns: forward='{forward_col}', reverse='{reverse_col}'")
+        
         # Collect statistics for logging
         if logger.isEnabledFor(logging.DEBUG):
             failed_primers = []
             
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
-                primer_f = row.get("Primer F", "")
-                primer_r = row.get("Primer R", "")
+                primer_f = row.get(forward_col, "")
+                primer_r = row.get(reverse_col, "")
                 
                 has_f_repeats = FilterProcessor.has_disallowed_repeats(primer_f)
                 has_r_repeats = FilterProcessor.has_disallowed_repeats(primer_r)
@@ -239,8 +265,8 @@ class FilterProcessor:
             logger.debug(f"Repeat analysis: {len(failed_primers)} with disallowed repeats from {initial_count} total")
         
         # Apply repeat filtering
-        df["Has_Repeats_F"] = df["Primer F"].apply(FilterProcessor.has_disallowed_repeats)
-        df["Has_Repeats_R"] = df["Primer R"].apply(FilterProcessor.has_disallowed_repeats)
+        df["Has_Repeats_F"] = df[forward_col].apply(FilterProcessor.has_disallowed_repeats)
+        df["Has_Repeats_R"] = df[reverse_col].apply(FilterProcessor.has_disallowed_repeats)
         
         df_filtered = df[~(df["Has_Repeats_F"] | df["Has_Repeats_R"])].reset_index(drop=True)
         
@@ -278,8 +304,22 @@ class FilterProcessor:
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
         initial_count = len(df)
         
+        # Check for amplicon column - handle both possible naming conventions
+        amplicon_col = None
+        if "Sequence (A)" in df.columns:
+            amplicon_col = "Sequence (A)"
+        elif "Amplicon" in df.columns:
+            amplicon_col = "Amplicon"
+        else:
+            error_msg = "No amplicon sequence column found (expected 'Sequence (A)' or 'Amplicon')"
+            logger.error(error_msg)
+            logger.debug(f"Available columns: {df.columns.tolist()}")
+            raise ValueError(error_msg)
+        
+        logger.debug(f"Using amplicon column: '{amplicon_col}'")
+        
         # Check for missing amplicons
-        missing_amplicons = df["Amplicon"].isna() | (df["Amplicon"] == "")
+        missing_amplicons = df[amplicon_col].isna() | (df[amplicon_col] == "")
         missing_count = missing_amplicons.sum()
         
         if missing_count > 0:
@@ -292,7 +332,7 @@ class FilterProcessor:
             
             for index, row in df.iterrows():
                 gene = row.get("Gene", f"Unknown_{index}")
-                amplicon = row.get("Amplicon", "")
+                amplicon = row.get(amplicon_col, "")
                 
                 if not amplicon:
                     continue
@@ -319,10 +359,10 @@ class FilterProcessor:
                 logger.debug(f"GC analysis: avg={avg_gc:.1f}%, range={min_gc_found:.1f}-{max_gc_found:.1f}%, {len(failed_primers)} failed")
         
         # Remove rows with missing amplicons and calculate GC content
-        df_with_amplicons = df.dropna(subset=["Amplicon"]).copy()
-        df_with_amplicons = df_with_amplicons[df_with_amplicons["Amplicon"] != ""].reset_index(drop=True)
+        df_with_amplicons = df.dropna(subset=[amplicon_col]).copy()
+        df_with_amplicons = df_with_amplicons[df_with_amplicons[amplicon_col] != ""].reset_index(drop=True)
         
-        df_with_amplicons["Amplicon GC%"] = df_with_amplicons["Amplicon"].apply(FilterProcessor.calculate_gc)
+        df_with_amplicons["Amplicon GC%"] = df_with_amplicons[amplicon_col].apply(FilterProcessor.calculate_gc)
         df_filtered = df_with_amplicons[
             (df_with_amplicons["Amplicon GC%"] >= min_gc) & 
             (df_with_amplicons["Amplicon GC%"] <= max_gc)
@@ -357,13 +397,33 @@ class FilterProcessor:
         df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
         initial_count = len(df)
         
-        # Check for required BLAST columns
-        required_cols = ["Primer F BLAST1", "Primer F BLAST2", "Primer R BLAST1", "Primer R BLAST2"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
+        # Check for required BLAST columns - handle both naming conventions
+        required_cols_new = ["Sequence (F) BLAST1", "Sequence (F) BLAST2", "Sequence (R) BLAST1", "Sequence (R) BLAST2"]
+        required_cols_old = ["Primer F BLAST1", "Primer F BLAST2", "Primer R BLAST1", "Primer R BLAST2"]
         
-        if missing_cols:
-            logger.warning(f"Missing BLAST columns: {missing_cols} - skipping BLAST filtering")
+        if all(col in df.columns for col in required_cols_new):
+            blast_cols = {
+                "forward_blast1": "Sequence (F) BLAST1",
+                "forward_blast2": "Sequence (F) BLAST2", 
+                "reverse_blast1": "Sequence (R) BLAST1",
+                "reverse_blast2": "Sequence (R) BLAST2"
+            }
+            probe_blast1_col = "Sequence (P) BLAST1"
+        elif all(col in df.columns for col in required_cols_old):
+            blast_cols = {
+                "forward_blast1": "Primer F BLAST1",
+                "forward_blast2": "Primer F BLAST2",
+                "reverse_blast1": "Primer R BLAST1", 
+                "reverse_blast2": "Primer R BLAST2"
+            }
+            probe_blast1_col = "Probe BLAST1"
+        else:
+            missing_new = [col for col in required_cols_new if col not in df.columns]
+            missing_old = [col for col in required_cols_old if col not in df.columns]
+            logger.warning(f"Missing BLAST columns - New format missing: {missing_new}, Old format missing: {missing_old} - skipping BLAST filtering")
             return df.to_dict('records') if not isinstance(primers, pd.DataFrame) else df
+        
+        logger.debug(f"Using BLAST columns: {blast_cols}")
         
         # Collect statistics for logging
         if logger.isEnabledFor(logging.DEBUG):
@@ -376,23 +436,25 @@ class FilterProcessor:
         for i, row in df.iterrows():
             gene = row.get("Gene", f"Unknown_{i}")
             
-            keep_f = FilterProcessor._passes_blast_filter(row, "Primer F", blast_filter_factor)
-            keep_r = FilterProcessor._passes_blast_filter(row, "Primer R", blast_filter_factor)
+            keep_f = FilterProcessor._passes_blast_filter_with_cols(row, blast_cols["forward_blast1"], blast_cols["forward_blast2"], blast_filter_factor)
+            keep_r = FilterProcessor._passes_blast_filter_with_cols(row, blast_cols["reverse_blast1"], blast_cols["reverse_blast2"], blast_filter_factor)
             
-            if "Probe" in df.columns and "Probe BLAST1" in df.columns:
-                probe_seq = row.get("Probe")
+            # Check probe if available
+            probe_col = "Sequence (P)" if "Sequence (P)" in df.columns else "Probe"
+            if probe_col in df.columns and probe_blast1_col in df.columns:
+                probe_seq = row.get(probe_col)
                 keep_p = (pd.isna(probe_seq) or probe_seq == "" or 
-                         FilterProcessor._passes_blast_filter(row, "Probe", blast_filter_factor))
+                         FilterProcessor._passes_blast_filter_with_cols(row, probe_blast1_col, probe_blast1_col.replace("BLAST1", "BLAST2"), blast_filter_factor))
             else:
                 keep_p = True
             
             overall_pass = keep_f and keep_r and keep_p
             
             if logger.isEnabledFor(logging.DEBUG):
-                f_blast1 = row.get("Primer F BLAST1")
-                f_blast2 = row.get("Primer F BLAST2")
-                r_blast1 = row.get("Primer R BLAST1")
-                r_blast2 = row.get("Primer R BLAST2")
+                f_blast1 = row.get(blast_cols["forward_blast1"])
+                f_blast2 = row.get(blast_cols["forward_blast2"])
+                r_blast1 = row.get(blast_cols["reverse_blast1"])
+                r_blast2 = row.get(blast_cols["reverse_blast2"])
                 
                 if pd.isna(f_blast1) and pd.isna(r_blast1):
                     no_hits_count += 1
@@ -432,6 +494,34 @@ class FilterProcessor:
         
         # Return in original format
         return df_filtered.to_dict('records') if not isinstance(primers, pd.DataFrame) else df_filtered
+
+    @staticmethod
+    def _passes_blast_filter_with_cols(row, blast1_col, blast2_col, filter_factor):
+        """
+        Check if a sequence passes the BLAST specificity filter using specific column names.
+        
+        Args:
+            row: DataFrame row containing BLAST results
+            blast1_col: Column name for best BLAST hit
+            blast2_col: Column name for second best BLAST hit
+            filter_factor: Minimum specificity ratio required
+            
+        Returns:
+            True if sequence passes specificity filter, False otherwise
+        """
+        best = row.get(blast1_col)
+        second = row.get(blast2_col)
+        
+        # No hits found - insufficient specificity data
+        if pd.isna(best):
+            return False
+            
+        # Only one hit found - effectively unique
+        if pd.isna(second):
+            return True
+            
+        # Check specificity ratio: best * filter_factor <= second
+        return best * filter_factor <= second
 
     @staticmethod
     def _passes_blast_filter(row, col_prefix, filter_factor):

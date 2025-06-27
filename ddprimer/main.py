@@ -171,8 +171,9 @@ def parse_arguments():
 #                           Primer Design Workflow
 #############################################################################
 
-def run_primer_design_workflow(processed_sequences, output_dir, reference_file, 
-                              genes=None, gff_file=None, skip_annotation_filtering=False, enable_internal_oligo=True):
+def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
+                              genes=None, gff_file=None, skip_annotation_filtering=False,
+                              enable_internal_oligo=True, chromosome_map=None):
     """
     Unified primer design workflow using clean separation of concerns.
     
@@ -272,13 +273,14 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
             logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # Step 8: Save results to Excel file
+        # Step 8: Save results to Excel file, passing the chromosome map for formatting
         logger.debug("MAIN: Delegating results saving")
         output_path = FileIO.save_results(
-            df, 
-            output_dir, 
-            reference_file, 
-            mode='standard'
+            df,
+            output_dir,
+            reference_file,
+            mode='standard',
+            chromosome_map=chromosome_map
         )
         
         if output_path:
@@ -387,7 +389,7 @@ def run_standard_mode(args):
 
         # Signal that all file selections are complete
         FileIO.mark_selection_complete()
-        
+        chromosome_map = None # Initialize map
         # File preparation step
         try:
             from .utils import FilePreparator
@@ -405,14 +407,14 @@ def run_standard_mode(args):
                 logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
                 return False
             
+            # Store the chromosome map for the final output
+            chromosome_map = prep_result.get('chromosome_map')
+
             # Update file paths to use prepared files
             if prep_result['changes_made']:
-                if 'vcf' in prep_result.get('prepared_files', {}):
-                    args.vcf = prep_result['vcf_file']
-                if 'fasta' in prep_result.get('prepared_files', {}):
-                    args.fasta = prep_result['fasta_file']
-                if 'gff' in prep_result.get('prepared_files', {}):
-                    args.gff = prep_result['gff_file']
+                args.vcf = prep_result.get('vcf_file', args.vcf)
+                args.fasta = prep_result.get('fasta_file', args.fasta)
+                args.gff = prep_result.get('gff_file', args.gff)
             else:
                 logger.debug("Original files are compatible and will be used as-is")
             
@@ -481,11 +483,13 @@ def run_standard_mode(args):
             genes=genes,
             gff_file=args.gff,
             skip_annotation_filtering=args.noannotation,
-            enable_internal_oligo=enable_internal_oligo
+            enable_internal_oligo=not args.nooligo,
+            chromosome_map=chromosome_map
         )
         
         logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
         return success
+            
             
     except SequenceProcessingError as e:
         error_msg = f"Sequence processing error: {str(e)}"

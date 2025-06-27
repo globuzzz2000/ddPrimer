@@ -120,11 +120,12 @@ class Primer3Processor:
         fragment_info = {}
         
         for fragment in fragments:
+            # The fragment's 'start' field now holds the true 0-based genomic start
             fragment_info[fragment["id"]] = {
                 "chr": fragment.get("chromosome", ""),
-                "genomic_start": fragment.get("genomic_start", 1),
-                "genomic_end": fragment.get("genomic_end", len(fragment["sequence"])),
-                "gene": fragment.get("gene", fragment["id"].split("_")[-1])
+                "start": fragment.get("start", 0),  # Use the fragment's genomic start
+                "end": fragment.get("end", len(fragment["sequence"])),
+                "gene": fragment.get("Gene", fragment.get("gene", fragment["id"].split("_")[-1]))
             }
             
             primer3_input = {
@@ -135,7 +136,7 @@ class Primer3Processor:
             primer3_inputs.append(primer3_input)
         
         return primer3_inputs, fragment_info
-    
+
     #############################################################################
     #                           Primer3 Execution
     #############################################################################
@@ -649,52 +650,46 @@ class Primer3Processor:
             List of primer record dictionaries
         """
         if not block['sequence_id'] or not block['primer_pairs']:
-            if DebugLogLimiter.should_log('primer3_empty_blocks', interval=500, max_initial=1):
-                logger.debug(f"Skipping block {block.get('sequence_id', 'unknown')}: no primers found")
             return []
         
-        if debug_mode and DebugLogLimiter.should_log('primer3_pair_details', interval=500, max_initial=1):
-            self._log_primer_pairs_debug(block)
-        
         records = []
-        record_creation_failures = 0
         processor = PrimerProcessor()
         
         for pair_num, pair in enumerate(block['primer_pairs']):
             try:
-                # Create a fragment from the block
+                # Create a fragment from the block with genomic coordinate information
                 fragment = {
                     "id": block['sequence_id'],
                     "sequence": block['sequence_template']
                 }
                 
-                # Add fragment info if available
+                # Add fragment info (now includes proper genomic coordinates)
                 if block['sequence_id'] in fragment_info:
                     info = fragment_info[block['sequence_id']]
                     fragment.update({
                         "chromosome": info.get("chr", ""),
-                        "genomic_start": info.get("genomic_start", 1),
-                        "genomic_end": info.get("genomic_end", len(block['sequence_template'])),
+                        "start": info.get("start", 0), # This is the fragment's genomic start
+                        "end": info.get("end", len(block['sequence_template'])),
                         "Gene": info.get("gene", block['sequence_id'].split("_")[-1])
                     })
+                else:
+                    # This shouldn't happen with proper workflow, but provide fallback
+                    logger.warning(f"Missing fragment info for {block['sequence_id']}")
+                    fragment.update({
+                        "chromosome": block['sequence_id'],
+                        "start": 0, # Fallback to 0
+                        "end": len(block['sequence_template']),
+                        "Gene": block['sequence_id'].split("_")[-1]
+                    })
                 
-                # Create primer record (no filtering here)
+                # Create primer record
                 record = processor.create_primer_record(fragment, pair, pair_num)
                 if record:
                     records.append(record)
-                    
-                    if DebugLogLimiter.should_log('primer3_record_creation_success', interval=500, max_initial=1):
-                        logger.debug(f"Created primer record for pair {pair.get('idx', 'unknown')}")
                         
             except Exception as e:
-                record_creation_failures += 1
-                if DebugLogLimiter.should_log('primer3_record_creation_errors', interval=100, max_initial=2):
-                    logger.error(f"Failed to create primer record for pair {pair.get('idx', 'unknown')}")
-                    logger.debug(f"Record creation error: {str(e)}", exc_info=True)
+                logger.debug(f"Failed to create primer record for pair {pair.get('idx', 'unknown')}: {e}")
                 continue
-        
-        if debug_mode and record_creation_failures > 0:
-            logger.debug(f"Record creation: {len(records)} successful, {record_creation_failures} failed")
         
         return records
 
