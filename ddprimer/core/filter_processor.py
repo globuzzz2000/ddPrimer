@@ -1,0 +1,608 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Filter processing module for ddPrimer pipeline.
+
+Contains all primer filtering functionality including:
+1. Penalty thresholding and validation
+2. GC content analysis and filtering
+3. Repeat sequence detection and filtering
+4. BLAST specificity evaluation
+5. Sequence utility functions (GC content, reverse complement, etc.)
+
+COORDINATE SYSTEM:
+- This module works with primer sequences and metadata only
+- Input: Primer sequences as strings + metadata DataFrames
+- Output: Filtered DataFrames (no coordinate processing)
+- Sequence operations are coordinate-independent
+- No genomic coordinates involved in filtering logic
+"""
+
+import pandas as pd
+import logging
+from typing import List, Dict, Optional
+
+# Import package modules
+from ..config import Config, DebugLogLimiter, PrimerDesignError
+
+# Set up module logger
+logger = logging.getLogger(__name__)
+
+
+class FilterProcessor:
+    """
+    Handles all primer filtering operations and sequence utilities.
+    
+    This class provides comprehensive filtering capabilities for primer pairs
+    including penalty scoring, sequence composition analysis, specificity
+    validation, and sequence utility functions.
+    """
+    
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def filter_primers_workflow(cls, primer_results: List[Dict]) -> Optional[pd.DataFrame]:
+        """
+        Filter primer records using comprehensive filtering criteria for workflow integration.
+        
+        Applies multiple filtering steps including penalty thresholds, repeat sequences,
+        and GC content validation to ensure high-quality primer selection. This workflow
+        wrapper coordinates all filtering operations and provides standardized error
+        handling for the pipeline orchestration layer.
+        
+        Args:
+            primer_results: List of primer record dictionaries containing sequences,
+                          penalties, and amplicon information
+            
+        Returns:
+            Filtered DataFrame containing only primers meeting all criteria, or None
+            if no primers pass filtering
+            
+        Raises:
+            PrimerDesignError: If there's an error in primer filtering workflow coordination
+        """
+        logger.debug("=== WORKFLOW: PRIMER FILTERING ===")
+        logger.debug(f"Filtering {len(primer_results)} primer records")
+        
+        try:
+            if not primer_results:
+                logger.warning("No primer results provided for filtering")
+                logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+                return None
+            
+            # Convert to DataFrame for filtering
+            df = pd.DataFrame(primer_results)
+            logger.debug(f"Created DataFrame with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Step 1: Filter by penalty scores
+            logger.debug("Applying penalty filter...")
+            df = cls.filter_by_penalty(df)
+            if df.empty:
+                logger.warning("No primers passed penalty filtering")
+                logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+                return None
+            
+            # Step 2: Filter by repeat sequences
+            logger.debug("Applying repeat sequence filter...")
+            df = cls.filter_by_repeats(df)
+            if df.empty:
+                logger.warning("No primers passed repeat filtering")
+                logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+                return None
+            
+            # Step 3: Filter by GC content
+            logger.debug("Applying GC content filter...")
+            df = cls.filter_by_gc_content(df)
+            if df.empty:
+                logger.warning("No primers passed GC content filtering")
+                logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+                return None
+            
+            logger.info(f"Retained {len(df)} primer pairs after filtering")
+            logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+            
+            return df
+            
+        except Exception as e:
+            error_msg = f"Error in primer filtering workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: PRIMER FILTERING ===")
+            raise PrimerDesignError(error_msg) from e
+    
+    #############################################################################
+    
+    @staticmethod
+    def filter_by_penalty(df, max_penalty=None):
+        """
+        Filter primers by penalty scores.
+        
+        Args:
+            df: DataFrame containing primer data with penalty information
+            max_penalty: Maximum allowed penalty score, defaults to Config.PENALTY_MAX
+            
+        Returns:
+            Filtered DataFrame containing only primers within penalty threshold
+        """
+        if max_penalty is None:
+            max_penalty = Config.PENALTY_MAX
+        
+        logger.debug(f"Penalty threshold: {max_penalty}")
+        
+        if df.empty:
+            logger.warning("Empty DataFrame provided for penalty filtering")
+            return df
+        
+        # Ensure Pair Penalty column exists
+        if "Pair Penalty" not in df.columns:
+            logger.warning("'Pair Penalty' column not found - attempting to create from individual penalties")
+            
+            if "Penalty F" in df.columns and "Penalty R" in df.columns:
+                logger.debug("Creating 'Pair Penalty' from individual F and R penalties")
+                df["Pair Penalty"] = df["Penalty F"] + df["Penalty R"]
+            else:
+                error_msg = "Cannot create 'Pair Penalty' - missing individual penalty columns"
+                logger.error(error_msg)
+                logger.debug(f"Available columns: {df.columns.tolist()}")
+                raise ValueError(error_msg)
+        
+        initial_count = len(df)
+        
+        # Collect statistics for logging
+        if logger.isEnabledFor(logging.DEBUG):
+            failed_primers = []
+            invalid_penalties = 0
+            
+            for index, row in df.iterrows():
+                gene = row.get("Gene", f"Unknown_{index}")
+                penalty_pair = row.get("Pair Penalty", "N/A")
+                
+                try:
+                    will_pass = float(penalty_pair) <= max_penalty
+                    
+                    if not will_pass:
+                        failed_primers.append({
+                            'gene': gene,
+                            'penalty': penalty_pair,
+                        })
+                    
+                    if DebugLogLimiter.should_log('penalty_filter_analysis', interval=500, max_initial=2):
+                        penalty_f = row.get("Penalty F", "N/A")
+                        penalty_r = row.get("Penalty R", "N/A")
+                        status = "PASS" if will_pass else "FAIL"
+                        logger.debug(f"Gene {gene}: F={penalty_f}, R={penalty_r}, Pair={penalty_pair} [{status}]")
+                        
+                except (ValueError, TypeError):
+                    invalid_penalties += 1
+                    if DebugLogLimiter.should_log('penalty_filter_invalid', interval=200, max_initial=1):
+                        logger.debug(f"Gene {gene}: Invalid penalty values - Pair={penalty_pair}")
+            
+            logger.debug(f"Penalty analysis: {len(failed_primers)} failed, {invalid_penalties} invalid from {initial_count} total")
+        
+        # Apply penalty filter
+        df_filtered = df[df["Pair Penalty"] <= max_penalty].reset_index(drop=True)
+        
+        filtered_count = len(df_filtered)
+        removed_count = initial_count - filtered_count
+        
+        logger.debug(f"Penalty filtering: kept {filtered_count}, removed {removed_count}")
+        
+        return df_filtered
+    
+    @staticmethod
+    def filter_by_repeats(primers):
+        """
+        Filter primers containing disallowed repeat sequences.
+        
+        Removes primers with problematic repeats (GGGG, CCCC) that can cause
+        PCR artifacts. Only examines primer sequences, not probes.
+        
+        Args:
+            primers: DataFrame or list of primer dictionaries
+            
+        Returns:
+            Filtered primers in same format as input
+        """
+        # Convert to DataFrame if needed
+        df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
+        initial_count = len(df)
+        
+        # Collect statistics for logging
+        if logger.isEnabledFor(logging.DEBUG):
+            failed_primers = []
+            
+            for index, row in df.iterrows():
+                gene = row.get("Gene", f"Unknown_{index}")
+                primer_f = row.get("Primer F", "")
+                primer_r = row.get("Primer R", "")
+                
+                has_f_repeats = FilterProcessor.has_disallowed_repeats(primer_f)
+                has_r_repeats = FilterProcessor.has_disallowed_repeats(primer_r)
+                will_fail = has_f_repeats or has_r_repeats
+                
+                if will_fail:
+                    failed_primers.append({
+                        'gene': gene,
+                        'has_f_repeats': has_f_repeats,
+                        'has_r_repeats': has_r_repeats,
+                    })
+                
+                # Limited logging using DebugLogLimiter
+                if DebugLogLimiter.should_log('repeat_filter_analysis', interval=50, max_initial=3):
+                    if will_fail:
+                        logger.debug(f"Gene {gene}: FILTERED due to primer repeats")
+                    else:
+                        logger.debug(f"Gene {gene}: PASS - no disallowed repeats")
+            
+            logger.debug(f"Repeat analysis: {len(failed_primers)} with disallowed repeats from {initial_count} total")
+        
+        # Apply repeat filtering
+        df["Has_Repeats_F"] = df["Primer F"].apply(FilterProcessor.has_disallowed_repeats)
+        df["Has_Repeats_R"] = df["Primer R"].apply(FilterProcessor.has_disallowed_repeats)
+        
+        df_filtered = df[~(df["Has_Repeats_F"] | df["Has_Repeats_R"])].reset_index(drop=True)
+        
+        df_filtered = df_filtered.drop(columns=[col for col in df_filtered.columns if col.startswith("Has_Repeats_")])
+        
+        filtered_count = len(df_filtered)
+        removed_count = initial_count - filtered_count
+        
+        logger.debug(f"Repeat filtering: kept {filtered_count}, removed {removed_count}")
+        
+        # Return in original format
+        return df_filtered.to_dict('records') if not isinstance(primers, pd.DataFrame) else df_filtered
+
+    @staticmethod
+    def filter_by_gc_content(primers, min_gc=None, max_gc=None):
+        """
+        Filter primers by amplicon GC content.
+        
+        Args:
+            primers: DataFrame or list of primer dictionaries
+            min_gc: Minimum GC percentage, defaults to Config.SEQUENCE_MIN_GC
+            max_gc: Maximum GC percentage, defaults to Config.SEQUENCE_MAX_GC
+            
+        Returns:
+            Filtered primers in same format as input
+        """
+        if min_gc is None:
+            min_gc = Config.SEQUENCE_MIN_GC
+        if max_gc is None:
+            max_gc = Config.SEQUENCE_MAX_GC
+        
+        logger.debug(f"GC content range: {min_gc}% - {max_gc}%")
+        
+        # Convert to DataFrame if needed
+        df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
+        initial_count = len(df)
+        
+        # Check for missing amplicons
+        missing_amplicons = df["Amplicon"].isna() | (df["Amplicon"] == "")
+        missing_count = missing_amplicons.sum()
+        
+        if missing_count > 0:
+            logger.warning(f"{missing_count} primers have missing amplicon sequences")
+        
+        # Collect statistics for logging
+        if logger.isEnabledFor(logging.DEBUG):
+            failed_primers = []
+            gc_values = []
+            
+            for index, row in df.iterrows():
+                gene = row.get("Gene", f"Unknown_{index}")
+                amplicon = row.get("Amplicon", "")
+                
+                if not amplicon:
+                    continue
+                
+                gc_content = FilterProcessor.calculate_gc(amplicon)
+                gc_values.append(gc_content)
+                in_range = min_gc <= gc_content <= max_gc
+                
+                if not in_range:
+                    failed_primers.append({
+                        'gene': gene,
+                        'gc_content': gc_content,
+                        'reason': "too low" if gc_content < min_gc else "too high"
+                    })
+                
+                if DebugLogLimiter.should_log('gc_filter_analysis', interval=500, max_initial=2):
+                    status = "PASS" if in_range else "FAIL"
+                    logger.debug(f"Gene {gene}: GC={gc_content:.1f}% [{status}]")
+            
+            if gc_values:
+                avg_gc = sum(gc_values) / len(gc_values)
+                min_gc_found = min(gc_values)
+                max_gc_found = max(gc_values)
+                logger.debug(f"GC analysis: avg={avg_gc:.1f}%, range={min_gc_found:.1f}-{max_gc_found:.1f}%, {len(failed_primers)} failed")
+        
+        # Remove rows with missing amplicons and calculate GC content
+        df_with_amplicons = df.dropna(subset=["Amplicon"]).copy()
+        df_with_amplicons = df_with_amplicons[df_with_amplicons["Amplicon"] != ""].reset_index(drop=True)
+        
+        df_with_amplicons["Amplicon GC%"] = df_with_amplicons["Amplicon"].apply(FilterProcessor.calculate_gc)
+        df_filtered = df_with_amplicons[
+            (df_with_amplicons["Amplicon GC%"] >= min_gc) & 
+            (df_with_amplicons["Amplicon GC%"] <= max_gc)
+        ].reset_index(drop=True)
+        
+        filtered_count = len(df_filtered)
+        removed_count = initial_count - filtered_count
+        
+        logger.debug(f"GC content filtering: kept {filtered_count}, removed {removed_count}")
+        
+        # Return in original format
+        return df_filtered.to_dict('records') if not isinstance(primers, pd.DataFrame) else df_filtered
+
+    @staticmethod
+    def filter_by_blast(primers, blast_filter_factor=None):
+        """
+        Filter primers by BLAST specificity results.
+        
+        Args:
+            primers: DataFrame or list of primer dictionaries
+            blast_filter_factor: BLAST specificity threshold, defaults to Config.BLAST_FILTER_FACTOR
+            
+        Returns:
+            Filtered primers passing BLAST specificity criteria
+        """
+        if blast_filter_factor is None:
+            blast_filter_factor = Config.BLAST_FILTER_FACTOR
+        
+        logger.debug(f"BLAST filter factor: {blast_filter_factor}")
+        
+        # Convert to DataFrame if needed
+        df = pd.DataFrame(primers) if not isinstance(primers, pd.DataFrame) else primers
+        initial_count = len(df)
+        
+        # Check for required BLAST columns
+        required_cols = ["Primer F BLAST1", "Primer F BLAST2", "Primer R BLAST1", "Primer R BLAST2"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            logger.warning(f"Missing BLAST columns: {missing_cols} - skipping BLAST filtering")
+            return df.to_dict('records') if not isinstance(primers, pd.DataFrame) else df
+        
+        # Collect statistics for logging
+        if logger.isEnabledFor(logging.DEBUG):
+            failed_primers = []
+            no_hits_count = 0
+            unique_hits_count = 0
+        
+        keep_indices = []
+        
+        for i, row in df.iterrows():
+            gene = row.get("Gene", f"Unknown_{i}")
+            
+            keep_f = FilterProcessor._passes_blast_filter(row, "Primer F", blast_filter_factor)
+            keep_r = FilterProcessor._passes_blast_filter(row, "Primer R", blast_filter_factor)
+            
+            if "Probe" in df.columns and "Probe BLAST1" in df.columns:
+                probe_seq = row.get("Probe")
+                keep_p = (pd.isna(probe_seq) or probe_seq == "" or 
+                         FilterProcessor._passes_blast_filter(row, "Probe", blast_filter_factor))
+            else:
+                keep_p = True
+            
+            overall_pass = keep_f and keep_r and keep_p
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                f_blast1 = row.get("Primer F BLAST1")
+                f_blast2 = row.get("Primer F BLAST2")
+                r_blast1 = row.get("Primer R BLAST1")
+                r_blast2 = row.get("Primer R BLAST2")
+                
+                if pd.isna(f_blast1) and pd.isna(r_blast1):
+                    no_hits_count += 1
+                elif (pd.isna(f_blast2) and pd.notna(f_blast1)) or (pd.isna(r_blast2) and pd.notna(r_blast1)):
+                    unique_hits_count += 1
+                
+                if not overall_pass:
+                    failure_reasons = []
+                    if not keep_f:
+                        failure_reasons.append("forward primer specificity")
+                    if not keep_r:
+                        failure_reasons.append("reverse primer specificity")
+                    if not keep_p:
+                        failure_reasons.append("probe specificity")
+                    
+                    failed_primers.append({
+                        'gene': gene,
+                        'reasons': failure_reasons,
+                    })
+                
+                if DebugLogLimiter.should_log('blast_filter_analysis', interval=500, max_initial=2):
+                    logger.debug(f"Gene {gene}: F pass={keep_f}, R pass={keep_r}, Overall={overall_pass}")
+            
+            if overall_pass:
+                keep_indices.append(i)
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"BLAST analysis: no hits={no_hits_count}, unique hits={unique_hits_count}, {len(failed_primers)} failed")
+        
+        # Apply filtering
+        df_filtered = df.loc[keep_indices].reset_index(drop=True)
+        
+        filtered_count = len(df_filtered)
+        removed_count = initial_count - filtered_count
+        
+        logger.debug(f"BLAST filtering: kept {filtered_count}, removed {removed_count}")
+        
+        # Return in original format
+        return df_filtered.to_dict('records') if not isinstance(primers, pd.DataFrame) else df_filtered
+
+    @staticmethod
+    def _passes_blast_filter(row, col_prefix, filter_factor):
+        """
+        Check if a sequence passes the BLAST specificity filter.
+        
+        Args:
+            row: DataFrame row containing BLAST results
+            col_prefix: Column prefix for BLAST data (e.g., "Primer F")
+            filter_factor: Minimum specificity ratio required
+            
+        Returns:
+            True if sequence passes specificity filter, False otherwise
+        """
+        best = row.get(f"{col_prefix} BLAST1")
+        second = row.get(f"{col_prefix} BLAST2")
+        
+        # No hits found - insufficient specificity data
+        if pd.isna(best):
+            return False
+            
+        # Only one hit found - effectively unique
+        if pd.isna(second):
+            return True
+            
+        # Check specificity ratio: best * filter_factor <= second
+        return best * filter_factor <= second
+
+    @staticmethod
+    def has_disallowed_repeats(seq):
+        """
+        Check for disallowed repeats in a DNA sequence.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            True if disallowed repeats found, False otherwise
+        """
+        if not isinstance(seq, str):
+            if DebugLogLimiter.should_log('disallowed_repeats_invalid', interval=200, max_initial=1):
+                logger.debug("Invalid sequence type provided to has_disallowed_repeats")
+            return True
+            
+        if not seq:
+            return False
+            
+        seq_upper = seq.upper()
+        has_repeats = "CCCC" in seq_upper or "GGGG" in seq_upper
+        
+        if (has_repeats and DebugLogLimiter.should_log('disallowed_repeats', interval=200, max_initial=3)):
+            repeat_types = []
+            if "CCCC" in seq_upper:
+                repeat_types.append("CCCC")
+            if "GGGG" in seq_upper:
+                repeat_types.append("GGGG")
+            logger.debug(f"Disallowed repeats found ({', '.join(repeat_types)}): {seq[:20]}...")
+            
+        return has_repeats
+    
+    @staticmethod
+    def calculate_gc(seq):
+        """
+        Calculate GC content of a DNA sequence.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            GC content as a percentage (0-100)
+        """
+        if not seq or not isinstance(seq, str):
+            if DebugLogLimiter.should_log('gc_calc_invalid', interval=200, max_initial=1):
+                logger.debug("Invalid sequence provided to calculate_gc")
+            return 0.0
+            
+        if not seq.strip():
+            return 0.0
+            
+        seq_upper = seq.upper()
+        gc_count = sum(1 for base in seq_upper if base in "GC")
+        total_bases = len(seq_upper)
+        
+        if total_bases == 0:
+            return 0.0
+            
+        gc_percentage = (gc_count / total_bases) * 100
+        
+        return gc_percentage
+    
+    @staticmethod
+    def reverse_complement(seq):
+        """
+        Generate the reverse complement of a DNA sequence.
+        
+        Args:
+            seq: DNA sequence to reverse complement
+            
+        Returns:
+            Reverse complement sequence
+        """
+        if not seq or not isinstance(seq, str):
+            logger.debug("Invalid sequence provided to reverse_complement")
+            return ""
+        
+        if not seq.strip():
+            return ""
+        
+        seq_upper = seq.upper()
+        
+        # Define complement mapping including IUPAC ambiguous codes
+        complement = {
+            'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A',
+            'N': 'N', 'R': 'Y', 'Y': 'R', 'S': 'S',
+            'W': 'W', 'K': 'M', 'M': 'K', 'B': 'V',
+            'D': 'H', 'H': 'D', 'V': 'B'
+        }
+        
+        # Check for invalid characters
+        invalid_chars = set(seq_upper) - set(complement.keys())
+        if invalid_chars:
+            error_msg = f"Invalid nucleotide characters found: {', '.join(invalid_chars)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Generate reverse complement
+        try:
+            rev_comp = ''.join(complement.get(base, base) for base in reversed(seq_upper))
+            return rev_comp
+        except Exception as e:
+            error_msg = f"Error generating reverse complement for sequence: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            raise ValueError(error_msg) from e
+    
+    @staticmethod
+    def ensure_more_c_than_g(seq):
+        """
+        Ensure a sequence has more Cs than Gs, reversing if necessary.
+        
+        Args:
+            seq: DNA sequence to analyze
+            
+        Returns:
+            Tuple of (possibly_reversed_sequence, was_reversed)
+        """
+        if not seq or not isinstance(seq, str):
+            if DebugLogLimiter.should_log('ensure_c_g_invalid', interval=20, max_initial=2):
+                logger.debug("Invalid sequence provided to ensure_more_c_than_g")
+            return seq, False
+        
+        if not seq.strip():
+            return seq, False
+        
+        seq_upper = seq.upper()
+        c_count = seq_upper.count('C')
+        g_count = seq_upper.count('G')
+        
+        if c_count >= g_count:
+            return seq, False
+        
+        try:
+            rev_comp = FilterProcessor.reverse_complement(seq)
+            if DebugLogLimiter.should_log('c_g_reversed', interval=200, max_initial=1):
+                logger.debug("Sequence reversed to ensure more Cs than Gs")
+            return rev_comp, True
+        except ValueError as e:
+            error_msg = f"Failed to reverse complement sequence: {str(e)}"
+            logger.error(error_msg)
+            return seq, False
+        except Exception as e:
+            error_msg = f"Unexpected error in ensure_more_c_than_g: {str(e)}"
+            logger.error(error_msg)
+            return seq, False

@@ -9,12 +9,14 @@ This subpackage contains utility functions:
 
 from .file_io import FileIO
 from .blast_db_manager import BlastDatabaseManager
-from .file_preparator import FilePreparator, prepare_pipeline_files
+from .file_preparator import FilePreparator
+from .direct_mode import SequenceAnalyzer, DirectMode
 
 __all__ = [
     'BlastDatabaseManager',
     'FileIO',
     'TempDirectoryManager',
     'FilePreparator',
-    'prepare_pipeline_files'
+    'SequenceAnalyzer', 
+    'DirectMode'
 ]

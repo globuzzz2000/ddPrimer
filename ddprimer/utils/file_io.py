@@ -20,6 +20,10 @@ import platform
 import logging
 import pandas as pd
 import contextlib
+from typing import Dict, Optional
+from pathlib import Path
+
+# Import package modules
 from ..config import FileSelectionError, FileFormatError, FileError
 
 # Set up module logger
@@ -80,6 +84,172 @@ class FileIO:
         >>> file_path = FileIO.select_file("Select genome file", [("FASTA", "*.fasta")])
         >>> FileIO.save_results(df, "output_dir", "input.fasta")
     """
+    
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def select_input_files_workflow(cls) -> Dict[str, Optional[str]]:
+        """
+        Interactive file selection for pipeline input files with workflow integration.
+        
+        Guides user through selecting required input files (FASTA, VCF, GFF)
+        with appropriate file type filtering and validation.
+        
+        Returns:
+            Dictionary with selected file paths: {'fasta': path, 'vcf': path, 'gff': path}
+            Values are None if files not selected or selection canceled
+            
+        Raises:
+            FileSelectionError: If file selection fails
+        """
+        logger.debug("=== WORKFLOW: INPUT FILE SELECTION ===")
+        
+        try:
+            selected_files = {
+                'fasta': None,
+                'vcf': None, 
+                'gff': None
+            }
+            
+            # Select FASTA file
+            logger.debug("Requesting FASTA file selection")
+            fasta_file = cls.select_file(
+                "Select reference genome FASTA file",
+                [("FASTA Files", "*.fasta"), ("FASTA Files", "*.fa"), ("FASTA Files", "*.fna")]
+            )
+            selected_files['fasta'] = fasta_file
+            
+            # Select VCF file
+            logger.debug("Requesting VCF file selection")
+            vcf_file = cls.select_file(
+                "Select VCF variant file",
+                [("VCF Files", "*.vcf"), ("Compressed VCF", "*.vcf.gz")]
+            )
+            selected_files['vcf'] = vcf_file
+            
+            # Select GFF file (optional)
+            logger.debug("Requesting GFF file selection")
+            try:
+                gff_file = cls.select_file(
+                    "Select GFF annotation file (optional - cancel to skip)",
+                    [("GFF Files", "*.gff"), ("GFF3 Files", "*.gff3"), ("Compressed GFF", "*.gff.gz")]
+                )
+                selected_files['gff'] = gff_file
+            except FileSelectionError:
+                logger.debug("GFF file selection canceled - proceeding without annotations")
+                selected_files['gff'] = None
+            
+            # Mark selection process complete
+            cls.mark_selection_complete()
+            
+            logger.debug(f"File selection complete: FASTA={bool(selected_files['fasta'])}, "
+                        f"VCF={bool(selected_files['vcf'])}, GFF={bool(selected_files['gff'])}")
+            logger.debug("=== END WORKFLOW: INPUT FILE SELECTION ===")
+            
+            return selected_files
+            
+        except Exception as e:
+            error_msg = f"Error in file selection workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: INPUT FILE SELECTION ===")
+            raise FileSelectionError(error_msg) from e
+    
+    @classmethod
+    def load_sequences_workflow(cls, file_path: str) -> Dict[str, str]:
+        """
+        Load sequences from various file formats for workflow integration.
+        
+        Automatically detects file format (FASTA, CSV, Excel) and loads
+        sequences with appropriate parsing and validation.
+        
+        Args:
+            file_path: Path to sequence file
+            
+        Returns:
+            Dictionary mapping sequence IDs to sequences
+            
+        Raises:
+            FileError: If file cannot be accessed
+            FileFormatError: If file format is invalid or parsing fails
+        """
+        logger.debug("=== WORKFLOW: SEQUENCE LOADING ===")
+        logger.debug(f"Loading sequences from: {file_path}")
+        
+        try:
+            # Determine file type and load accordingly
+            file_ext = Path(file_path).suffix.lower()
+            
+            if file_ext in ['.fasta', '.fa', '.fna']:
+                logger.debug("Loading as FASTA file")
+                sequences = cls.load_fasta(file_path)
+            elif file_ext in ['.csv', '.xlsx', '.xls']:
+                logger.debug("Loading as sequence table")
+                sequences = cls.load_sequences_from_table(file_path)
+            else:
+                error_msg = f"Unsupported file format: {file_ext}"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
+            if not sequences:
+                error_msg = f"No valid sequences found in file: {file_path}"
+                logger.error(error_msg)
+                raise FileFormatError(error_msg)
+            
+            logger.debug(f"Successfully loaded {len(sequences)} sequences")
+            logger.debug("=== END WORKFLOW: SEQUENCE LOADING ===")
+            
+            return sequences
+            
+        except Exception as e:
+            error_msg = f"Error in sequence loading workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: SEQUENCE LOADING ===")
+            raise
+    
+    @classmethod
+    def save_results_workflow(cls, df: pd.DataFrame, output_dir: str, 
+                             input_file: str, mode: str = 'standard') -> str:
+        """
+        Save pipeline results to formatted Excel file for workflow integration.
+        
+        Creates properly formatted Excel output with comprehensive styling
+        and appropriate column organization based on pipeline mode.
+        
+        Args:
+            df: Results DataFrame
+            output_dir: Output directory path
+            input_file: Original input file path (for naming)
+            mode: Pipeline mode ('standard' or 'direct')
+            
+        Returns:
+            Path to saved Excel file
+            
+        Raises:
+            FileFormatError: If file cannot be saved
+        """
+        logger.debug("=== WORKFLOW: RESULTS SAVING ===")
+        logger.debug(f"Saving {len(df)} results to: {output_dir}")
+        
+        try:
+            output_path = cls.save_results(df, output_dir, input_file, mode)
+            
+            logger.debug(f"Results successfully saved to: {output_path}")
+            logger.debug("=== END WORKFLOW: RESULTS SAVING ===")
+            
+            return output_path
+            
+        except Exception as e:
+            error_msg = f"Error in results saving workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: RESULTS SAVING ===")
+            raise
+    
+    #############################################################################
     
     # Default to GUI mode unless explicitly detected as headless
     use_cli = False

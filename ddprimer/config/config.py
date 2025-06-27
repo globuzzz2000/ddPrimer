@@ -17,7 +17,6 @@ Primer3 settings customization.
 import os
 import json
 import logging
-import subprocess
 from multiprocessing import cpu_count
 from typing import Dict, Any
 
@@ -33,7 +32,6 @@ class Config:
     all modules and comprehensive configuration file support.
     
     Attributes:
-        DEBUG_MODE: Enable debug logging mode
         NUM_PROCESSES: Number of parallel processes to use
         PRIMER_MIN_SIZE: Minimum primer length
         PRIMER_MAX_SIZE: Maximum primer length
@@ -43,22 +41,14 @@ class Config:
         >>> config.PRIMER_MIN_SIZE = 20
         >>> Config.load_from_file("my_config.json")
     """
-    
-    # Singleton instance
+
     _instance = None
-    
-    #############################################################################
-    #                           Pipeline Mode Options
-    #############################################################################
-    DEBUG_MODE = False                  # Debug logging mode (enable with --debug flag)
-    DISABLE_INTERNAL_OLIGO = False      # Disable internal oligo design
     
     #############################################################################
     #                           Performance Settings
     #############################################################################
-    NUM_PROCESSES = max(1, int(cpu_count() * 0.75))  # Use 75% of cores
-    BATCH_SIZE = 100
-    SHOW_PROGRESS = True
+    NUM_PROCESSES = max(1, int(cpu_count() * 0.75))     # Use 75% of cores
+    SHOW_PROGRESS = True                                # Show progress bars
     
     #############################################################################
     #                           Design Parameters
@@ -84,6 +74,7 @@ class Config:
     PREFER_PROBE_MORE_C_THAN_G = True         # for Probe reversing, recommended for ddPCR
     SEQUENCE_MIN_GC = 50.0                    # for amplicon
     SEQUENCE_MAX_GC = 60.0                    # for amplicon
+    MIN_CHROMOSOME_SIZE = 1_000_000           # Minimum size to consider as nuclear chromosome, for file_preparator
 
     #############################################################################
     #                           VCF/SNP Processing Parameters  
@@ -138,7 +129,7 @@ class Config:
             logger.debug(f"User config directory: {config_dir}")
             return config_dir
         except OSError as e:
-            error_msg = f"Failed to create user config directory {config_dir}: {str(e)}"
+            error_msg = f"Failed to create user config directory {config_dir}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
@@ -185,7 +176,7 @@ class Config:
             return True
             
         except Exception as e:
-            error_msg = f"Failed to save user setting {key}: {str(e)}"
+            error_msg = f"Failed to save user setting {key}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
@@ -226,7 +217,7 @@ class Config:
             logger.warning(f"Error reading user settings for {key}, returning default: {str(e)}")
             return default
         except Exception as e:
-            error_msg = f"Critical error loading user setting {key}: {str(e)}"
+            error_msg = f"Critical error loading user setting {key}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
@@ -252,7 +243,7 @@ class Config:
         "PRIMER_DMSO_FACTOR": 0.6, 
         "PRIMER_DNA_CONC": 50.0, 
         "PRIMER_DNTP_CONC": 0.8, 
-        "PRIMER_FIRST_BASE_INDEX": 1,
+        "PRIMER_FIRST_BASE_INDEX": 0,
         "PRIMER_FORMAMIDE_CONC": 0.0, 
         "PRIMER_GC_CLAMP": 1, 
         "PRIMER_INSIDE_PENALTY": -1.0, 
@@ -427,7 +418,7 @@ class Config:
                 cls.MIN_SEGMENT_LENGTH = cls.PRIMER_PRODUCT_SIZE_RANGE[0][0]
                 logger.debug(f"Updated MIN_SEGMENT_LENGTH to {cls.MIN_SEGMENT_LENGTH}")
             
-            # Initialize the BLAST database path from saved configuration
+            # Load saved BLAST database path from user settings
             saved_db_path = cls.load_user_setting("blast_db_path", None)
             if saved_db_path and os.path.exists(saved_db_path + ".nhr"):
                 cls.DB_PATH = saved_db_path
@@ -455,7 +446,6 @@ class Config:
             >>> args['PRIMER_MIN_SIZE']
             18
         """
-        logger.debug("=== PRIMER3 ARGS DEBUG ===")
         logger.debug("Generating Primer3 global arguments")
         
         try:
@@ -490,8 +480,6 @@ class Config:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
-        
-    logger.debug("=== END PRIMER3 ARGS DEBUG ===")
     
     @classmethod
     def format_settings_for_file(cls) -> str:
@@ -543,11 +531,9 @@ class Config:
             >>> if success:
             ...     print("Settings loaded successfully")
         """
-        logger.debug("=== CONFIG LOAD DEBUG ===")
         logger.debug(f"Loading configuration from {filepath}")
         
         try:
-            # Initialize the singleton if not already done
             cls.get_instance()
             
             if not os.path.exists(filepath):
@@ -558,15 +544,11 @@ class Config:
             # JSON configuration
             if filepath.endswith('.json'):
                 result = cls._load_from_json(filepath)
-            # Primer3 format (key=value)
             else:
+                # Primer3 format (key=value)
                 result = cls._load_from_primer3_format(filepath)
             
-            if result:
-                logger.debug("Configuration loaded successfully")
-            else:
-                logger.warning("Configuration loading returned False")
-                
+            logger.debug(f"Configuration loaded successfully: {result}")
             return result
                 
         except Exception as e:
@@ -574,8 +556,6 @@ class Config:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
-        
-    logger.debug("=== END CONFIG LOAD DEBUG ===")
     
     @classmethod
     def _load_from_json(cls, filepath: str) -> bool:
@@ -735,14 +715,10 @@ class Config:
         try:
             if format_type.lower() == "json":
                 result = cls._save_to_json(filepath)
-            else:  # Default to primer3 format
+            else:
                 result = cls._save_to_primer3_format(filepath)
             
-            if result:
-                logger.debug("Configuration saved successfully")
-            else:
-                logger.warning("Configuration saving returned False")
-                
+            logger.debug(f"Configuration saved successfully: {result}")
             return result
         except Exception as e:
             error_msg = f"Failed to save settings to {filepath}"
@@ -854,28 +830,13 @@ class Config:
         
         try:
             cls.save_user_setting("blast_db_path", db_path)
-            logger.debug(f"Database config saved to unified storage: {db_path}")
+            logger.debug(f"Database config saved to persistent storage: {db_path}")
             
         except Exception as e:
             error_msg = f"Failed to save database config for path {db_path}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ConfigError(error_msg) from e
-    
-    @staticmethod
-    def debug(message: str) -> None:
-        """
-        Print debug messages if debug mode is enabled.
-        
-        Args:
-            message: The debug message to print
-            
-        Example:
-            >>> Config.debug("This is a debug message")
-        """
-        if Config.DEBUG_MODE:
-            print(f"[DEBUG] {message}")
-
 
 class ConfigError(Exception):
     """Error with configuration parameters or operations."""
@@ -920,9 +881,6 @@ def setup_logging(debug=False):
     Returns:
         Path to log file if created, None otherwise
     """
-    # Set the debug mode in Config
-    Config.DEBUG_MODE = debug
-    
     # Configure logging level
     if debug:
         logging.basicConfig(
@@ -951,9 +909,7 @@ def display_config(config_class):
         config_class: The Config class to display settings for
     """
     print("\n=== ddPrimer Configuration ===")
-    print(f"Debug Mode: {config_class.DEBUG_MODE}")
     print(f"Number of Processes: {config_class.NUM_PROCESSES}")
-    print(f"Batch Size: {config_class.BATCH_SIZE}")
     print(f"Primer Min Size: {config_class.PRIMER_MIN_SIZE}")
     print(f"Primer Opt Size: {config_class.PRIMER_OPT_SIZE}")
     print(f"Primer Max Size: {config_class.PRIMER_MAX_SIZE}")

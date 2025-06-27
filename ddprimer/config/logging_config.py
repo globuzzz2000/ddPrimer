@@ -5,7 +5,7 @@ Logging configuration module for ddPrimer pipeline.
 
 Contains functionality for:
 1. Module-specific debug level control based on filenames
-2. Enhanced debug filtering and formatting with colors  
+2. Debug filtering and formatting with colors  
 3. Singleton pattern for consistent logging configuration
 4. Automatic log file management and rotation
 
@@ -42,30 +42,18 @@ class ModuleDebugConfig:
     
     # All modules default to INFO level
     MODULE_DEBUG_LEVELS = {
-        'ddprimer.pipeline': logging.INFO,
-        'ddprimer.modes.standard_mode': logging.INFO,
-        'ddprimer.modes.direct_mode': logging.INFO,
-        'ddprimer.modes.alignment_mode': logging.INFO,
-        'ddprimer.modes.common': logging.INFO,
+        'ddprimer.main': logging.INFO,
         'ddprimer.core.snp_processor': logging.INFO,
         'ddprimer.core.annotation_processor': logging.INFO,
         'ddprimer.core.blast_processor': logging.INFO,
-        'ddprimer.core.vienna_processor': logging.INFO,
+        'ddprimer.core.thermo_processor': logging.INFO,
         'ddprimer.core.primer3_processor': logging.INFO,
         'ddprimer.core.primer_processor': logging.INFO,
         'ddprimer.core.sequence_processor': logging.INFO,
-        'ddprimer.helpers.alignment_workflow': logging.INFO,
-        'ddprimer.helpers.direct_masking': logging.INFO,
-        'ddprimer.helpers.lastz_runner': logging.INFO,
-        'ddprimer.helpers.maf_parser': logging.INFO,
-        'ddprimer.utils.blast_db_creator': logging.INFO,
-        'ddprimer.utils.blast_verification': logging.INFO,
-        'ddprimer.utils.chromosome_mapper': logging.INFO,
-        'ddprimer.utils.common_utils': logging.INFO,
-        'ddprimer.utils.db_selector': logging.INFO,
+        'ddprimer.utils.blast_db_manager': logging.INFO,
         'ddprimer.utils.file_io': logging.INFO,
-        'ddprimer.utils.model_organism_manager': logging.INFO,
-        'ddprimer.utils.sequence_utils': logging.INFO,
+        'ddprimer.utils.file_preparator': logging.INFO,
+        'ddprimer.utils.direct_mode': logging.INFO,
         'ddprimer.config.config': logging.INFO,
         'ddprimer.config.config_display': logging.INFO,
         'ddprimer.config.template_generator': logging.INFO,
@@ -74,38 +62,22 @@ class ModuleDebugConfig:
     # Filename to module mapping for intuitive usage
     FILENAME_TO_MODULE = {
         # Main pipeline
-        'pipeline': 'ddprimer.pipeline',
-        
-        # Mode files
-        'standard_mode': 'ddprimer.modes.standard_mode',
-        'direct_mode': 'ddprimer.modes.direct_mode', 
-        'alignment_mode': 'ddprimer.modes.alignment_mode',
-        'common': 'ddprimer.modes.common',
-        
+        'main': 'ddprimer.main',
+
         # Core processing files
         'snp_processor': 'ddprimer.core.snp_processor',
         'annotation_processor': 'ddprimer.core.annotation_processor',
         'blast_processor': 'ddprimer.core.blast_processor',
-        'vienna_processor': 'ddprimer.core.vienna_processor',
+        'thermo_processor': 'ddprimer.core.thermo_processor',
         'primer3_processor': 'ddprimer.core.primer3_processor',
         'primer_processor': 'ddprimer.core.primer_processor',
         'sequence_processor': 'ddprimer.core.sequence_processor',
         
-        # Helper files
-        'alignment_workflow': 'ddprimer.helpers.alignment_workflow',
-        'direct_masking': 'ddprimer.helpers.direct_masking',
-        'lastz_runner': 'ddprimer.helpers.lastz_runner',
-        'maf_parser': 'ddprimer.helpers.maf_parser',
-        
         # Utility files
-        'blast_db_creator': 'ddprimer.utils.blast_db_creator',
-        'blast_verification': 'ddprimer.utils.blast_verification',
-        'chromosome_mapper': 'ddprimer.utils.chromosome_mapper',
-        'common_utils': 'ddprimer.utils.common_utils',
-        'db_selector': 'ddprimer.utils.db_selector',
+        'blast_db_manager': 'ddprimer.utils.manager',
         'file_io': 'ddprimer.utils.file_io',
-        'model_organism_manager': 'ddprimer.utils.model_organism_manager',
-        'sequence_utils': 'ddprimer.utils.sequence_utils',
+        'file_preparator': 'ddprimer.utils.file_preparator',
+        'direct_mode': 'ddprimer.utils.direct_mode',
         
         # Config files  
         'config': 'ddprimer.config.config',
@@ -173,7 +145,7 @@ class SimpleDebugFormatter(logging.Formatter):
         return formatted_message
 
 
-class EnhancedDebugFilter(logging.Filter):
+class DebugFilter(logging.Filter):
     """
     Filter that controls module-specific debug output.
     
@@ -185,7 +157,7 @@ class EnhancedDebugFilter(logging.Filter):
         module_levels: Dictionary mapping module names to minimum log levels
         
     Example:
-        >>> filter_obj = EnhancedDebugFilter({'ddprimer.pipeline': logging.DEBUG})
+        >>> filter_obj = DebugFilter({'ddprimer.pipeline': logging.DEBUG})
         >>> handler.addFilter(filter_obj)
     """
     
@@ -215,14 +187,52 @@ class EnhancedDebugFilter(logging.Filter):
         if module_name in self.module_levels:
             return record.levelno >= self.module_levels[module_name]
         
-        # Try parent module matches
-        for module_pattern, level in self.module_levels.items():
-            if module_name.startswith(module_pattern + '.') or module_name == module_pattern:
-                return record.levelno >= level
+        # Try parent module matches - check from most specific to least specific
+        module_parts = module_name.split('.')
+        for i in range(len(module_parts), 0, -1):
+            parent_module = '.'.join(module_parts[:i])
+            if parent_module in self.module_levels:
+                return record.levelno >= self.module_levels[parent_module]
         
-        # For modules not in our config, default to INFO level
+        # For modules not in our config, use INFO level
+        # This ensures that logger.info() calls from any module are shown
         return record.levelno >= logging.INFO
 
+class DebugLogLimiter:
+    """Global counter to limit debug logging across all modules"""
+    _counters = {}
+    
+    @classmethod
+    def should_log(cls, category: str, interval: int = 100, max_initial: int = 5) -> bool:
+        """
+        Determine if we should log for this category
+        
+        Args:
+            category: Logging category (e.g., 'fragment_creation', 'primer_processing')
+            interval: Log every Nth occurrence (default: 100)
+            max_initial: Log first N occurrences (default: 5)
+        
+        Returns:
+            True if should log, False otherwise
+        """
+        if category not in cls._counters:
+            cls._counters[category] = 0
+        
+        cls._counters[category] += 1
+        count = cls._counters[category]
+        
+        # Log first few occurrences OR every interval
+        return count <= max_initial or count % interval == 0
+    
+    @classmethod
+    def reset_counter(cls, category: str):
+        """Reset counter for a specific category"""
+        cls._counters[category] = 0
+    
+    @classmethod
+    def reset_all(cls):
+        """Reset all counters"""
+        cls._counters.clear()
 
 def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
     """
@@ -250,12 +260,9 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         >>> log_file = setup_logging(debug=['pipeline', 'blast_processor'])
         >>> print(f"Logs saved to: {log_file}")
     """
-    logger.debug("=== LOGGING SETUP DEBUG ===")
     logger.debug(f"Setting up logging with debug={debug}")
     
     try:
-        from .config import Config
-        
         # Normalize debug input
         debug_enabled, debug_modules = _normalize_debug_input(debug)
         logger.debug(f"Normalized debug: enabled={debug_enabled}, modules={debug_modules}")
@@ -265,11 +272,8 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         
         # Apply module-specific debug configuration
         if debug_modules:
-            # Start with INFO level for all modules
-            for module in module_config:
-                module_config[module] = logging.INFO
-            
-            # Enable DEBUG for specified modules
+            # Keep INFO level for all modules by default
+            # Only enable DEBUG for specified modules
             for module_name in debug_modules:
                 full_module_name = _resolve_module_name(module_name)
                 if full_module_name and full_module_name in module_config:
@@ -297,9 +301,9 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # File handler for this specific run (no rotation needed since each run gets its own file)
+        # File handler - always saves all levels
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)  # Always save debug logs to file
+        file_handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
         )
@@ -307,24 +311,27 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
         
         # Console handler
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
         
+        # Console handler logic
         if debug_enabled:
-            # Enhanced debug format with colors
+            # In debug mode, use DEBUG level and apply the filter
+            console_handler.setLevel(logging.DEBUG)
             console_formatter = SimpleDebugFormatter(
                 fmt='%(levelname)-8s [%(name)s] %(message)s',
                 use_colors=True
             )
-            
             # Add module-specific filter
-            debug_filter = EnhancedDebugFilter(module_config)
+            debug_filter = DebugFilter(module_config)
             console_handler.addFilter(debug_filter)
         else:
-            # Simple format for normal operation
+            # In normal mode, use INFO level and simple formatter
+            # This ensures all logger.info() calls are displayed
+            console_handler.setLevel(logging.INFO)
             console_formatter = SimpleDebugFormatter(
                 fmt='%(message)s',
                 use_colors=False
             )
+            # Don't apply the DebugFilter in normal mode
         
         console_handler.setFormatter(console_formatter)
         
@@ -355,19 +362,15 @@ def setup_logging(debug: Union[bool, List[str], str] = False) -> str:
             else:
                 main_logger.debug("Debug enabled for all modules")
         
-        # Update Config
-        Config.DEBUG_MODE = debug_enabled
-        logger.debug("Updated Config.DEBUG_MODE")
-        
-        # Clean up old log files (keep last 30 files)
+        # Clean up old log files
         _cleanup_old_logs()
         
         logger.debug("Logging setup completed successfully")
         return log_file
         
     except Exception as e:
-        error_msg = f"Failed to setup logging configuration"
-        print(f"ERROR: {error_msg}: {str(e)}")  # Can't use logger here since setup failed
+        error_msg = f"Logging setup failed: {str(e)}"
+        print(f"ERROR: {error_msg}")
         raise LoggingConfigError(error_msg) from e
 
 
@@ -388,13 +391,9 @@ def _cleanup_old_logs(files_to_keep: int = 10):
         if not logs_dir.exists():
             return
         
-        # Get all ddPrimer log files
         log_files = list(logs_dir.glob("ddPrimer_*.log"))
-        
-        # Sort by filename (timestamp) - newest first
         log_files.sort(reverse=True)
         
-        # Remove old files beyond the keep limit
         files_to_remove = log_files[files_to_keep:]
         for log_file in files_to_remove:
             log_file.unlink()
@@ -443,13 +442,9 @@ def list_recent_logs(count: int = 10) -> List[str]:
     if not logs_dir.exists():
         return []
     
-    # Get all ddPrimer log files
     log_files = list(logs_dir.glob("ddPrimer_*.log"))
-    
-    # Sort by filename (timestamp) - newest first
     log_files.sort(reverse=True)
     
-    # Convert to strings and return the requested count
     return [str(f) for f in log_files[:count]]
 
 
@@ -469,21 +464,16 @@ def _normalize_debug_input(debug: Union[bool, List[str], str]) -> tuple[bool, Op
         True ['pipeline', 'blast']
     """
     try:
-        from .config import Config
-        
         if isinstance(debug, bool):
-            debug_enabled = debug or Config.DEBUG_MODE
+            debug_enabled = debug
             debug_modules = None
         elif isinstance(debug, str):
-            # Single module name as string
             debug_enabled = True
             debug_modules = [debug]
         elif isinstance(debug, list):
-            # List of module names
             debug_enabled = True
             debug_modules = debug
         else:
-            # Unknown format, default to False
             debug_enabled = False
             debug_modules = None
         

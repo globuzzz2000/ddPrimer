@@ -26,6 +26,8 @@ import gzip
 import re
 from pathlib import Path
 from typing import Optional, Dict, Tuple
+
+# Import package modules
 from ..config import Config, FileError, ExternalToolError
 
 # Set up module logger
@@ -49,6 +51,66 @@ class BlastDatabaseManager:
         ... else:
         ...     success = manager.setup_database_interactive()
     """
+    
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def setup_blast_database_workflow(cls) -> bool:
+        """
+        Ensure BLAST database is available and properly configured for workflow integration.
+        
+        Verifies existing database configuration and guides user through setup
+        if needed. Handles all user interaction for database preparation.
+        
+        Returns:
+            True if database is ready for use, False if setup failed or was canceled
+            
+        Raises:
+            ExternalToolError: If BLAST tools are not available
+            FileError: If database files cannot be accessed
+        """
+        logger.debug("=== WORKFLOW: BLAST DATABASE SETUP ===")
+        
+        try:
+            # Create manager instance
+            manager = cls()
+            
+            # First attempt verification
+            logger.debug("Verifying existing BLAST database configuration")
+            if manager.verify_database():
+                logger.debug("BLAST database verification successful")
+                logger.debug("=== END WORKFLOW: BLAST DATABASE SETUP ===")
+                return True
+            
+            # Database needs setup - start interactive process
+            logger.debug("BLAST database requires setup - starting interactive configuration")
+            setup_success = manager.setup_database_interactive()
+            
+            if setup_success:
+                # Verify the newly configured database
+                verification_success = manager.verify_database()
+                if verification_success:
+                    logger.debug("BLAST database setup and verification completed successfully")
+                else:
+                    logger.error("BLAST database setup completed but verification failed")
+                    return False
+            else:
+                logger.debug("BLAST database setup was canceled or failed")
+                return False
+            
+            logger.debug("=== END WORKFLOW: BLAST DATABASE SETUP ===")
+            return setup_success
+            
+        except Exception as e:
+            error_msg = f"Error in BLAST database setup workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: BLAST DATABASE SETUP ===")
+            raise
+    
+    #############################################################################
     
     # Model organisms with their genome download URLs
     MODEL_ORGANISMS = {
@@ -790,25 +852,3 @@ class BlastDatabaseManager:
                         
         except OSError as e:
             logger.warning(f"Error cleaning up genome files: {str(e)}")
-
-
-def verify_blast_database() -> bool:
-    """
-    Verify that a valid BLAST database exists and can be accessed.
-    
-    Returns:
-        True if database is valid, False otherwise
-    """
-    manager = BlastDatabaseManager()
-    return manager.verify_database()
-
-
-def setup_blast_database() -> bool:
-    """
-    Interactive setup for BLAST database when verification fails.
-    
-    Returns:
-        True if database was successfully set up, False otherwise
-    """
-    manager = BlastDatabaseManager()
-    return manager.setup_database_interactive()

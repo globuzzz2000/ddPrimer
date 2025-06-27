@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, List, Optional, Set
+
+# Import package modules
 from ..config import Config, FileError, ExternalToolError, SequenceProcessingError
 
 # Set up module logger
@@ -51,6 +53,76 @@ class FilePreparator:
         ...     # Use result['vcf_file'], result['fasta_file'], result['gff_file']
         ...     pass
     """
+    
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def prepare_pipeline_files_workflow(cls, vcf_file: str, fasta_file: str, 
+                                       gff_file: Optional[str] = None) -> Dict:
+        """
+        Prepare and validate all pipeline input files for workflow integration.
+        
+        Analyzes input files for compatibility and formatting issues, then
+        creates corrected versions with user consent when needed. Ensures
+        all files are properly formatted for downstream processing.
+        
+        Args:
+            vcf_file: Path to VCF file
+            fasta_file: Path to FASTA file
+            gff_file: Optional path to GFF file
+            
+        Returns:
+            Dictionary with preparation results and final file paths:
+            {
+                'success': bool,
+                'vcf_file': str,
+                'fasta_file': str, 
+                'gff_file': str,
+                'changes_made': bool,
+                'issues_found': List[Dict]
+            }
+            
+        Raises:
+            FileError: If input files cannot be accessed
+            ExternalToolError: If required tools are missing or fail
+        """
+        logger.debug("=== WORKFLOW: FILE PREPARATION ===")
+        logger.debug(f"Preparing files: VCF={vcf_file}, FASTA={fasta_file}, GFF={gff_file}")
+        
+        try:
+            # Initialize preparator
+            preparator = cls()
+            preparator.set_reference_file(fasta_file)
+            
+            # Run comprehensive file preparation
+            result = preparator.prepare_files(vcf_file, fasta_file, gff_file)
+            
+            if result['success']:
+                if result.get('changes_made', False):
+                    logger.debug(f"File preparation completed with corrections")
+                    logger.debug(f"Issues addressed: {len(result.get('issues_found', []))}")
+                else:
+                    logger.debug("File preparation completed - no changes needed")
+            else:
+                logger.error(f"File preparation failed: {result.get('reason', 'Unknown error')}")
+            
+            logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
+            return result
+            
+        except Exception as e:
+            error_msg = f"Error in file preparation workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
+            raise
+        finally:
+            # Ensure cleanup happens
+            if 'preparator' in locals():
+                preparator.cleanup()
+    
+    #############################################################################
     
     def __init__(self):
         """
@@ -156,7 +228,7 @@ class FilePreparator:
             
             # Check if any preparation is needed
             if not analysis['needs_preparation']:
-                logger.info("All files are properly formatted and compatible!")
+                logger.info("All files successfully validated")
                 return {
                     'success': True,
                     'vcf_file': vcf_file,
@@ -479,9 +551,6 @@ class FilePreparator:
         """
         nuclear_seqs = {}
         
-        # Define size thresholds (organellar genomes are typically much smaller)
-        MIN_NUCLEAR_SIZE = 1_000_000  # 1 Mb minimum for nuclear chromosomes
-        
         for seq_name, length in fasta_seqs.items():
             seq_upper = seq_name.upper()
             
@@ -493,7 +562,7 @@ class FilePreparator:
             ]
             
             is_organellar = any(indicator in seq_upper for indicator in organellar_indicators)
-            is_too_small = length < MIN_NUCLEAR_SIZE
+            is_too_small = length < Config.MIN_CHROMOSOME_SIZE
             
             if not is_organellar and not is_too_small:
                 nuclear_seqs[seq_name] = length
@@ -549,7 +618,7 @@ class FilePreparator:
             return mapping
         else:
             # VCF has more chromosomes than nuclear FASTA sequences - problematic
-            logger.warning(f"VCF has {len(vcf_sorted)} chromosomes but only {len(fasta_sorted)} nuclear FASTA sequences")
+            logger.debug(f"VCF has {len(vcf_sorted)} chromosomes but only {len(fasta_sorted)} nuclear FASTA sequences")
             return {}
     
     def _check_chromosome_compatibility(self, vcf_file: str, fasta_file: str) -> Dict:
@@ -1011,10 +1080,10 @@ class FilePreparator:
         Args:
             issues: List of issue dictionaries
         """
-        logger.info(f"\nFound {len(issues)} issue(s) that need to be addressed:")
+        logger.info(f"Found {len(issues)} issue(s) that need to be addressed:\n")
         
         for i, issue in enumerate(issues, 1):
-            logger.info(f"\n{i}. {issue['description']}")
+            logger.info(f"{i}. {issue['description']}")
 
     
     def _get_user_consent(self, issues: List[Dict]) -> bool:
@@ -1529,8 +1598,7 @@ class FilePreparator:
                     result = subprocess.run(
                         compress_cmd, 
                         stdout=output_file,
-                        stderr=subprocess.PIPE,
-                        timeout=300
+                        stderr=subprocess.PIPE
                     )
                 
                 if result.returncode != 0:
@@ -1667,7 +1735,7 @@ class FilePreparator:
             ]
             
             logger.debug(f"Normalization command: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10800)
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
                 os.unlink(temp_path)
@@ -1865,7 +1933,7 @@ class FilePreparator:
                 ]
                 
                 logger.debug(f"Sort command: {' '.join(sort_cmd)}")
-                sort_result = subprocess.run(sort_cmd, capture_output=True, text=True, timeout=300)
+                sort_result = subprocess.run(sort_cmd, capture_output=True, text=True)
                 
                 if sort_result.returncode != 0:
                     error_msg = f"Failed to sort GFF file: {sort_result.stderr}"
@@ -1888,7 +1956,7 @@ class FilePreparator:
                 logger.debug(f"Compress command: {' '.join(compress_cmd)}")
                 with open(output_path, 'wb') as output_file:
                     compress_result = subprocess.run(compress_cmd, stdout=output_file,
-                                                stderr=subprocess.PIPE, text=False, timeout=300)
+                                                stderr=subprocess.PIPE, text=False)
                 
                 if compress_result.returncode != 0:
                     if os.path.exists(output_path):
@@ -2063,47 +2131,3 @@ class FilePreparator:
         except Exception as e:
             logger.warning(f"Error validating prepared VCF: {str(e)}")
             return ["Could not validate prepared VCF file"]
-
-
-# Convenience function for integration with main pipeline
-def prepare_pipeline_files(vcf_file: str, fasta_file: str, 
-                         gff_file: Optional[str] = None) -> Dict:
-    """
-    Convenience function to prepare files for ddPrimer pipeline.
-    
-    This function provides a simple interface for file preparation that can
-    be easily integrated into the main pipeline workflow.
-    
-    Args:
-        vcf_file: Path to VCF file
-        fasta_file: Path to FASTA file
-        gff_file: Optional path to GFF file
-        
-    Returns:
-        Dictionary with preparation results and final file paths
-        
-    Raises:
-        FileError: If file preparation fails
-        ExternalToolError: If external tools fail
-        
-    Example:
-        >>> result = prepare_pipeline_files("variants.vcf", "genome.fasta", "genes.gff")
-        >>> if result['success']:
-        ...     vcf_path = result['vcf_file']
-        ...     fasta_path = result['fasta_file']
-        ...     gff_path = result['gff_file']
-    """
-    preparator = FilePreparator()
-    
-    try:
-        # Set reference file for normalization operations
-        preparator.set_reference_file(fasta_file)
-        
-        # Prepare files
-        result = preparator.prepare_files(vcf_file, fasta_file, gff_file)
-        
-        return result
-        
-    finally:
-        # Clean up
-        preparator.cleanup()

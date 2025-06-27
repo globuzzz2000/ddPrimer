@@ -33,7 +33,6 @@ def display_config(config_cls):
         >>> from ddprimer.config import Config
         >>> display_config(Config)
     """
-    logger.debug("=== CONFIG DISPLAY DEBUG ===")
     logger.debug("Starting configuration display")
     
     try:
@@ -50,11 +49,8 @@ def display_config(config_cls):
         
         # Group settings by category based on class structure
         categories = {
-            "Pipeline Mode Options": [
-                "DEBUG_MODE", "DISABLE_INTERNAL_OLIGO"
-            ],
             "Performance Settings": [
-                "NUM_PROCESSES", "BATCH_SIZE", "MAF_CHUNK_SIZE", "SHOW_PROGRESS"
+                "NUM_PROCESSES", "SHOW_PROGRESS"
             ],
             "Basic Primer3 Parameters": [
                 "PRIMER_MIN_SIZE", "PRIMER_OPT_SIZE", "PRIMER_MAX_SIZE",
@@ -125,12 +121,10 @@ def display_config(config_cls):
         logger.debug("Configuration display completed successfully")
         
     except Exception as e:
-        error_msg = f"Failed to display configuration settings"
+        error_msg = f"Configuration display failed"
         logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise ConfigDisplayError(error_msg) from e
-    
-    logger.debug("=== END CONFIG DISPLAY DEBUG ===")
 
 
 def display_primer3_settings(config_cls):
@@ -147,7 +141,6 @@ def display_primer3_settings(config_cls):
         >>> from ddprimer.config import Config
         >>> display_primer3_settings(Config)
     """
-    logger.debug("=== PRIMER3 DISPLAY DEBUG ===")
     logger.debug("Starting Primer3 settings display")
     
     try:
@@ -230,12 +223,10 @@ def display_primer3_settings(config_cls):
         logger.debug("Primer3 settings display completed successfully")
         
     except Exception as e:
-        error_msg = f"Failed to display Primer3 settings"
+        error_msg = f"Primer3 settings display failed"
         logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
         raise ConfigDisplayError(error_msg) from e
-    
-    logger.debug("=== END PRIMER3 DISPLAY DEBUG ===")
 
 
 class ConfigDisplayError(Exception):

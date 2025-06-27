@@ -6,7 +6,7 @@ Configuration package for the ddPrimer pipeline.
 
 # In ddprimer/config/__init__.py
 from .config import Config
-from .logging_config import setup_logging
+from .logging_config import setup_logging, DebugLogLimiter
 from .config_display import display_config, display_primer3_settings
 from .template_generator import generate_config_template
 
@@ -28,13 +28,16 @@ from .exceptions import (
     ValidationError,
     AlignmentError,
     WorkflowError,
-    ExternalToolError
+    ExternalToolError,
+    PipelineError,
+    CoordinateValidationError
 )
 
 __all__ = [
     # Configuration
     'Config', 
-    'setup_logging', 
+    'setup_logging',
+    'DebugLogLimiter', 
     'display_config', 
     'display_primer3_settings',
     'generate_config_template',
@@ -56,5 +59,7 @@ __all__ = [
     'ValidationError',
     'AlignmentError',
     'WorkflowError',
-    'ExternalToolError'
+    'ExternalToolError',
+    'PipelineError',
+    'CoordinateValidationError'
 ]

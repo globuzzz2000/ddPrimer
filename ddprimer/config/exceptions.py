@@ -268,6 +268,20 @@ class ExternalToolError(DDPrimerError):
         ...     stderr="Invalid temperature parameter"
         ... )
     """
+
+class PipelineError(DDPrimerError):
+    """
+    Error in overall pipeline execution.
+    
+    Raised when there are high-level pipeline failures that affect
+    the overall workflow execution, including coordination errors,
+    invalid pipeline modes, or critical workflow step failures.
+    This is used by workflow orchestration for top-level error handling.
+    
+    Example:
+        >>> raise PipelineError("Pipeline execution failed: no primers passed filtering")
+    """
+    pass
     
     def __init__(self, message, tool_name=None, command=None, return_code=None, stdout=None, stderr=None):
         """
@@ -296,8 +310,7 @@ class ExternalToolError(DDPrimerError):
             ... )
             >>> print(error.tool_name)  # "primer3"
         """
-        logger.debug("=== EXTERNAL TOOL ERROR DEBUG ===")
-        logger.debug(f"Creating ExternalToolError: tool={tool_name}, message={message}")
+        logger.debug(f"ExternalToolError created: {tool_name} - {message}")
         
         self.tool_name = tool_name
         self.command = command
@@ -311,9 +324,6 @@ class ExternalToolError(DDPrimerError):
             detailed_message = f"{tool_name} error: {message}"
         if return_code is not None:
             detailed_message += f" (return code: {return_code})"
-        
-        logger.debug(f"Built detailed error message: {detailed_message}")
-        logger.debug("=== END EXTERNAL TOOL ERROR DEBUG ===")
             
         super().__init__(detailed_message)
     
@@ -342,4 +352,67 @@ class ExternalToolError(DDPrimerError):
         }
         
         logger.debug(f"Generated debug info for ExternalToolError: {debug_info}")
+        return debug_info
+    
+
+class CoordinateValidationError(SequenceProcessingError):
+    """
+    Error during coordinate validation or conversion.
+    
+    Raised when there are issues with genomic coordinate validation,
+    coordinate system conversions, or coordinate consistency checks
+    throughout the primer design pipeline.
+    
+    This includes errors such as:
+    - Invalid coordinate ranges (start >= end)
+    - Coordinate system mismatches
+    - Out-of-bounds sequence coordinates  
+    - Failed coordinate conversions between systems
+    - Inconsistent coordinate representations
+    
+    Example:
+        >>> raise CoordinateValidationError("Fragment coordinates invalid: start (100) >= end (50)")
+    """
+    
+    def __init__(self, message, coordinate_system=None, invalid_coordinates=None):
+        """
+        Initialize with coordinate-specific debugging information.
+        
+        Args:
+            message: Error message describing the coordinate validation failure
+            coordinate_system: Which coordinate system was being used (e.g., "0-based", "1-based")
+            invalid_coordinates: Dictionary of the invalid coordinate values for debugging
+            
+        Example:
+            >>> error = CoordinateValidationError(
+            ...     "Invalid coordinate range",
+            ...     coordinate_system="0-based",
+            ...     invalid_coordinates={"start": 100, "end": 50}
+            ... )
+        """
+        self.coordinate_system = coordinate_system
+        self.invalid_coordinates = invalid_coordinates
+        
+        # Build detailed error message
+        detailed_message = message
+        if coordinate_system:
+            detailed_message = f"{coordinate_system} coordinate error: {message}"
+        
+        super().__init__(detailed_message)
+        logger.debug(f"CoordinateValidationError created: {coordinate_system} - {message}")
+    
+    def get_debug_info(self):
+        """
+        Get comprehensive debug information about the coordinate validation error.
+        
+        Returns:
+            dict: Dictionary with coordinate debugging information
+        """
+        debug_info = {
+            'coordinate_system': self.coordinate_system,
+            'invalid_coordinates': self.invalid_coordinates,
+            'message': str(self)
+        }
+        
+        logger.debug(f"Generated debug info for CoordinateValidationError: {debug_info}")
         return debug_info

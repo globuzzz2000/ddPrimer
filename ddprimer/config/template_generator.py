@@ -48,7 +48,6 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
         >>> template_path = generate_config_template(Config, "my_config.json")
         >>> print(f"Template created: {template_path}")
     """
-    logger.debug("=== TEMPLATE GENERATION DEBUG ===")
     logger.debug(f"Generating config template: filename={filename}, output_dir={output_dir}")
     
     try:
@@ -74,13 +73,13 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
                     print(f"{Fore.YELLOW}Using current directory instead.{Style.RESET_ALL}")
                     output_dir = os.getcwd()
         
-        # If no filename is provided, create a default one
+        # Generate default filename if none provided
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d")
             filename = f"ddprimer_config_template_{timestamp}.json"
             logger.debug(f"Generated default filename: {filename}")
         
-        # Make sure filename has .json extension
+        # Ensure filename has .json extension
         if not filename.lower().endswith('.json'):
             filename += '.json'
             logger.debug(f"Added .json extension: {filename}")
@@ -121,7 +120,7 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
             return filepath
             
         except Exception as e:
-            error_msg = f"Failed to write template file to {filepath}"
+            error_msg = f"Template file creation failed at {filepath}: {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             print(f"\n{Fore.RED}Error generating template: {str(e)}{Style.RESET_ALL}")
@@ -134,8 +133,6 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
         if not isinstance(e, TemplateGenerationError):
             raise TemplateGenerationError(error_msg) from e
         raise
-    
-    logger.debug("=== END TEMPLATE GENERATION DEBUG ===")
 
 
 def _build_template_dict(config_cls):

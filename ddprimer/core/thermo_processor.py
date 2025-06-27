@@ -24,7 +24,8 @@ from typing import List, Optional, Union
 import pandas as pd
 from tqdm import tqdm
 
-from ..config import Config, SequenceProcessingError, ExternalToolError
+# Import package modules
+from ..config import Config, SequenceProcessingError, ExternalToolError, PrimerDesignError
 
 # Type alias for path inputs
 PathLike = Union[str, Path]
@@ -33,7 +34,7 @@ PathLike = Union[str, Path]
 logger = logging.getLogger(__name__)
 
 
-class ViennaRNAProcessor:
+class ThermoProcessor:
     """
     Handles thermodynamic calculations using ViennaRNA CLI for DNA oligos.
     
@@ -44,13 +45,92 @@ class ViennaRNAProcessor:
         _param_file_cache: Class-level cache for parameter file path
         
     Example:
-        >>> processor = ViennaRNAProcessor()
+        >>> processor = ThermoProcessor()
         >>> deltaG = processor.calc_deltaG("ATCGATCG")
         >>> batch_results = processor.calc_deltaG_batch(sequences)
-    """
-
+        """
+    
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def calculate_thermodynamics_workflow(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate thermodynamic properties using ViennaRNA for workflow integration.
+        
+        Computes minimum free energy (ΔG) for primers, probes, and amplicons
+        using ViennaRNA with DNA-specific parameters.
+        
+        Args:
+            df: DataFrame with primer information
+            
+        Returns:
+            DataFrame with added thermodynamic properties
+            
+        Raises:
+            PrimerDesignError: If there's an error in thermodynamic calculations
+        """
+        logger.info("\nCalculating thermodynamic properties with ViennaRNA...")
+        logger.debug("=== WORKFLOW: THERMODYNAMIC CALCULATIONS ===")
+        
+        try:
+            # Add empty columns to maintain DataFrame structure
+            df["Primer F dG"] = None
+            df["Primer R dG"] = None
+            if "Probe" in df.columns:
+                df["Probe dG"] = None
+            df["Amplicon dG"] = None
+            
+            # Calculate deltaG for forward primers
+            if Config.SHOW_PROGRESS:
+                tqdm.pandas(desc="Processing forward primers")
+                df["Primer F dG"] = df["Primer F"].progress_apply(cls.calc_deltaG)
+            else:
+                df["Primer F dG"] = df["Primer F"].apply(cls.calc_deltaG)
+            
+            # Calculate deltaG for reverse primers
+            if Config.SHOW_PROGRESS:
+                tqdm.pandas(desc="Processing reverse primers")
+                df["Primer R dG"] = df["Primer R"].progress_apply(cls.calc_deltaG)
+            else:
+                df["Primer R dG"] = df["Primer R"].apply(cls.calc_deltaG)
+            
+            # Calculate deltaG for probes if present
+            if "Probe" in df.columns:
+                if Config.SHOW_PROGRESS:
+                    tqdm.pandas(desc="Processing probes")
+                    df["Probe dG"] = df["Probe"].progress_apply(lambda x: 
+                                                cls.calc_deltaG(x) 
+                                                if pd.notnull(x) and x else None)
+                else:
+                    df["Probe dG"] = df["Probe"].apply(lambda x: 
+                                                   cls.calc_deltaG(x) 
+                                                   if pd.notnull(x) and x else None)
+            
+            # Calculate deltaG for amplicons
+            if Config.SHOW_PROGRESS:
+                tqdm.pandas(desc="Processing amplicons")
+                df["Amplicon dG"] = df["Amplicon"].progress_apply(cls.calc_deltaG)
+            else:
+                df["Amplicon dG"] = df["Amplicon"].apply(cls.calc_deltaG)
+            
+            logger.debug("Thermodynamic calculations complete for all primer components")
+            logger.debug("=== END WORKFLOW: THERMODYNAMIC CALCULATIONS ===")
+            
+            return df
+            
+        except Exception as e:
+            error_msg = f"Error in thermodynamic calculations workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: THERMODYNAMIC CALCULATIONS ===")
+            raise PrimerDesignError(error_msg) from e
+    
+    #############################################################################
+    
     _param_file_cache = None  # Cache for parameter file path
-
+    
     @classmethod
     def _find_dna_parameter_file(cls) -> Optional[Path]:
         """
@@ -63,7 +143,7 @@ class ViennaRNAProcessor:
             Path to DNA parameter file if found, None otherwise
             
         Example:
-            >>> param_file = ViennaRNAProcessor._find_dna_parameter_file()
+            >>> param_file = ThermoProcessor._find_dna_parameter_file()
             >>> if param_file:
             ...     print(f"Found DNA parameters: {param_file}")
         """
@@ -181,11 +261,11 @@ class ViennaRNAProcessor:
                 return energy
                 
             except subprocess.CalledProcessError as e:
-                error_msg = f"RNAfold CLI execution failed: {e.stderr.decode() if e.stderr else str(e)}"
+                error_msg = f"RNAfold CLI execution failed for sequence {seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}...: {e.stderr.decode() if e.stderr else str(e)}"
                 logger.warning(error_msg)
                 raise ExternalToolError(error_msg, tool_name="RNAfold") from e
             except subprocess.TimeoutExpired:
-                error_msg = "RNAfold CLI execution timed out"
+                error_msg = f"RNAfold CLI execution timed out for sequence {seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}..."
                 logger.warning(error_msg)
                 raise ExternalToolError(error_msg, tool_name="RNAfold")
                 
@@ -196,7 +276,7 @@ class ViennaRNAProcessor:
             # Re-raise without wrapping
             raise
         except Exception as e:
-            error_msg = f"Error running RNAfold CLI for sequence '{seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}...': {str(e)}"
+            error_msg = f"Error running RNAfold CLI for sequence '{seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}...' (length: {len(seq)}): {str(e)}"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise ExternalToolError(error_msg, tool_name="RNAfold") from e
@@ -265,9 +345,9 @@ class ViennaRNAProcessor:
             True if sequence is valid DNA
             
         Example:
-            >>> ViennaRNAProcessor._is_valid_dna_sequence("ATCG")
+            >>> ThermoProcessor._is_valid_dna_sequence("ATCG")
             True
-            >>> ViennaRNAProcessor._is_valid_dna_sequence("ATCGX")
+            >>> ThermoProcessor._is_valid_dna_sequence("ATCGX")
             False
         """
         if not seq:
@@ -294,7 +374,7 @@ class ViennaRNAProcessor:
             SequenceProcessingError: If sequence is invalid
             
         Example:
-            >>> processor = ViennaRNAProcessor()
+            >>> processor = ThermoProcessor()
             >>> deltaG = processor.calc_deltaG("ATCGATCGATCG")
             >>> if deltaG is not None:
             ...     print(f"ΔG = {deltaG:.2f} kcal/mol")
@@ -322,7 +402,7 @@ class ViennaRNAProcessor:
             # Already logged in _run_rnafold_cli
             raise
         except Exception as e:
-            error_msg = f"ViennaRNA calculation failed for sequence {seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}...: {str(e)}"
+            error_msg = f"ViennaRNA calculation failed for sequence {seq[:Config.MAX_SEQUENCE_DISPLAY_LENGTH]}... (length: {len(seq)}): {str(e)}"
             logger.warning(error_msg)
             logger.debug(f"ViennaRNA error details: {str(e)}", exc_info=True)
             return None
@@ -351,7 +431,7 @@ class ViennaRNAProcessor:
             
         Example:
             >>> sequences = ["ATCG", "GCTA", "AAAA"]
-            >>> processor = ViennaRNAProcessor()
+            >>> processor = ThermoProcessor()
             >>> results = processor.calc_deltaG_batch(sequences)
             >>> len(results) == len(sequences)
             True
@@ -360,31 +440,41 @@ class ViennaRNAProcessor:
             error_msg = "Sequences must be provided as a list"
             raise SequenceProcessingError(error_msg)
             
-        logger.info(f"Processing batch of {len(seqs)} sequences for ΔG calculation using CLI")
-        logger.debug(f"Progress tracking: {Config.SHOW_PROGRESS}")
+        logger.debug(f"=== VIENNA BATCH PROCESSING DEBUG ===")
+        logger.debug(f"Processing batch of {len(seqs)} sequences for ΔG calculation using CLI")
         
         results = []
         failed_count = 0
+        processed_count = 0
         
         try:
             # Apply progress tracking if enabled
             sequence_iter = tqdm(seqs, desc=description) if Config.SHOW_PROGRESS else seqs
                 
-            for seq_num, seq in enumerate(sequence_iter):
+            for seq in sequence_iter:
                 if pd.notnull(seq) and seq:
                     try:
                         result = cls.calc_deltaG(seq)
                         results.append(result)
                         if result is None:
                             failed_count += 1
+                            
+                        # Sample logging - only log every 100th sequence OR first 5 failures
+                        if (logger.isEnabledFor(logging.DEBUG) and 
+                            (processed_count % 100 == 0 or (result is None and failed_count <= 5))):
+                            logger.debug(f"ΔG {processed_count}: {seq[:15]}... -> {result}")
+                            
                     except Exception as e:
-                        logger.debug(f"ΔG calculation failed for sequence {seq_num}: {e}")
+                        logger.debug(f"ΔG calculation failed for sequence {processed_count} (length: {len(seq) if seq else 0}): {e}")
                         results.append(None)
                         failed_count += 1
                 else:
                     results.append(None)
                     
+                processed_count += 1
+                    
             logger.debug(f"Completed ΔG calculations: {len(results)} total, {failed_count} failed")
+            logger.debug(f"=== END VIENNA BATCH PROCESSING DEBUG ===")
             return results
             
         except Exception as e:
@@ -418,7 +508,7 @@ class ViennaRNAProcessor:
         Example:
             >>> import pandas as pd
             >>> sequences = pd.Series(["ATCG", "GCTA", "TTTT"])
-            >>> processor = ViennaRNAProcessor()
+            >>> processor = ThermoProcessor()
             >>> deltaG_values = processor.process_deltaG_series(sequences)
             >>> isinstance(deltaG_values, pd.Series)
             True
@@ -427,7 +517,7 @@ class ViennaRNAProcessor:
             error_msg = "Input must be a pandas Series"
             raise SequenceProcessingError(error_msg)
             
-        logger.info(f"Processing {len(series)} sequences for ΔG with pandas using CLI")
+        logger.debug(f"Processing {len(series)} sequences for ΔG with pandas using CLI")
         
         try:
             if Config.SHOW_PROGRESS:
@@ -457,10 +547,11 @@ class ViennaRNAProcessor:
             ExternalToolError: If ViennaRNA validation fails
             
         Example:
-            >>> processor = ViennaRNAProcessor()
+            >>> processor = ThermoProcessor()
             >>> if processor.validate_vienna_setup():
             ...     print("ViennaRNA ready for calculations")
         """
+        logger.debug("=== VIENNA SETUP VALIDATION DEBUG ===")
         logger.debug("Validating ViennaRNA CLI setup")
         
         try:
@@ -503,9 +594,10 @@ class ViennaRNAProcessor:
             if dna_param_file:
                 logger.debug(f"DNA parameters available: {dna_param_file}")
             else:
-                logger.warning("No DNA parameter files found - using RNA parameters")
+                logger.debug("No DNA parameter files found - using RNA parameters")
             
             logger.debug("ViennaRNA CLI setup validation successful")
+            logger.debug("=== END VIENNA SETUP VALIDATION DEBUG ===")
             return True
             
         except ExternalToolError:
@@ -526,7 +618,7 @@ class ViennaRNAProcessor:
             Dictionary containing ViennaRNA configuration details
             
         Example:
-            >>> processor = ViennaRNAProcessor()
+            >>> processor = ThermoProcessor()
             >>> info = processor.get_vienna_info()
             >>> print(f"RNAfold available: {info.get('rnafold_available', False)}")
         """

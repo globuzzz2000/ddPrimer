@@ -15,8 +15,12 @@ import tempfile
 import subprocess
 import logging
 import pandas as pd
+from tqdm import tqdm
+from typing import Optional
 
-from ..config import Config, SequenceProcessingError
+# Import package modules
+from ..config import Config, SequenceProcessingError, PrimerDesignError, DebugLogLimiter
+from ..core import FilterProcessor
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -35,6 +39,103 @@ class BlastProcessor:
         ...     specificity_ratio = blast1 / blast2
     """
     
+    #############################################################################
+    #                           Workflow Wrappers
+    #############################################################################
+    
+    @classmethod
+    def run_blast_specificity_workflow(cls, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """
+        Run BLAST for primer specificity checking for workflow integration.
+        
+        Executes BLAST analysis for all primers and probes to assess specificity,
+        then filters results based on BLAST e-value thresholds.
+        
+        Args:
+            df: DataFrame with primer information
+            
+        Returns:
+            DataFrame with added BLAST results and filtered for specificity,
+            or None if no primers pass BLAST filtering
+            
+        Raises:
+            PrimerDesignError: If there's an error in BLAST execution or filtering
+        """
+        logger.info("\nRunning BLAST for specificity checking...")
+        logger.debug("=== WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+        
+        try:
+            # Run BLAST for forward primers
+            blast_results_f = []
+            primers_f = df["Primer F"].tolist()
+            if Config.SHOW_PROGRESS:
+                primers_f_iter = tqdm(primers_f, total=len(primers_f), desc="BLASTing forward primers")
+            else:
+                primers_f_iter = primers_f
+                
+            for primer_f in primers_f_iter:
+                blast1, blast2 = cls.blast_short_seq(primer_f)
+                blast_results_f.append((blast1, blast2))
+            
+            df["Primer F BLAST1"], df["Primer F BLAST2"] = zip(*blast_results_f)
+            
+            # Run BLAST for reverse primers
+            blast_results_r = []
+            primers_r = df["Primer R"].tolist()
+            if Config.SHOW_PROGRESS:
+                primers_r_iter = tqdm(primers_r, total=len(primers_r), desc="BLASTing reverse primers")
+            else:
+                primers_r_iter = primers_r
+                
+            for primer_r in primers_r_iter:
+                blast1, blast2 = cls.blast_short_seq(primer_r)
+                blast_results_r.append((blast1, blast2))
+            
+            df["Primer R BLAST1"], df["Primer R BLAST2"] = zip(*blast_results_r)
+            
+            # Run BLAST for probes if present
+            if "Probe" in df.columns:
+                blast_results_p = []
+                probes = df["Probe"].tolist()
+                if Config.SHOW_PROGRESS:
+                    probes_iter = tqdm(probes, total=len(probes), desc="BLASTing probes")
+                else:
+                    probes_iter = probes
+                    
+                for probe in probes_iter:
+                    if pd.notnull(probe) and probe:
+                        blast1, blast2 = cls.blast_short_seq(probe)
+                    else:
+                        blast1, blast2 = None, None
+                    blast_results_p.append((blast1, blast2))
+                
+                df["Probe BLAST1"], df["Probe BLAST2"] = zip(*blast_results_p)
+            
+            # Filter by BLAST specificity using FilterProcessor
+            initial_count = len(df)
+            df = FilterProcessor.filter_by_blast(df)
+            
+            if len(df) == 0:
+                logger.warning("No primers passed BLAST specificity filtering.")
+                logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+                return None
+            
+            logger.debug(f"BLAST specificity analysis complete: {len(df)}/{initial_count} primers passed")
+            logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+            
+            return df
+            
+        except Exception as e:
+            error_msg = f"Error in BLAST specificity workflow: {str(e)}"
+            logger.error(error_msg)
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+            raise PrimerDesignError(error_msg) from e
+    
+    #############################################################################
+    #                           BLAST Execution
+    #############################################################################
+   
     @staticmethod
     def blast_short_seq(seq, db=None):
         """
@@ -62,21 +163,21 @@ class BlastProcessor:
             db = f'"{Config.DB_PATH}"'
             
         if not seq or not isinstance(seq, str) or not seq.strip():
-            logger.debug("Empty or invalid sequence provided to BLAST")
+            if DebugLogLimiter.should_log('blast_invalid_seq', interval=500, max_initial=2):
+                logger.debug("Empty or invalid sequence provided to BLAST")
             return None, None
 
         tmp_filename = None
         try:
             # Create temporary file for query sequence
-            centralized_temp = os.path.join(Config.get_user_config_dir(), "temp")
-            os.makedirs(centralized_temp, exist_ok=True)
+            if not hasattr(BlastProcessor, "_centralized_temp_dir"):
+                BlastProcessor._centralized_temp_dir = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(BlastProcessor._centralized_temp_dir, exist_ok=True)
 
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False, dir=centralized_temp) as tmp_query:
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, dir=BlastProcessor._centralized_temp_dir) as tmp_query:
                 tmp_query.write(f">seq\n{seq}\n")
                 tmp_query.flush()
                 tmp_filename = tmp_query.name
-
-            logger.debug(f"Running BLAST for sequence: {seq[:20]}{'...' if len(seq) > 20 else ''}")
 
             # Execute BLASTn command
             result = subprocess.run(
@@ -99,7 +200,7 @@ class BlastProcessor:
             )
             
             if result.returncode != 0:
-                error_msg = f"BLAST execution failed for sequence {seq[:20]}..."
+                error_msg = f"BLAST execution failed for sequence {seq[:20]}... (length: {len(seq)}, db: {db})"
                 logger.error(error_msg)
                 logger.debug(f"BLAST stderr: {result.stderr}", exc_info=True)
                 raise SequenceProcessingError(error_msg)
@@ -112,26 +213,32 @@ class BlastProcessor:
                     if line.strip()
                 ])
             except ValueError as e:
-                logger.warning(f"Error parsing BLAST output for sequence {seq[:20]}...")
-                logger.debug(f"BLAST parsing error: {str(e)}", exc_info=True)
+                if DebugLogLimiter.should_log('blast_parsing_errors', interval=200, max_initial=3):
+                    logger.warning(f"Error parsing BLAST output for sequence {seq[:20]}... (length: {len(seq)})")
+                    logger.debug(f"BLAST parsing error: {str(e)}", exc_info=True)
                 evalues = []
 
             if not evalues:
-                logger.debug(f"No BLAST hits found for sequence {seq[:20]}...")
+                if DebugLogLimiter.should_log('blast_no_hits', interval=1000, max_initial=2):
+                    logger.debug(f"No BLAST hits found for sequence {seq[:20]}... (length: {len(seq)})")
                 return None, None
 
             # Return best and second-best e-values
             best = evalues[0] if len(evalues) > 0 else None
             second = evalues[1] if len(evalues) > 1 else None
 
-            logger.debug(f"BLAST results - Best: {best}, Second: {second}")
+            # Limited logging for BLAST results
+            if (logger.isEnabledFor(logging.DEBUG) and 
+                DebugLogLimiter.should_log('blast_results_details', interval=1000, max_initial=2)):
+                logger.debug(f"BLAST results for {seq[:20]}... -> Best: {best}, Second: {second}")
+            
             return best, second
             
         except SequenceProcessingError:
             # Re-raise without wrapping
             raise
         except Exception as e:
-            error_msg = f"Unexpected BLAST error for sequence {seq[:20]}..."
+            error_msg = f"Unexpected BLAST error for sequence {seq[:20]}... (length: {len(seq)})"
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return None, None
@@ -142,7 +249,8 @@ class BlastProcessor:
                 try:
                     os.remove(tmp_filename)
                 except OSError as e:
-                    logger.debug(f"Failed to remove temp file {tmp_filename}: {e}")
+                    if DebugLogLimiter.should_log('blast_cleanup_errors', interval=500, max_initial=2):
+                        logger.debug(f"Failed to remove temp file {tmp_filename}: {e}")
 
     @classmethod
     def process_blast_batch(cls, batch_data):
@@ -165,57 +273,36 @@ class BlastProcessor:
         batch, col_name = batch_data
         results = []
         
+        logger.debug(f"=== BLAST BATCH PROCESSING DEBUG ===")
         logger.debug(f"Processing BLAST batch of {len(batch)} sequences for {col_name}")
+        
+        failed_count = 0
+        processed_count = 0
         
         for seq in batch:
             if pd.notnull(seq):
                 try:
                     blast1, blast2 = cls.blast_short_seq(seq)
                     results.append((blast1, blast2))
+                    
+                    if blast1 is None:
+                        failed_count += 1
+                        
+                    # Limited logging using DebugLogLimiter
+                    if (logger.isEnabledFor(logging.DEBUG) and 
+                        DebugLogLimiter.should_log('blast_batch_processing', interval=500, max_initial=3)):
+                        logger.debug(f"BLAST {processed_count}: {seq[:15]}... -> {blast1}, {blast2}")
+                        
                 except Exception as e:
-                    logger.debug(f"BLAST failed for sequence in batch: {str(e)}")
+                    if DebugLogLimiter.should_log('blast_batch_errors', interval=200, max_initial=3):
+                        logger.debug(f"BLAST failed for sequence {processed_count} in batch: {str(e)}")
                     results.append((None, None))
+                    failed_count += 1
             else:
                 results.append((None, None))
+            
+            processed_count += 1
         
-        logger.debug(f"Completed BLAST batch processing: {len(results)} results")
+        logger.debug(f"Completed BLAST batch processing: {len(results)} results, {failed_count} failed")
+        logger.debug(f"=== END BLAST BATCH PROCESSING DEBUG ===")
         return results
-    
-    @staticmethod
-    def passes_blast_filter(row, col):
-        """
-        Check if a sequence passes the BLAST specificity filter.
-        
-        Evaluates whether the ratio between best and second-best e-values
-        meets the specificity threshold defined by the filter factor.
-        
-        Args:
-            row: DataFrame row containing BLAST results
-            col: Column prefix for BLAST results (e.g., "Primer F")
-            
-        Returns:
-            True if sequence passes specificity filter, False otherwise
-            
-        Example:
-            >>> passes = BlastProcessor.passes_blast_filter(row, "Primer F")
-            >>> if passes:
-            ...     print("Sequence has sufficient specificity")
-        """
-        best = row[f"{col} BLAST1"]
-        second = row[f"{col} BLAST2"]
-        
-        # No hits found - discard for lack of specificity data
-        if pd.isna(best):
-            return False
-            
-        # Only one hit found - effectively unique
-        if pd.isna(second):
-            return True
-            
-        # Check specificity ratio: best * factor <= second
-        passes = best * Config.BLAST_FILTER_FACTOR <= second
-        
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"BLAST filter check: {best} * {Config.BLAST_FILTER_FACTOR} <= {second} = {passes}")
-        
-        return passes

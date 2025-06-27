@@ -53,6 +53,7 @@ venv.bak/
 .DS_Store
 
 # ddPrimer specific
+temp
 *.fasta
 *.fna
 *.vcf
