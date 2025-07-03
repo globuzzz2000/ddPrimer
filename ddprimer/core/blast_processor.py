@@ -6,8 +6,9 @@ BLAST processing module for ddPrimer pipeline.
 Handles BLAST operations for primer specificity checking including:
 1. BLASTn execution for short sequences
 2. E-value parsing and analysis
-3. Batch processing capabilities
-4. Specificity filtering
+3. Identity filtering (100% identity requirement)
+4. Batch processing capabilities
+5. Specificity filtering
 """
 
 import os
@@ -31,7 +32,7 @@ class BlastProcessor:
     Handles BLAST operations for primer specificity checking.
     
     This class provides methods for running BLASTn searches on short DNA sequences
-    and evaluating their specificity based on e-value distributions.
+    and evaluating their specificity based on e-value distributions and identity filtering.
     
     Example:
         >>> blast1, blast2 = BlastProcessor.blast_short_seq("ATCGATCGATCG")
@@ -49,7 +50,7 @@ class BlastProcessor:
         Run BLAST for primer specificity checking for workflow integration.
         
         Executes BLAST analysis for all primers and probes to assess specificity,
-        then filters results based on BLAST e-value thresholds.
+        then filters results based on BLAST e-value thresholds and identity requirements.
         
         Args:
             df: DataFrame with primer information
@@ -180,7 +181,8 @@ class BlastProcessor:
         Run BLASTn for short sequences and return the two best e-values separately.
         
         Executes a BLASTn search optimized for short sequences and extracts
-        the best and second-best e-values for specificity assessment.
+        the best and second-best e-values for specificity assessment. Only considers
+        hits with 100% identity to ensure specificity.
         
         Args:
             seq: DNA sequence to BLAST against database
@@ -217,7 +219,7 @@ class BlastProcessor:
                 tmp_query.flush()
                 tmp_filename = tmp_query.name
 
-            # Execute BLASTn command
+            # Execute BLASTn command with extended output format including identity
             result = subprocess.run(
                 [
                     "blastn",
@@ -231,7 +233,7 @@ class BlastProcessor:
                     "-gapopen", str(Config.BLAST_GAPOPEN),
                     "-gapextend", str(Config.BLAST_GAPEXTEND),
                     "-max_target_seqs", str(Config.BLAST_MAX_TARGET_SEQS),
-                    "-outfmt", "6 evalue"
+                    "-outfmt", "6 evalue pident"  # Include percent identity
                 ],
                 text=True,
                 capture_output=True
@@ -243,13 +245,25 @@ class BlastProcessor:
                 logger.debug(f"BLAST stderr: {result.stderr}", exc_info=True)
                 raise SequenceProcessingError(error_msg)
 
-            # Parse BLAST output for e-values
+            # Parse BLAST output for e-values with 100% identity requirement
             try:
-                evalues = sorted([
-                    float(line.strip()) 
-                    for line in result.stdout.strip().split("\n") 
-                    if line.strip()
-                ])
+                valid_evalues = []
+                for line in result.stdout.strip().split("\n"):
+                    if line.strip():
+                        parts = line.strip().split("\t")
+                        if len(parts) >= 2:
+                            evalue = float(parts[0])
+                            pident = float(parts[1])
+                            
+                            # Only include hits with 100% identity
+                            if pident == 100.0:
+                                valid_evalues.append(evalue)
+                            elif DebugLogLimiter.should_log('blast_identity_filter', interval=1000, max_initial=2):
+                                logger.debug(f"Filtered BLAST hit with {pident}% identity (sequence {seq[:15]}...)")
+                
+                # Sort by e-value (best first)
+                evalues = sorted(valid_evalues)
+                
             except ValueError as e:
                 if DebugLogLimiter.should_log('blast_parsing_errors', interval=200, max_initial=3):
                     logger.warning(f"Error parsing BLAST output for sequence {seq[:20]}... (length: {len(seq)})")
@@ -258,7 +272,7 @@ class BlastProcessor:
 
             if not evalues:
                 if DebugLogLimiter.should_log('blast_no_hits', interval=1000, max_initial=2):
-                    logger.debug(f"No BLAST hits found for sequence {seq[:20]}... (length: {len(seq)})")
+                    logger.debug(f"No BLAST hits with 100% identity found for sequence {seq[:20]}... (length: {len(seq)})")
                 return None, None
 
             # Return best and second-best e-values
@@ -268,7 +282,7 @@ class BlastProcessor:
             # Limited logging for BLAST results
             if (logger.isEnabledFor(logging.DEBUG) and 
                 DebugLogLimiter.should_log('blast_results_details', interval=1000, max_initial=2)):
-                logger.debug(f"BLAST results for {seq[:20]}... -> Best: {best}, Second: {second}")
+                logger.debug(f"BLAST results for {seq[:20]}... -> Best: {best}, Second: {second} (100% identity only)")
             
             return best, second
             
