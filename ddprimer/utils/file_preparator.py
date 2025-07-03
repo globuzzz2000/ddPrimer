@@ -24,10 +24,11 @@ import shutil
 import re
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 # Import package modules
 from ..config import Config, FileError, ExternalToolError, SequenceProcessingError
+from ..config.logging_config import DebugLogLimiter
 
 # Set up module logger
 logger = logging.getLogger(__name__)
@@ -40,22 +41,35 @@ class FilePreparator:
     This class validates and prepares VCF, FASTA, and GFF files to ensure
     compatibility and proper formatting. It performs automatic fixes when
     possible and requests user permission for file modifications.
-    
-    Attributes:
-        temp_dir: Temporary directory for intermediate files
-        chromosome_mapper: ChromosomeMapper instance for compatibility analysis
-        prepared_files: Dictionary tracking prepared file paths
-        
-    Example:
-        >>> preparator = FilePreparator()
-        >>> result = preparator.prepare_files("input.vcf", "genome.fasta", "annotations.gff")
-        >>> if result['success']:
-        ...     # Use result['vcf_file'], result['fasta_file'], result['gff_file']
-        ...     pass
     """
     
+    # Required external tools
+    REQUIRED_TOOLS = [
+        ('bcftools', 'bcftools --version'),
+        ('bgzip', 'bgzip --version'),
+        ('tabix', 'tabix --version'),
+        ('samtools', 'samtools --version')
+    ]
+    
+    def __init__(self):
+        """Initialize file preparator with temporary directory and tool validation."""
+        logger.debug("=== FILE PREPARATOR INITIALIZATION ===")
+        
+        try:
+            self.temp_dir = os.path.join(Config.get_user_config_dir(), "temp")
+            os.makedirs(self.temp_dir, exist_ok=True)
+            self.prepared_files = {}
+            
+            self._validate_dependencies()
+            logger.debug(f"Initialized FilePreparator with temp dir: {self.temp_dir}")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize FilePreparator: {str(e)}"
+            logger.error(error_msg)
+            raise FileError(error_msg) from e
+    
     #############################################################################
-    #                           Workflow Wrappers
+    #                           Main Workflow Methods
     #############################################################################
     
     @classmethod
@@ -64,127 +78,548 @@ class FilePreparator:
         """
         Prepare and validate all pipeline input files for workflow integration.
 
-        Analyzes input files for compatibility and formatting issues, then
-        creates corrected versions with user consent when needed. Also generates
-        a chromosome name map for standardized output.
-
         Args:
             vcf_file: Path to VCF file
             fasta_file: Path to FASTA file
             gff_file: Optional path to GFF file
 
         Returns:
-            Dictionary with preparation results and final file paths:
-            {
-                'success': bool,
-                'vcf_file': str,
-                'fasta_file': str,
-                'gff_file': str,
-                'changes_made': bool,
-                'issues_found': List[Dict],
-                'chromosome_map': Dict[str, str]
-            }
-
-        Raises:
-            FileError: If input files cannot be accessed
-            ExternalToolError: If required tools are missing or fail
+            Dictionary with preparation results and final file paths
         """
         logger.debug("=== WORKFLOW: FILE PREPARATION ===")
-        logger.debug(f"Preparing files: VCF={vcf_file}, FASTA={fasta_file}, GFF={gff_file}")
         preparator = None
         try:
-            # Initialize preparator
             preparator = cls()
             preparator.set_reference_file(fasta_file)
 
-            # Generate the standardized chromosome map for the output file
-            vcf_chroms = preparator._get_vcf_chromosomes(vcf_file)
-            fasta_seqs = preparator._get_fasta_sequences(fasta_file)
+            # Generate chromosome mapping for output
+            vcf_chroms = preparator._get_file_chromosomes(vcf_file, 'vcf')
+            fasta_seqs = preparator._get_file_chromosomes(fasta_file, 'fasta')
             chromosome_map = preparator._generate_standardized_chromosome_map(vcf_chroms, fasta_seqs)
 
-            # Run comprehensive file preparation
+            # Run file preparation
             result = preparator.prepare_files(vcf_file, fasta_file, gff_file)
-            result['chromosome_map'] = chromosome_map # Add map to the final result
-
-            if result['success']:
-                if result.get('changes_made', False):
-                    logger.debug(f"File preparation completed with corrections")
-                    logger.debug(f"Issues addressed: {len(result.get('issues_found', []))}")
-                else:
-                    logger.debug("File preparation completed - no changes needed")
-            else:
-                logger.error(f"File preparation failed: {result.get('reason', 'Unknown error')}")
+            result['chromosome_map'] = chromosome_map
 
             logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
             return result
 
         except Exception as e:
-            error_msg = f"Error in file preparation workflow: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
+            logger.error(f"Error in file preparation workflow: {str(e)}")
             raise
         finally:
-            # Ensure cleanup happens
             if preparator:
                 preparator.cleanup()
     
-    #############################################################################
-    
-    def __init__(self):
+    def prepare_files(self, vcf_file: str, fasta_file: str, 
+                     gff_file: Optional[str] = None) -> Dict:
         """
-        Initialize file preparator.
+        Main entry point for file preparation workflow.
         
-        Creates temporary directory and sets up for file preparation and
-        compatibility analysis between input files.
-        
-        Raises:
-            FileError: If temporary directory creation fails
-            ExternalToolError: If required tools are not available
+        Args:
+            vcf_file: Path to VCF file
+            fasta_file: Path to FASTA file  
+            gff_file: Optional path to GFF file
+            
+        Returns:
+            Dictionary with preparation results and final file paths
         """
-        logger.debug("=== FILE PREPARATOR INITIALIZATION DEBUG ===")
+        logger.debug("=== FILE PREPARATION WORKFLOW ===")
+        logger.info("\nAnalyzing input files for compatibility...")
         
         try:
-            self.temp_dir = os.path.join(Config.get_user_config_dir(), "temp")
-            os.makedirs(self.temp_dir, exist_ok=True)
-            self.prepared_files = {}
+            # Validate input files exist
+            self._validate_input_files(vcf_file, fasta_file, gff_file)
+            self.set_reference_file(fasta_file)
             
-            # Validate required dependencies
-            self._validate_dependencies()
+            # Analyze files and determine what needs to be prepared
+            analysis = self._analyze_all_files(vcf_file, fasta_file, gff_file)
             
-            logger.debug(f"Initialized FilePreparator with temp dir: {self.temp_dir}")
-            logger.debug("=== END FILE PREPARATOR INITIALIZATION DEBUG ===")
+            # Check if any preparation is needed
+            if not analysis['needs_preparation']:
+                logger.info("All files successfully validated")
+                return self._create_success_result(vcf_file, fasta_file, gff_file, analysis, False)
+            
+            # Report issues and get user consent
+            self._report_issues(analysis['issues'])
+            if not self._get_user_consent(analysis['issues']):
+                return self._create_failure_result('User declined file preparation', analysis['issues'])
+            
+            # Prepare files
+            logger.info("\nCorrecting files...")
+            prepared_files = self._prepare_all_files(vcf_file, fasta_file, gff_file, analysis)
+            
+            # Validate VCF preparation success
+            if not self._validate_vcf_preparation(prepared_files, analysis):
+                return self._create_failure_result('VCF file preparation failed', analysis['issues'])
+            
+            logger.info("File preparation completed successfully!\n")
+            return self._create_success_result(
+                prepared_files.get('vcf', vcf_file),
+                prepared_files.get('fasta', fasta_file),
+                prepared_files.get('gff', gff_file),
+                analysis, True, prepared_files
+            )
             
         except Exception as e:
-            error_msg = f"Failed to initialize FilePreparator: {str(e)}"
+            error_msg = f"Error in file preparation workflow: {str(e)}"
             logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            logger.debug("=== END FILE PREPARATOR INITIALIZATION DEBUG ===")
-            raise FileError(error_msg) from e
+            return self._create_failure_result(error_msg, [])
     
-    def _validate_dependencies(self):
-        """
-        Validate that all required external tools are available.
+    #############################################################################
+    #                           File Analysis Methods
+    #############################################################################
+    
+    def _analyze_all_files(self, vcf_file: str, fasta_file: str, 
+                          gff_file: Optional[str] = None) -> Dict:
+        """Analyze all files to determine what preparation is needed."""
+        logger.debug("=== FILE ANALYSIS ===")
         
-        Raises:
-            ExternalToolError: If required tools are missing
-        """
-        required_tools = [
-            ('bcftools', 'bcftools --version'),
-            ('bgzip', 'bgzip --version'),
-            ('tabix', 'tabix --version'),
-            ('samtools', 'samtools --version')
+        issues = []
+        
+        # Analyze each file type
+        issues.extend(self._analyze_single_file(vcf_file, 'vcf'))
+        issues.extend(self._analyze_single_file(fasta_file, 'fasta'))
+        if gff_file:
+            issues.extend(self._analyze_single_file(gff_file, 'gff'))
+        
+        # Check chromosome compatibility
+        issues.extend(self._analyze_chromosome_compatibility(vcf_file, fasta_file, gff_file))
+        
+        logger.debug(f"Analysis complete: {len(issues)} issues found")
+        return {
+            'needs_preparation': len(issues) > 0,
+            'issues': issues
+        }
+    
+    def _analyze_single_file(self, file_path: str, file_type: str) -> List[Dict]:
+        """Analyze a single file for issues based on its type."""
+        issues = []
+        
+        if file_type == 'vcf':
+            if not self._is_properly_bgzipped(file_path):
+                issues.append(self._create_issue('vcf_compression', file_path, 
+                                               'VCF file needs proper bgzip compression', 
+                                               'Recompress with bgzip'))
+            
+            if not self._is_file_indexed(file_path, 'vcf'):
+                issues.append(self._create_issue('vcf_index', file_path,
+                                               'VCF file needs tabix indexing',
+                                               'Create tabix index'))
+            
+            if not self._has_af_field(file_path):
+                issues.append(self._create_issue('vcf_af_field', file_path,
+                                               'VCF file lacks INFO/AF field',
+                                               'Add INFO/AF field using bcftools +fill-tags'))
+            
+            if not self._is_vcf_normalized(file_path):
+                issues.append(self._create_issue('vcf_normalization', file_path,
+                                               'VCF file needs normalization',
+                                               'Normalize variants with bcftools norm'))
+        
+        elif file_type == 'fasta':
+            if not self._is_file_indexed(file_path, 'fasta'):
+                issues.append(self._create_issue('fasta_index', file_path,
+                                               'FASTA file needs samtools indexing',
+                                               'Create samtools faidx index'))
+        
+        elif file_type == 'gff':
+            # Check if GFF needs compression and/or indexing
+            if not file_path.endswith('.gz'):
+                issues.append(self._create_issue('gff_index', file_path,
+                                               'GFF file needs compression and tabix indexing',
+                                               'Sort, compress and index GFF file'))
+            elif not self._is_file_indexed(file_path, 'gff'):
+                issues.append(self._create_issue('gff_index', file_path,
+                                               'GFF file needs tabix indexing',
+                                               'Create tabix index for compressed GFF'))
+        
+        return issues
+    
+    def _analyze_chromosome_compatibility(self, vcf_file: str, fasta_file: str,
+                                        gff_file: Optional[str] = None) -> List[Dict]:
+        """Analyze chromosome name compatibility between files."""
+        issues = []
+        
+        try:
+            vcf_chroms = set(self._get_file_chromosomes(vcf_file, 'vcf').keys())
+            fasta_chroms = set(self._get_file_chromosomes(fasta_file, 'fasta').keys())
+            
+            missing_in_fasta = vcf_chroms - fasta_chroms
+            if missing_in_fasta:
+                compat_analysis = self._check_chromosome_compatibility(vcf_file, fasta_file)
+                issues.append({
+                    'type': 'chromosome_mapping',
+                    'files': [vcf_file, fasta_file],
+                    'description': f'VCF chromosomes not found in FASTA: {", ".join(sorted(missing_in_fasta))}',
+                    'action': 'Rename chromosomes in VCF to match FASTA',
+                    'mapping': compat_analysis.get('suggested_mapping', {})
+                })
+            
+            # Check GFF compatibility if provided
+            if gff_file:
+                gff_chroms = self._get_gff_chromosomes(gff_file)
+                gff_only = set(gff_chroms) - fasta_chroms
+                if gff_only:
+                    issues.append(self._create_issue('gff_chromosome_mapping', 
+                                                   [gff_file, fasta_file],
+                                                   f'GFF contains chromosomes not in FASTA: {", ".join(sorted(gff_only))}',
+                                                   'Filter GFF to match FASTA chromosomes'))
+        
+        except Exception as e:
+            issues.append(self._create_issue('compatibility_check_failed', None,
+                                           f'Could not verify chromosome compatibility: {str(e)}',
+                                           'Manual verification recommended'))
+        
+        return issues
+    
+    #############################################################################
+    #                           File Preparation Methods
+    #############################################################################
+    
+    def _prepare_all_files(self, vcf_file: str, fasta_file: str,
+                          gff_file: Optional[str], analysis: Dict) -> Dict:
+        """Create corrected versions of files based on analysis."""
+        prepared_files = {}
+        
+        # Group issues by file type for more efficient processing
+        vcf_issues = [issue for issue in analysis['issues'] 
+                     if issue.get('type', '').startswith('vcf') or 
+                        issue.get('type') == 'chromosome_mapping']
+        
+        fasta_issues = [issue for issue in analysis['issues'] 
+                       if issue.get('type', '').startswith('fasta')]
+        
+        gff_issues = [issue for issue in analysis['issues'] 
+                     if issue.get('type', '').startswith('gff')] if gff_file else []
+        
+        # Prepare files as needed
+        if vcf_issues:
+            prepared_vcf = self._prepare_vcf_file(vcf_file, vcf_issues)
+            if prepared_vcf:
+                prepared_files['vcf'] = prepared_vcf
+        
+        if fasta_issues:
+            prepared_fasta = self._prepare_fasta_file(fasta_file, fasta_issues)
+            if prepared_fasta:
+                prepared_files['fasta'] = prepared_fasta
+        
+        if gff_issues:
+            prepared_gff = self._prepare_gff_file(gff_file, gff_issues)
+            if prepared_gff:
+                prepared_files['gff'] = prepared_gff
+        
+        return prepared_files
+    
+    def _prepare_vcf_file(self, vcf_file: str, issues: List[Dict]) -> Optional[str]:
+        """Prepare corrected VCF file with streamlined processing."""
+        logger.debug("=== VCF PREPARATION ===")
+        
+        try:
+            output_path = self._create_output_path(vcf_file, 'prepared.vcf.gz')
+            self._cleanup_existing_file(output_path)
+            
+            # Process VCF through pipeline stages
+            current_file = vcf_file
+            pipeline_stages = [
+                ('compression', self._process_vcf_compression),
+                ('af_field', self._process_vcf_af_field),
+                ('chromosome_mapping', self._process_vcf_chromosome_mapping),
+                ('normalization', self._process_vcf_normalization)
+            ]
+            
+            for stage_name, processor in pipeline_stages:
+                stage_issues = [issue for issue in issues if stage_name in issue.get('type', '')]
+                if stage_issues:
+                    new_file = processor(current_file, stage_issues)
+                    if new_file and new_file != current_file:
+                        self._cleanup_temp_file(current_file, vcf_file)
+                        current_file = new_file
+            
+            # Copy to final location and create index
+            shutil.copy2(current_file, output_path)
+            self._cleanup_temp_file(current_file, vcf_file)
+            self._index_file(output_path, 'vcf')
+            
+            # Final verification
+            if not self._verify_file_integrity(output_path, 'vcf'):
+                self._cleanup_existing_file(output_path)
+                return None
+            
+            logger.info(f"Prepared VCF file: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"Error preparing VCF file: {str(e)}")
+            return None
+    
+    #############################################################################
+    #                           VCF Processing Pipeline
+    #############################################################################
+    
+    def _process_vcf_compression(self, vcf_file: str, issues: List[Dict]) -> str:
+        """Process VCF compression stage."""
+        logger.debug("Processing VCF compression")
+        temp_path = self._create_temp_file('.vcf.gz')
+        
+        if vcf_file.endswith('.gz') and self._is_properly_bgzipped(vcf_file):
+            shutil.copy2(vcf_file, temp_path)
+        else:
+            self._run_command(['bgzip', '-c', vcf_file], output_file=temp_path)
+        
+        return temp_path
+    
+    def _process_vcf_af_field(self, vcf_file: str, issues: List[Dict]) -> str:
+        """Process VCF AF field addition stage."""
+        logger.debug("Adding INFO/AF field")
+        temp_path = self._create_temp_file('.vcf.gz')
+        
+        cmd = ['bcftools', '+fill-tags', vcf_file, '-Oz', '-o', temp_path, '--', '-t', 'AF']
+        self._run_command(cmd)
+        
+        return temp_path
+    
+    def _process_vcf_chromosome_mapping(self, vcf_file: str, issues: List[Dict]) -> str:
+        """Process VCF chromosome mapping stage."""
+        mapping_issue = next((issue for issue in issues if issue.get('type') == 'chromosome_mapping'), None)
+        if not mapping_issue or not mapping_issue.get('mapping'):
+            return vcf_file
+        
+        logger.debug("Applying chromosome mapping")
+        temp_path = self._create_temp_file('.vcf.gz')
+        rename_file = self._create_chromosome_rename_file(mapping_issue['mapping'])
+        
+        try:
+            cmd = ['bcftools', 'annotate', vcf_file, '--rename-chrs', rename_file, '-Oz', '-o', temp_path]
+            self._run_command(cmd)
+            return temp_path
+        finally:
+            self._cleanup_temp_file(rename_file)
+    
+    def _process_vcf_normalization(self, vcf_file: str, issues: List[Dict]) -> str:
+        """Process VCF normalization stage."""
+        logger.debug("Normalizing VCF")
+        temp_path = self._create_temp_file('.vcf.gz')
+        
+        reference_file = self._get_reference_file()
+        if not os.path.exists(f"{reference_file}.fai"):
+            self._index_file(reference_file, 'fasta')
+        
+        cmd = ['bcftools', 'norm', vcf_file, '-f', reference_file, '-m', '-any', '-N', '-Oz', '-o', temp_path]
+        # Suppress bcftools norm statistics output by redirecting stderr to devnull
+        self._run_command(cmd, suppress_stderr=True)
+        
+        return temp_path
+    
+    #############################################################################
+    #                           File Processing Utilities
+    #############################################################################
+    
+    def _get_file_chromosomes(self, file_path: str, file_type: str) -> Dict[str, int]:
+        """Extract chromosome/sequence information from files."""
+        if file_type == 'vcf':
+            return self._get_vcf_chromosomes(file_path)
+        elif file_type == 'fasta':
+            return self._get_fasta_sequences(file_path)
+        else:
+            return {}
+    
+    def _get_vcf_chromosomes(self, vcf_file: str) -> Dict[str, int]:
+        """Extract chromosome names and variant counts from VCF file."""
+        try:
+            result = self._run_command(['bcftools', 'query', '-f', '%CHROM\n', vcf_file], capture_output=True)
+            chromosomes = result.stdout.strip().split('\n')
+            chrom_counts = defaultdict(int)
+            
+            for chrom in chromosomes:
+                if chrom and chrom.strip():
+                    chrom_counts[chrom.strip()] += 1
+            
+            if DebugLogLimiter.should_log('vcf_chromosomes_extracted', interval=10, max_initial=2):
+                logger.debug(f"Found {len(chrom_counts)} unique chromosomes in VCF")
+            return dict(chrom_counts)
+            
+        except Exception as e:
+            logger.error(f"Error reading VCF chromosomes: {str(e)}")
+            raise ExternalToolError(f"Error reading VCF chromosomes: {str(e)}", tool_name="bcftools") from e
+    
+    def _get_fasta_sequences(self, fasta_file: str) -> Dict[str, int]:
+        """Extract sequence names and lengths from FASTA file."""
+        try:
+            sequences = {}
+            current_seq = None
+            current_length = 0
+            
+            opener = gzip.open if fasta_file.endswith('.gz') else open
+            mode = 'rt' if fasta_file.endswith('.gz') else 'r'
+                
+            with opener(fasta_file, mode) as f:
+                for line in f:
+                    line = line.strip()
+                    
+                    if line.startswith('>'):
+                        if current_seq is not None:
+                            sequences[current_seq] = current_length
+                        
+                        seq_id = line[1:].split()[0]
+                        current_seq = seq_id
+                        current_length = 0
+                    elif line:
+                        current_length += len(line)
+                
+                if current_seq is not None:
+                    sequences[current_seq] = current_length
+            
+            if DebugLogLimiter.should_log('fasta_sequences_extracted', interval=10, max_initial=2):
+                logger.debug(f"Found {len(sequences)} sequences in FASTA")
+            return sequences
+            
+        except Exception as e:
+            logger.error(f"Error reading FASTA sequences: {str(e)}")
+            raise FileError(f"Error reading FASTA sequences: {str(e)}") from e
+    
+    def _filter_nuclear_chromosomes(self, fasta_seqs: Dict[str, int]) -> Dict[str, int]:
+        """Filter FASTA sequences to keep only likely nuclear chromosomes."""
+        nuclear_seqs = {}
+        
+        organellar_indicators = [
+            'MT', 'MITO', 'MITOCHONDRIAL', 'MITOCHONDRION',
+            'PT', 'PLASTID', 'CHLOROPLAST', 'CHLORO', 'PLASMID', 'PLAS'
         ]
         
+        for seq_name, length in fasta_seqs.items():
+            seq_upper = seq_name.upper()
+            is_organellar = any(indicator in seq_upper for indicator in organellar_indicators)
+            is_too_small = length < Config.MIN_CHROMOSOME_SIZE
+            
+            if not is_organellar and not is_too_small:
+                nuclear_seqs[seq_name] = length
+                if DebugLogLimiter.should_log('nuclear_sequence_included', interval=50, max_initial=3):
+                    logger.debug(f"Including nuclear sequence: {seq_name} ({length:,} bp)")
+            else:
+                if is_organellar and DebugLogLimiter.should_log('organellar_excluded', interval=20, max_initial=2):
+                    logger.debug(f"Excluding organellar sequence: {seq_name} ({length:,} bp)")
+                elif is_too_small and DebugLogLimiter.should_log('small_sequence_excluded', interval=50, max_initial=3):
+                    logger.debug(f"Excluding small sequence: {seq_name} ({length:,} bp)")
+        
+        logger.debug(f"Filtered to {len(nuclear_seqs)} nuclear sequences from {len(fasta_seqs)} total")
+        return nuclear_seqs
+    
+    #############################################################################
+    #                           Utility Methods
+    #############################################################################
+    
+    def _run_command(self, cmd: List[str], capture_output: bool = False, 
+                    output_file: Optional[str] = None, timeout: int = 300, 
+                    suppress_stderr: bool = False) -> subprocess.CompletedProcess:
+        """Run external command with proper error handling."""
+        try:
+            if output_file:
+                with open(output_file, 'wb') as f:
+                    stderr_target = subprocess.DEVNULL if suppress_stderr else subprocess.PIPE
+                    result = subprocess.run(cmd, stdout=f, stderr=stderr_target, timeout=timeout)
+            else:
+                stderr_target = subprocess.DEVNULL if suppress_stderr else subprocess.PIPE
+                stdout_target = subprocess.PIPE if capture_output else None
+                result = subprocess.run(cmd, stdout=stdout_target, stderr=stderr_target, 
+                                      text=True if capture_output else False, timeout=timeout)
+            
+            if result.returncode != 0:
+                tool_name = cmd[0] if cmd else "unknown"
+                # If stderr was suppressed, we can't show the error details
+                error_details = result.stderr if hasattr(result, 'stderr') and result.stderr and not suppress_stderr else 'Command failed'
+                error_msg = f"{tool_name} execution failed: {error_details}"
+                raise ExternalToolError(error_msg, tool_name=tool_name)
+            
+            return result
+            
+        except subprocess.TimeoutExpired:
+            tool_name = cmd[0] if cmd else "unknown"
+            error_msg = f"{tool_name} execution timed out after {timeout} seconds"
+            raise ExternalToolError(error_msg, tool_name=tool_name)
+        except Exception as e:
+            tool_name = cmd[0] if cmd else "unknown"
+            error_msg = f"Error running {tool_name}: {str(e)}"
+            raise ExternalToolError(error_msg, tool_name=tool_name) from e
+    
+    def _create_temp_file(self, suffix: str) -> str:
+        """Create a temporary file path."""
+        fd, temp_path = tempfile.mkstemp(suffix=suffix, prefix="ddprimer_", dir=self.temp_dir)
+        os.close(fd)
+        return temp_path
+    
+    def _create_output_path(self, input_file: str, suffix: str) -> str:
+        """Create output path for prepared file."""
+        base_name = Path(input_file).stem
+        if base_name.endswith('.vcf'):
+            base_name = base_name[:-4]
+        
+        output_dir = os.path.dirname(os.path.abspath(input_file))
+        return os.path.join(output_dir, f"{base_name}_{suffix}")
+    
+    def _cleanup_temp_file(self, file_path: str, original_file: str = None):
+        """Clean up temporary file if it's not the original."""
+        if file_path and file_path != original_file and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+                for ext in ['.tbi', '.csi']:
+                    idx_file = f"{file_path}{ext}"
+                    if os.path.exists(idx_file):
+                        os.unlink(idx_file)
+            except OSError:
+                pass
+    
+    def _cleanup_existing_file(self, file_path: str):
+        """Remove existing file and its indices."""
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+            for ext in ['.tbi', '.csi']:
+                idx_file = f"{file_path}{ext}"
+                if os.path.exists(idx_file):
+                    os.unlink(idx_file)
+    
+    def _create_issue(self, issue_type: str, file_path, description: str, action: str) -> Dict:
+        """Create a standardized issue dictionary."""
+        return {
+            'type': issue_type,
+            'file': file_path,
+            'description': description,
+            'action': action
+        }
+    
+    def _create_success_result(self, vcf_file: str, fasta_file: str, gff_file: Optional[str],
+                              analysis: Dict, changes_made: bool, prepared_files: Dict = None) -> Dict:
+        """Create a success result dictionary."""
+        return {
+            'success': True,
+            'vcf_file': vcf_file,
+            'fasta_file': fasta_file,
+            'gff_file': gff_file,
+            'changes_made': changes_made,
+            'issues_found': analysis['issues'],
+            'prepared_files': prepared_files or {}
+        }
+    
+    def _create_failure_result(self, reason: str, issues: List[Dict]) -> Dict:
+        """Create a failure result dictionary."""
+        return {
+            'success': False,
+            'reason': reason,
+            'issues_found': issues
+        }
+    
+    #############################################################################
+    #                           Validation Methods
+    #############################################################################
+    
+    def _validate_dependencies(self):
+        """Validate that all required external tools are available."""
         missing_tools = []
         
-        for tool_name, version_cmd in required_tools:
+        for tool_name, version_cmd in self.REQUIRED_TOOLS:
             try:
-                result = subprocess.run(version_cmd.split(), 
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    logger.debug(f"{tool_name} is available")
-                else:
+                result = subprocess.run(version_cmd.split(), capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
                     missing_tools.append(tool_name)
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 missing_tools.append(tool_name)
@@ -197,460 +632,224 @@ class FilePreparator:
                 "  macOS: brew install bcftools htslib samtools\n"
                 "  Conda: conda install -c bioconda bcftools htslib samtools"
             )
-            logger.error(error_msg)
             raise ExternalToolError(error_msg, tool_name=missing_tools[0])
     
-    def prepare_files(self, vcf_file: str, fasta_file: str, 
-                     gff_file: Optional[str] = None) -> Dict:
-        """
-        Main entry point for file preparation workflow.
-        
-        Analyzes all input files for compatibility and formatting issues,
-        then prepares corrected versions with user consent when needed.
-        
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file  
-            gff_file: Optional path to GFF file
-            
-        Returns:
-            Dictionary with preparation results and final file paths
-            
-        Raises:
-            FileError: If input files cannot be accessed
-            ExternalToolError: If external tools fail
-        """
-        logger.debug("=== FILE PREPARATION WORKFLOW DEBUG ===")
-        logger.info("\nAnalyzing input files for compatibility...")
-        
-        try:
-            # Validate input files exist
-            self._validate_input_files(vcf_file, fasta_file, gff_file)
-            
-            # Set reference file for normalization
-            self.set_reference_file(fasta_file)
-            
-            # Analyze files and determine what needs to be prepared
-            analysis = self._analyze_files(vcf_file, fasta_file, gff_file)
-            
-            # Check if any preparation is needed
-            if not analysis['needs_preparation']:
-                logger.info("All files successfully validated")
-                return {
-                    'success': True,
-                    'vcf_file': vcf_file,
-                    'fasta_file': fasta_file,
-                    'gff_file': gff_file,
-                    'changes_made': False,
-                    'issues_found': analysis['issues']
-                }
-            
-            # Report issues found
-            self._report_issues(analysis['issues'])
-            
-            # Ask user for permission to create corrected files
-            if not self._get_user_consent(analysis['issues']):
-                logger.info(f"\nFile preparation canceled by user.")
-                return {
-                    'success': False,
-                    'reason': 'User declined file preparation',
-                    'issues_found': analysis['issues']
-                }
-            
-            # Prepare files
-            logger.info("\nCorrecting files...")
-            prepared_files = self._prepare_corrected_files(vcf_file, fasta_file, gff_file, analysis)
-            
-            # CRITICAL FIX: Check if VCF preparation actually succeeded
-            vcf_success = True
-            if 'vcf' in prepared_files:
-                vcf_path = prepared_files['vcf']
-                if not vcf_path or not os.path.exists(vcf_path):
-                    vcf_success = False
-                    error_msg = "VCF file preparation failed"
-            else:
-                # Check if VCF preparation was attempted but failed
-                vcf_issues = [issue for issue in analysis['issues'] 
-                            if issue.get('type', '').startswith('vcf') or 
-                                issue.get('type') == 'chromosome_mapping']
-                if vcf_issues:
-                    vcf_success = False
-                    error_msg = "VCF file preparation was required but failed"
-            
-            if not vcf_success:
-                logger.error(error_msg)
-                return {
-                    'success': False,
-                    'reason': error_msg,
-                    'issues_found': analysis['issues']
-                }
-            
-            logger.info("File preparation completed successfully!")
-            logger.debug("=== END FILE PREPARATION WORKFLOW DEBUG ===")
-            
-            return {
-                'success': True,
-                'vcf_file': prepared_files.get('vcf', vcf_file),
-                'fasta_file': prepared_files.get('fasta', fasta_file),
-                'gff_file': prepared_files.get('gff', gff_file),
-                'changes_made': True,
-                'issues_found': analysis['issues'],
-                'prepared_files': prepared_files
-            }
-            
-        except Exception as e:
-            error_msg = f"Error in file preparation workflow: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            logger.debug("=== END FILE PREPARATION WORKFLOW DEBUG ===")
-            return {
-                'success': False,
-                'reason': error_msg,
-                'issues_found': analysis.get('issues', [])
-            }
-    
-    def _validate_input_files(self, vcf_file: str, fasta_file: str, 
-                            gff_file: Optional[str] = None):
-        """
-        Validate that input files exist and are accessible.
-        
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file
-            gff_file: Optional path to GFF file
-            
-        Raises:
-            FileError: If files cannot be accessed
-        """
-        files_to_check = [
-            (vcf_file, "VCF"),
-            (fasta_file, "FASTA")
-        ]
-        
+    def _validate_input_files(self, vcf_file: str, fasta_file: str, gff_file: Optional[str] = None):
+        """Validate that input files exist and are accessible."""
+        files_to_check = [(vcf_file, "VCF"), (fasta_file, "FASTA")]
         if gff_file:
             files_to_check.append((gff_file, "GFF"))
         
         for file_path, file_type in files_to_check:
             if not os.path.exists(file_path):
-                error_msg = f"{file_type} file not found: {file_path}"
-                logger.error(error_msg)
-                raise FileError(error_msg)
-            
+                raise FileError(f"{file_type} file not found: {file_path}")
             if not os.access(file_path, os.R_OK):
-                error_msg = f"{file_type} file not readable: {file_path}"
-                logger.error(error_msg)
-                raise FileError(error_msg)
+                raise FileError(f"{file_type} file not readable: {file_path}")
     
-    def _analyze_files(self, vcf_file: str, fasta_file: str, 
-                      gff_file: Optional[str] = None) -> Dict:
-        """
-        Analyze all files to determine what preparation is needed.
+    def _validate_vcf_preparation(self, prepared_files: Dict, analysis: Dict) -> bool:
+        """Validate that VCF preparation actually succeeded."""
+        vcf_issues = [issue for issue in analysis['issues'] 
+                     if issue.get('type', '').startswith('vcf') or 
+                        issue.get('type') == 'chromosome_mapping']
         
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file
-            gff_file: Optional path to GFF file
-            
-        Returns:
-            Dictionary containing analysis results and preparation requirements
-        """
-        logger.debug("=== FILE ANALYSIS DEBUG ===")
+        if vcf_issues:
+            vcf_path = prepared_files.get('vcf')
+            if not vcf_path or not os.path.exists(vcf_path):
+                logger.error("VCF file preparation failed - file not created")
+                return False
         
-        issues = []
-        
-        # Analyze VCF file
-        vcf_issues = self._analyze_vcf_file(vcf_file)
-        issues.extend(vcf_issues)
-        
-        # Analyze FASTA file
-        fasta_issues = self._analyze_fasta_file(fasta_file)
-        issues.extend(fasta_issues)
-        
-        # Analyze GFF file if provided
-        if gff_file:
-            gff_issues = self._analyze_gff_file(gff_file)
-            issues.extend(gff_issues)
-        
-        # Check chromosome compatibility
-        compat_issues = self._analyze_chromosome_compatibility(vcf_file, fasta_file, gff_file)
-        issues.extend(compat_issues)
-        
-        needs_preparation = len(issues) > 0
-        
-        logger.debug(f"Analysis complete: {len(issues)} issues found")
-        logger.debug("=== END FILE ANALYSIS DEBUG ===")
-        
-        return {
-            'needs_preparation': needs_preparation,
-            'issues': issues
-        }
+        return True
     
-    def _get_vcf_chromosomes(self, vcf_file: str) -> Dict[str, int]:
-        """
-        Extract chromosome names and variant counts from VCF file.
-        
-        Uses bcftools to efficiently extract chromosome information from
-        VCF files, supporting both compressed and uncompressed formats.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            Dictionary mapping chromosome names to variant counts
-            
-        Raises:
-            ExternalToolError: If bcftools execution fails
-        """
-        logger.debug(f"Extracting chromosome information from VCF: {vcf_file}")
-        
+    def _verify_file_integrity(self, file_path: str, file_type: str) -> bool:
+        """Verify that a prepared file can be read properly."""
         try:
-            cmd = ['bcftools', 'query', '-f', '%CHROM\n', vcf_file]
-            logger.debug(f"Running command: {' '.join(cmd)}")
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                chromosomes = result.stdout.strip().split('\n')
-                chrom_counts = defaultdict(int)
-                
-                for chrom in chromosomes:
-                    if chrom and chrom.strip():  # Skip empty lines
-                        chrom_counts[chrom.strip()] += 1
-                
-                logger.debug(f"Found {len(chrom_counts)} unique chromosomes in VCF")
-                return dict(chrom_counts)
-            else:
-                error_msg = f"bcftools execution failed for {vcf_file}: {result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="bcftools")
-                
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error reading VCF chromosomes from {vcf_file}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="bcftools") from e
+            if file_type == 'vcf':
+                test_cmd = ['bcftools', 'view', '-h', file_path]
+                result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
+                return result.returncode == 0
+            elif file_type == 'fasta':
+                return os.path.exists(f"{file_path}.fai") or os.path.getsize(file_path) > 0
+            return True
+        except Exception:
+            return False
     
-    def _get_fasta_sequences(self, fasta_file: str) -> Dict[str, int]:
-        """
-        Extract sequence names and lengths from FASTA file.
-        
-        Parses FASTA files to extract sequence identifiers and calculate
-        sequence lengths, supporting both compressed and uncompressed formats.
-        
-        Args:
-            fasta_file: Path to FASTA file
-            
-        Returns:
-            Dictionary mapping sequence names to lengths
-            
-        Raises:
-            FileError: If FASTA file cannot be parsed
-        """
-        logger.debug(f"Extracting sequence information from FASTA: {fasta_file}")
-        
+    #############################################################################
+    #                           File Status Check Methods
+    #############################################################################
+    
+    def _is_properly_bgzipped(self, vcf_file: str) -> bool:
+        """Check if VCF file is properly bgzip compressed."""
         try:
-            sequences = {}
-            current_seq = None
-            current_length = 0
+            result = subprocess.run(['bcftools', 'view', '-h', vcf_file], 
+                                  capture_output=True, text=True, timeout=10)
+            return result.returncode == 0
+        except Exception:
+            return False
+    
+    def _is_file_indexed(self, file_path: str, file_type: str) -> bool:
+        """Check if file has appropriate index."""
+        if file_type == 'vcf':
+            return any(os.path.exists(f"{file_path}{ext}") for ext in ['.tbi', '.csi'])
+        elif file_type == 'fasta':
+            return os.path.exists(f"{file_path}.fai")
+        elif file_type == 'gff':
+            # For GFF files, we need to check if the file is compressed AND indexed
+            # If it's not compressed, it needs preparation regardless of index status
+            if not file_path.endswith('.gz'):
+                return False  # Uncompressed GFF always needs preparation
+            # If compressed, check for index
+            return any(os.path.exists(f"{file_path}{ext}") for ext in ['.tbi', '.csi'])
+        return False
+    
+    def _has_af_field(self, vcf_file: str) -> bool:
+        """Check if VCF file has INFO/AF field."""
+        try:
+            result = subprocess.run(['bcftools', 'view', '-h', vcf_file], 
+                                  capture_output=True, text=True, timeout=10)
+            return result.returncode == 0 and '##INFO=<ID=AF,' in result.stdout
+        except Exception:
+            return False
+    
+    def _is_vcf_normalized(self, vcf_file: str) -> bool:
+        """Check if VCF file appears to be normalized."""
+        try:
+            # Sample first 10000 variants for normalization check
+            view_proc = subprocess.Popen(['bcftools', 'view', vcf_file], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            head_proc = subprocess.Popen(['head', '-n', '10000'], stdin=view_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            view_proc.stdout.close()
             
-            # Determine file opener based on extension
-            opener = gzip.open if fasta_file.endswith('.gz') else open
-            mode = 'rt' if fasta_file.endswith('.gz') else 'r'
+            norm_proc = subprocess.Popen(
+                ['bcftools', 'norm', '--check-ref', 'w', '-f', self._get_reference_file(), '-'],
+                stdin=head_proc.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
+            head_proc.stdout.close()
+            
+            try:
+                stdout, stderr = norm_proc.communicate(timeout=30)
+                view_proc.wait()
+                head_proc.wait()
                 
-            with opener(fasta_file, mode) as f:
-                for line in f:
-                    line = line.strip()
+                if norm_proc.returncode == 0:
+                    # Check for normalization warnings
+                    normalization_warnings = ['not left-aligned', 'not normalized', 'multiallelic']
+                    has_warnings = any(warning in stderr.lower() for warning in normalization_warnings)
+                    return not has_warnings
+                else:
+                    # If reference sequence errors, assume normalized
+                    if "sequence not found" in stderr.lower():
+                        return True
+                    return False
                     
-                    if line.startswith('>'):
-                        # Save previous sequence if exists
-                        if current_seq is not None:
-                            sequences[current_seq] = current_length
-                        
-                        # Start new sequence
-                        seq_id = line[1:].split()[0]  # Take first part after >
-                        current_seq = seq_id
-                        current_length = 0
-                    elif line:
-                        # Count sequence characters
-                        current_length += len(line)
+            except subprocess.TimeoutExpired:
+                # Kill processes and assume normalized
+                for proc in [norm_proc, head_proc, view_proc]:
+                    try:
+                        proc.kill()
+                    except:
+                        pass
+                return True
                 
-                # Don't forget the last sequence
-                if current_seq is not None:
-                    sequences[current_seq] = current_length
+        except Exception as e:
+            if DebugLogLimiter.should_log('normalization_check_error', interval=10, max_initial=1):
+                logger.debug(f"Error checking VCF normalization: {str(e)}")
+            return False
+    
+    #############################################################################
+    #                           File Processing Methods
+    #############################################################################
+    
+    def _prepare_fasta_file(self, fasta_file: str, issues: List[Dict]) -> Optional[str]:
+        """Prepare FASTA file (mainly indexing)."""
+        try:
+            index_issues = [issue for issue in issues if issue['type'] == 'fasta_index']
+            if index_issues:
+                self._index_file(fasta_file, 'fasta')
+            return fasta_file
+        except Exception as e:
+            logger.error(f"Error preparing FASTA file: {str(e)}")
+            return None
+    
+    def _prepare_gff_file(self, gff_file: str, issues: List[Dict]) -> Optional[str]:
+        """Prepare GFF file (sorting and indexing)."""
+        try:
+            index_issues = [issue for issue in issues if issue['type'] == 'gff_index']
+            if not index_issues:
+                return gff_file
             
-            logger.debug(f"Found {len(sequences)} sequences in FASTA")
-            return sequences
+            # Check if file is already compressed
+            if gff_file.endswith('.gz'):
+                # File is compressed but needs indexing
+                self._index_file(gff_file, 'gff')
+                logger.info(f"Created index for compressed GFF file: {gff_file}")
+                return gff_file
+            else:
+                # File needs compression and indexing
+                output_path = self._create_output_path(gff_file, 'prepared.gff.gz')
+                
+                if os.path.exists(output_path):
+                    user_input = input(f"\nPrepared GFF file exists: {output_path}\nOverwrite? [y/n]: ").strip().lower()
+                    if user_input not in ['y', 'yes']:
+                        # Make sure existing file is indexed
+                        if not self._is_file_indexed(output_path, 'gff'):
+                            self._index_file(output_path, 'gff')
+                        return output_path
+                    else:
+                        self._cleanup_existing_file(output_path)
+                
+                self._sort_and_compress_gff(gff_file, output_path)
+                self._index_file(output_path, 'gff')
+                logger.info(f"Prepared GFF file: {output_path}")
+                return output_path
             
         except Exception as e:
-            error_msg = f"Error reading FASTA sequences from {fasta_file}: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise FileError(error_msg) from e
+            logger.error(f"Error preparing GFF file: {str(e)}")
+            return None
     
-    def _extract_numeric_component(self, name: str) -> float:
-        """
-        Extract numeric component from chromosome name for intelligent sorting.
-        
-        Analyzes chromosome names to extract numeric components for proper
-        sorting, handling various naming conventions including Chr1, Chromosome1,
-        accession numbers, and special chromosomes.
-        
-        Args:
-            name: Chromosome or sequence name
-            
-        Returns:
-            Numeric component if found, large number for special/unrecognized names
-        """
-        if not name or not isinstance(name, str):
-            return float('inf')
-            
-        name_upper = name.upper()
-        
-        # Pattern 1: Simple numbers (1, 2, 3, etc.)
-        if name.isdigit():
-            return int(name)
-        
-        # Pattern 2: Chr1, Chr2, etc.
-        if name_upper.startswith('CHR') and len(name) > 3:
-            chr_part = name[3:]
-            if chr_part.isdigit():
-                return int(chr_part)
-        
-        # Pattern 3: Chromosome1, Chromosome2, etc.
-        if name_upper.startswith('CHROMOSOME') and len(name) > 10:
-            chr_part = name[10:]
-            if chr_part.isdigit():
-                return int(chr_part)
-        
-        # Pattern 4: For accession numbers like CP002684.1, extract the main number
-        base_name = name.split('.')[0] if '.' in name else name
-        numbers = re.findall(r'\d+', base_name)
-        if numbers:
-            # Use the last/longest number found (usually the main identifier)
-            return int(numbers[-1])
-        
-        # Pattern 5: Special chromosomes (X, Y, MT, etc.)
-        special_chroms = {
-            'X': 100, 'Y': 101, 'MT': 102, 'MITO': 102, 'MITOCHONDRIAL': 102,
-            'CHLOROPLAST': 103, 'PLASTID': 103, 'PT': 103, 'CP': 103
-        }
-        
-        for special, value in special_chroms.items():
-            if special in name_upper:
-                return value
-        
-        return float('inf')  # Put unrecognized names at end
+    def _index_file(self, file_path: str, file_type: str):
+        """Create appropriate index for file type."""
+        if file_type == 'vcf':
+            self._run_command(['tabix', '-p', 'vcf', file_path])
+        elif file_type == 'fasta':
+            self._run_command(['samtools', 'faidx', file_path])
+        elif file_type == 'gff':
+            self._run_command(['tabix', '-p', 'gff', file_path])
     
-    def _filter_nuclear_chromosomes(self, fasta_seqs: Dict[str, int]) -> Dict[str, int]:
-        """
-        Filter FASTA sequences to keep only likely nuclear chromosomes.
+    def _sort_and_compress_gff(self, gff_file: str, output_path: str):
+        """Sort and compress GFF file for tabix indexing."""
+        temp_sorted_path = self._create_temp_file('.gff')
         
-        Identifies and filters out organellar genomes (mitochondrial, chloroplast)
-        and small sequences that are unlikely to be nuclear chromosomes.
-        
-        Args:
-            fasta_seqs: Dictionary mapping sequence names to lengths
+        try:
+            # Sort the GFF file
+            sort_cmd = ['sort', '-k1,1', '-k4,4n', '-T', self.temp_dir, '-o', temp_sorted_path, gff_file]
+            self._run_command(sort_cmd)
             
-        Returns:
-            Filtered dictionary with only nuclear chromosomes
-        """
-        nuclear_seqs = {}
-        
-        for seq_name, length in fasta_seqs.items():
-            seq_upper = seq_name.upper()
+            # Compress with bgzip
+            compress_cmd = ['bgzip', '-c', temp_sorted_path]
+            self._run_command(compress_cmd, output_file=output_path)
             
-            # Check for organellar indicators in the name
-            organellar_indicators = [
-                'MT', 'MITO', 'MITOCHONDRIAL', 'MITOCHONDRION',
-                'PT', 'PLASTID', 'CHLOROPLAST', 'CHLORO',
-                'PLASMID', 'PLAS'
-            ]
-            
-            is_organellar = any(indicator in seq_upper for indicator in organellar_indicators)
-            is_too_small = length < Config.MIN_CHROMOSOME_SIZE
-            
-            if not is_organellar and not is_too_small:
-                nuclear_seqs[seq_name] = length
-                logger.debug(f"Including nuclear sequence: {seq_name} ({length:,} bp)")
-            else:
-                if is_organellar:
-                    logger.debug(f"Excluding organellar sequence: {seq_name} ({length:,} bp)")
-                elif is_too_small:
-                    logger.debug(f"Excluding small sequence: {seq_name} ({length:,} bp)")
-        
-        logger.debug(f"Filtered to {len(nuclear_seqs)} nuclear sequences from {len(fasta_seqs)} total")
-        return nuclear_seqs
+        finally:
+            self._cleanup_temp_file(temp_sorted_path)
     
-    def _suggest_chromosome_mapping(self, vcf_chroms: Dict[str, int], 
-                                   fasta_seqs: Dict[str, int]) -> Dict[str, str]:
-        """
-        Suggest intelligent mapping based on analysis of both files.
+    def _create_chromosome_rename_file(self, mapping: Dict[str, str]) -> str:
+        """Create temporary file for chromosome renaming."""
+        rename_file = self._create_temp_file('.txt')
         
-        Analyzes chromosome naming patterns and sequence characteristics
-        to suggest automatic mappings between VCF chromosomes and FASTA
-        sequences based on numerical ordering and sequence properties.
+        with open(rename_file, 'w') as f:
+            for old_name, new_name in mapping.items():
+                f.write(f"{old_name}\t{new_name}\n")
         
-        Args:
-            vcf_chroms: VCF chromosomes and their variant counts
-            fasta_seqs: FASTA sequences and their lengths
-            
-        Returns:
-            Suggested mapping dictionary from VCF chromosome to FASTA sequence
-        """
-        logger.debug("Analyzing files for automatic chromosome mapping")
-        
-        # Sort VCF chromosomes by numeric component, then alphabetically
-        vcf_sorted = sorted(vcf_chroms.keys(), 
-                           key=lambda x: (self._extract_numeric_component(x), x))
-        
-        # Filter FASTA sequences to exclude likely organellar genomes
-        nuclear_fasta = self._filter_nuclear_chromosomes(fasta_seqs)
-        
-        # Sort nuclear FASTA sequences by numeric component, then alphabetically
-        fasta_sorted = sorted(nuclear_fasta.keys(), 
-                             key=lambda x: (self._extract_numeric_component(x), x))
-        
-        logger.debug(f"VCF chromosomes (sorted): {vcf_sorted}")
-        logger.debug(f"Nuclear FASTA sequences (sorted): {fasta_sorted}")
-        
-        # Main strategy: Map chromosomes in order after sorting both by numeric component
-        if len(vcf_sorted) <= len(fasta_sorted):
-            # Take the first N nuclear FASTA sequences
-            main_fasta = fasta_sorted[:len(vcf_sorted)]
-            mapping = dict(zip(vcf_sorted, main_fasta))
-            
-            logger.debug(f"Suggested mapping: {mapping}")
-            return mapping
-        else:
-            # VCF has more chromosomes than nuclear FASTA sequences - problematic
-            logger.debug(f"VCF has {len(vcf_sorted)} chromosomes but only {len(fasta_sorted)} nuclear FASTA sequences")
-            return {}
+        return rename_file
+    
+    #############################################################################
+    #                           Chromosome Analysis Methods
+    #############################################################################
     
     def _check_chromosome_compatibility(self, vcf_file: str, fasta_file: str) -> Dict:
-        """
-        Check if VCF and FASTA files have compatible chromosome names.
-        
-        Performs comprehensive analysis of chromosome naming compatibility
-        between VCF and FASTA files, providing detailed compatibility
-        information and suggested mapping strategies.
-        
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file
-            
-        Returns:
-            Dictionary containing analysis results with compatibility info and suggested actions
-        """
-        logger.debug("Checking chromosome compatibility between VCF and FASTA files")
-        
+        """Check chromosome compatibility and suggest mapping."""
         try:
-            # Get chromosome information from both files
-            vcf_chroms = self._get_vcf_chromosomes(vcf_file)
-            fasta_seqs = self._get_fasta_sequences(fasta_file)
+            vcf_chroms = self._get_file_chromosomes(vcf_file, 'vcf')
+            fasta_seqs = self._get_file_chromosomes(fasta_file, 'fasta')
             
-            # Check for exact matches
             vcf_set = set(vcf_chroms.keys())
             fasta_set = set(fasta_seqs.keys())
             
@@ -658,7 +857,6 @@ class FilePreparator:
             vcf_only = vcf_set - fasta_set
             fasta_only = fasta_set - vcf_set
             
-            # Generate analysis report
             analysis = {
                 'vcf_chromosomes': vcf_chroms,
                 'fasta_sequences': fasta_seqs,
@@ -669,64 +867,77 @@ class FilePreparator:
                 'needs_mapping': len(vcf_only) > 0 or len(fasta_only) > 0
             }
             
-            # Log the analysis
-            logger.debug(f"VCF file: {len(vcf_chroms)} chromosomes")
-            logger.debug(f"FASTA file: {len(fasta_seqs)} sequences")
-            
-            if exact_matches:
-                logger.debug(f"{len(exact_matches)} chromosome(s) match exactly")
-            
-            if vcf_only:
-                logger.debug(f"{len(vcf_only)} chromosome(s) only in VCF")
-            
-            if fasta_only:
-                logger.debug(f"{len(fasta_only)} sequence(s) only in FASTA")
-            
-            # Provide recommendations
-            if analysis['compatible'] and not analysis['needs_mapping']:
-                logger.debug("Files are fully compatible - no chromosome renaming needed")
-                analysis['action'] = 'none'
-            elif analysis['needs_mapping']:
-                logger.debug("Files need chromosome name mapping")
-                analysis['action'] = 'mapping'
-                # Generate automatic mapping suggestion
+            if analysis['needs_mapping']:
                 analysis['suggested_mapping'] = self._suggest_chromosome_mapping(vcf_chroms, fasta_seqs)
-            else:
-                logger.debug("No compatible chromosomes found")
-                analysis['action'] = 'error'
             
             return analysis
             
         except Exception as e:
-            error_msg = f"Error in compatibility check: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise SequenceProcessingError(error_msg) from e
-
+            logger.error(f"Error in compatibility check: {str(e)}")
+            raise SequenceProcessingError(f"Error in compatibility check: {str(e)}") from e
+    
+    def _suggest_chromosome_mapping(self, vcf_chroms: Dict[str, int], 
+                                   fasta_seqs: Dict[str, int]) -> Dict[str, str]:
+        """Suggest intelligent chromosome mapping."""
+        # Sort chromosomes by numeric component
+        vcf_sorted = sorted(vcf_chroms.keys(), 
+                           key=lambda x: (self._extract_numeric_component(x), x))
+        
+        nuclear_fasta = self._filter_nuclear_chromosomes(fasta_seqs)
+        fasta_sorted = sorted(nuclear_fasta.keys(), 
+                             key=lambda x: (self._extract_numeric_component(x), x))
+        
+        if len(vcf_sorted) <= len(fasta_sorted):
+            main_fasta = fasta_sorted[:len(vcf_sorted)]
+            mapping = dict(zip(vcf_sorted, main_fasta))
+            return mapping
+        
+        return {}
+    
+    def _extract_numeric_component(self, name: str) -> float:
+        """Extract numeric component from chromosome name for sorting."""
+        if not name or not isinstance(name, str):
+            return float('inf')
+            
+        name_upper = name.upper()
+        
+        # Simple numbers
+        if name.isdigit():
+            return int(name)
+        
+        # Chr1, Chr2, etc.
+        if name_upper.startswith('CHR') and len(name) > 3:
+            chr_part = name[3:]
+            if chr_part.isdigit():
+                return int(chr_part)
+        
+        # Extract numbers from accession-like names
+        numbers = re.findall(r'\d+', name)
+        if numbers:
+            return int(numbers[-1])
+        
+        # Special chromosomes
+        special_chroms = {
+            'X': 100, 'Y': 101, 'MT': 102, 'MITO': 102, 'MITOCHONDRIAL': 102,
+            'CHLOROPLAST': 103, 'PLASTID': 103, 'PT': 103, 'CP': 103
+        }
+        
+        for special, value in special_chroms.items():
+            if special in name_upper:
+                return value
+        
+        return float('inf')
+    
     def _generate_standardized_chromosome_map(self, vcf_chroms: Dict[str, int],
                                              fasta_seqs: Dict[str, int]) -> Dict[str, str]:
-        """
-        Generates a mapping from original chromosome names to standardized names (e.g., 1, 2, X).
-
-        This map is intended for final output formatting and does not affect internal processing.
-
-        Args:
-            vcf_chroms: Dictionary of chromosome names from the VCF file.
-            fasta_seqs: Dictionary of sequence names from the FASTA file.
-
-        Returns:
-            A dictionary mapping original chromosome names to standardized names.
-        """
-        logger.debug("Generating standardized chromosome map for output.")
-
-        # Use VCF chromosomes as the primary source for the map
+        """Generate mapping from original chromosome names to standardized names."""
         chrom_names = sorted(vcf_chroms.keys(),
                              key=lambda x: (self._extract_numeric_component(x), x))
-
+        
         standardized_map = {}
         for i, name in enumerate(chrom_names):
             numeric_comp = self._extract_numeric_component(name)
-            # Handle special chromosomes based on numeric component extraction
+            
             if numeric_comp == 100:
                 standardized_name = 'X'
             elif numeric_comp == 101:
@@ -734,376 +945,21 @@ class FilePreparator:
             elif numeric_comp == 102:
                 standardized_name = 'MT'
             elif numeric_comp < float('inf'):
-                # Use the extracted number if it's a simple integer
                 if name.isdigit():
                     standardized_name = name
                 elif name.upper().startswith('CHR') and name[3:].isdigit():
                     standardized_name = name[3:]
-                else: # Fallback to sorted order for complex names
-                    standardized_name = str(i + 1)
-            else: # For completely unrecognized names
-                standardized_name = name # Keep original name if it can't be simplified
-
-            standardized_map[name] = standardized_name
-
-        logger.debug(f"Generated output map for {len(standardized_map)} chromosomes.")
-        return standardized_map
-
-    def _analyze_vcf_file(self, vcf_file: str) -> List[Dict]:
-        """
-        Analyze VCF file for formatting and content issues.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            List of issue dictionaries
-        """
-        logger.debug(f"Analyzing VCF file: {vcf_file}")
-        issues = []
-        
-        # Check if file is properly bgzipped
-        if not self._is_properly_bgzipped(vcf_file):
-            issues.append({
-                'type': 'vcf_compression',
-                'file': vcf_file,
-                'description': 'VCF file needs proper bgzip compression',
-                'action': 'Recompress with bgzip'
-            })
-        
-        # Check if file is indexed
-        if not self._is_vcf_indexed(vcf_file):
-            issues.append({
-                'type': 'vcf_index',
-                'file': vcf_file,
-                'description': 'VCF file needs tabix indexing',
-                'action': 'Create tabix index'
-            })
-        
-        # Check if INFO/AF field is present
-        if not self._has_af_field(vcf_file):
-            issues.append({
-                'type': 'vcf_af_field',
-                'file': vcf_file,
-                'description': 'VCF file lacks INFO/AF field',
-                'action': 'Add INFO/AF field using bcftools +fill-tags'
-            })
-        
-        # Check if VCF is normalized
-        if not self._is_vcf_normalized(vcf_file):
-            issues.append({
-                'type': 'vcf_normalization',
-                'file': vcf_file,
-                'description': 'VCF file needs normalization',
-                'action': 'Normalize variants with bcftools norm'
-            })
-        
-        logger.debug(f"VCF analysis found {len(issues)} issues")
-        return issues
-    
-    def _analyze_fasta_file(self, fasta_file: str) -> List[Dict]:
-        """
-        Analyze FASTA file for indexing requirements.
-        
-        Args:
-            fasta_file: Path to FASTA file
-            
-        Returns:
-            List of issue dictionaries
-        """
-        logger.debug(f"Analyzing FASTA file: {fasta_file}")
-        issues = []
-        
-        # Check if file is indexed
-        if not self._is_fasta_indexed(fasta_file):
-            issues.append({
-                'type': 'fasta_index',
-                'file': fasta_file,
-                'description': 'FASTA file needs samtools indexing',
-                'action': 'Create samtools faidx index'
-            })
-        
-        logger.debug(f"FASTA analysis found {len(issues)} issues")
-        return issues
-    
-    def _analyze_gff_file(self, gff_file: str) -> List[Dict]:
-        """
-        Analyze GFF file for formatting issues.
-        
-        Args:
-            gff_file: Path to GFF file
-            
-        Returns:
-            List of issue dictionaries
-        """
-        logger.debug(f"Analyzing GFF file: {gff_file}")
-        issues = []
-        
-        # Check if file is sorted and indexed (optional improvement)
-        if not self._is_gff_indexed(gff_file):
-            issues.append({
-                'type': 'gff_index',
-                'file': gff_file,
-                'description': 'GFF file could benefit from tabix indexing',
-                'action': 'Sort and index GFF file'
-            })
-        
-        logger.debug(f"GFF analysis found {len(issues)} issues")
-        return issues
-    
-    def _analyze_chromosome_compatibility(self, vcf_file: str, fasta_file: str,
-                                        gff_file: Optional[str] = None) -> List[Dict]:
-        """
-        Analyze chromosome name compatibility between files.
-        
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file
-            gff_file: Optional path to GFF file
-            
-        Returns:
-            List of issue dictionaries
-        """
-        logger.debug("Analyzing chromosome compatibility")
-        issues = []
-        
-        try:
-            # Check VCF-FASTA compatibility
-            compat_analysis = self._check_chromosome_compatibility(vcf_file, fasta_file)
-            
-            # Flag as needing mapping if there are actually incompatible chromosomes
-            vcf_chroms = set(compat_analysis['vcf_chromosomes'].keys())
-            fasta_chroms = set(compat_analysis['fasta_sequences'].keys())
-            
-            # Check if all VCF chromosomes are present in FASTA
-            missing_in_fasta = vcf_chroms - fasta_chroms
-            
-            if missing_in_fasta:
-                # Only create mapping issue if there are actually missing chromosomes
-                issues.append({
-                    'type': 'chromosome_mapping',
-                    'files': [vcf_file, fasta_file],
-                    'description': f'VCF chromosomes not found in FASTA: {", ".join(sorted(missing_in_fasta))}',
-                    'action': 'Rename chromosomes in VCF to match FASTA',
-                    'mapping': compat_analysis.get('suggested_mapping', {})
-                })
-            else:
-                logger.debug("All VCF chromosomes found in FASTA - no mapping needed")
-            
-            # If GFF provided, check GFF-FASTA compatibility
-            if gff_file:
-                gff_chroms = self._get_gff_chromosomes(gff_file)
-                fasta_chroms = set(compat_analysis['fasta_sequences'].keys())
-                
-                gff_only = set(gff_chroms) - fasta_chroms
-                if gff_only:
-                    issues.append({
-                        'type': 'gff_chromosome_mapping',
-                        'files': [gff_file, fasta_file],
-                        'description': f'GFF contains chromosomes not in FASTA: {", ".join(sorted(gff_only))}',
-                        'action': 'Filter GFF to match FASTA chromosomes'
-                    })
-        
-        except Exception as e:
-            logger.warning(f"Error analyzing chromosome compatibility: {str(e)}")
-            # Don't raise error, just note the issue
-            issues.append({
-                'type': 'compatibility_check_failed',
-                'description': f'Could not verify chromosome compatibility: {str(e)}',
-                'action': 'Manual verification recommended'
-            })
-        
-        logger.debug(f"Compatibility analysis found {len(issues)} issues")
-        return issues
-    
-    def _is_properly_bgzipped(self, vcf_file: str) -> bool:
-        """
-        Check if VCF file is properly bgzip compressed.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            True if properly bgzipped, False otherwise
-        """
-        try:
-            # Test with bcftools view
-            cmd = ['bcftools', 'view', '-h', vcf_file]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            return result.returncode == 0
-        except Exception:
-            return False
-    
-    def _is_vcf_indexed(self, vcf_file: str) -> bool:
-        """
-        Check if VCF file has tabix index.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            True if indexed, False otherwise
-        """
-        # Check for .tbi or .csi index files
-        index_files = [
-            f"{vcf_file}.tbi",
-            f"{vcf_file}.csi"
-        ]
-        
-        return any(os.path.exists(idx) for idx in index_files)
-    
-    def _has_af_field(self, vcf_file: str) -> bool:
-        """
-        Check if VCF file has INFO/AF field.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            True if AF field is present, False otherwise
-        """
-        try:
-            # Get header and check for AF field
-            cmd = ['bcftools', 'view', '-h', vcf_file]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                header = result.stdout
-                # Look for INFO AF field definition
-                return '##INFO=<ID=AF,' in header
-            return False
-            
-        except Exception:
-            logger.debug("Error checking AF field presence")
-            return False
-    
-    def _is_vcf_normalized(self, vcf_file: str) -> bool:
-        """
-        Check if VCF file appears to be normalized.
-        
-        Uses bcftools norm --check-ref to properly validate normalization.
-        
-        Args:
-            vcf_file: Path to VCF file
-            
-        Returns:
-            True if appears normalized, False otherwise
-        """
-        try:
-            # For large VCF files, just check the first 10000 variants for normalization issues
-            # Use proper subprocess chaining instead of shell pipes to handle spaces in paths
-            
-            # Step 1: Get first 10000 lines of VCF
-            view_cmd = ['bcftools', 'view', vcf_file]
-            head_cmd = ['head', '-n', '10000']
-            
-            # Step 2: Check normalization on the sample
-            norm_cmd = ['bcftools', 'norm', '--check-ref', 'w', '-f', self._get_reference_file(), '-']
-            
-            logger.debug(f"Running normalization check on sample of: {vcf_file}")
-            
-            # Chain the commands properly using subprocess
-            view_proc = subprocess.Popen(view_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            head_proc = subprocess.Popen(head_cmd, stdin=view_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            view_proc.stdout.close()  # Allow view_proc to receive a SIGPIPE if head_proc exits
-            
-            norm_proc = subprocess.Popen(norm_cmd, stdin=head_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            head_proc.stdout.close()  # Allow head_proc to receive a SIGPIPE if norm_proc exits
-            
-            # Wait for the final process and get output
-            try:
-                stdout, stderr = norm_proc.communicate(timeout=30)
-                
-                # Close any remaining processes
-                view_proc.wait()
-                head_proc.wait()
-                
-                if norm_proc.returncode == 0:
-                    # Check stderr for normalization warnings
-                    stderr_output = stderr.lower()
-                    normalization_warnings = [
-                        'not left-aligned',
-                        'not normalized', 
-                        'multiallelic'
-                    ]
-                    
-                    # If no normalization warnings in the sample, assume it's normalized
-                    has_warnings = any(warning in stderr_output for warning in normalization_warnings)
-                    
-                    if has_warnings:
-                        logger.debug(f"VCF normalization warnings found in sample: {stderr}")
-                        return False
-                    else:
-                        logger.debug("VCF sample appears to be normalized")
-                        return True
                 else:
-                    logger.debug(f"bcftools norm check failed: {stderr}")
-                    # If reference sequence errors, skip normalization 
-                    if "sequence not found" in stderr.lower():
-                        logger.debug("Reference sequence mismatch - assuming VCF is already normalized")
-                        return True
-                    return False
-                    
-            except subprocess.TimeoutExpired:
-                logger.debug("VCF normalization check timed out - assuming normalized")
-                # Kill any running processes
-                try:
-                    norm_proc.kill()
-                    head_proc.kill() 
-                    view_proc.kill()
-                except:
-                    pass
-                return True
-                
-        except Exception as e:
-            logger.debug(f"Error checking VCF normalization: {str(e)}")
-            # If we can't check, assume it needs normalization to be safe
-            return False
-
-    
-    def _is_fasta_indexed(self, fasta_file: str) -> bool:
-        """
-        Check if FASTA file has samtools index.
-        
-        Args:
-            fasta_file: Path to FASTA file
+                    standardized_name = str(i + 1)
+            else:
+                standardized_name = name
             
-        Returns:
-            True if indexed, False otherwise
-        """
-        index_file = f"{fasta_file}.fai"
-        return os.path.exists(index_file)
-    
-    def _is_gff_indexed(self, gff_file: str) -> bool:
-        """
-        Check if GFF file has tabix index.
+            standardized_map[name] = standardized_name
         
-        Args:
-            gff_file: Path to GFF file
-            
-        Returns:
-            True if indexed, False otherwise
-        """
-        # Check for .tbi or .csi index files
-        index_files = [
-            f"{gff_file}.tbi",
-            f"{gff_file}.csi",
-            f"{gff_file}.gz.tbi",
-            f"{gff_file}.gz.csi"
-        ]
-        
-        return any(os.path.exists(idx) for idx in index_files)
+        return standardized_map
     
     def _get_gff_chromosomes(self, gff_file: str) -> Set[str]:
-        """
-        Extract chromosome names from GFF file.
-        
-        Args:
-            gff_file: Path to GFF file
-            
-        Returns:
-            Set of chromosome names found in GFF
-        """
+        """Extract chromosome names from GFF file."""
         chromosomes = set()
         
         try:
@@ -1120,35 +976,26 @@ class FilePreparator:
                         fields = line.split('\t')
                         if len(fields) >= 1:
                             chromosomes.add(fields[0])
-            
+        
         except Exception as e:
-            logger.debug(f"Error reading GFF chromosomes: {str(e)}")
+            if DebugLogLimiter.should_log('gff_chromosome_read_error', interval=10, max_initial=1):
+                logger.debug(f"Error reading GFF chromosomes: {str(e)}")
         
         return chromosomes
     
+    #############################################################################
+    #                           User Interaction Methods
+    #############################################################################
+    
     def _report_issues(self, issues: List[Dict]):
-        """
-        Report found issues to user.
-        
-        Args:
-            issues: List of issue dictionaries
-        """
+        """Report found issues to user."""
         logger.info(f"Found {len(issues)} issue(s) that need to be addressed:\n")
         
         for i, issue in enumerate(issues, 1):
             logger.info(f"{i}. {issue['description']}")
-
     
     def _get_user_consent(self, issues: List[Dict]) -> bool:
-        """
-        Ask user for consent to create corrected files.
-        
-        Args:
-            issues: List of issues to be fixed
-            
-        Returns:
-            True if user consents, False otherwise
-        """
+        """Ask user for consent to create corrected files."""
         logger.info("\nTo proceed with the pipeline, corrected copies of your files need to be created.")
         
         while True:
@@ -1163,1024 +1010,28 @@ class FilePreparator:
             except (EOFError, KeyboardInterrupt):
                 return False
     
-    def _prepare_corrected_files(self, vcf_file: str, fasta_file: str,
-                               gff_file: Optional[str], analysis: Dict) -> Dict:
-        """
-        Create corrected versions of files based on analysis.
-        
-        Args:
-            vcf_file: Original VCF file path
-            fasta_file: Original FASTA file path
-            gff_file: Optional original GFF file path
-            analysis: Analysis results with issues to fix
-            
-        Returns:
-            Dictionary mapping file types to prepared file paths
-        """
-        prepared_files = {}
-        
-        # Prepare VCF file
-        vcf_issues = [issue for issue in analysis['issues'] 
-                     if issue.get('type', '').startswith('vcf') or 
-                        issue.get('type') == 'chromosome_mapping']
-        
-        if vcf_issues:
-            prepared_vcf = self._prepare_vcf_file(vcf_file, vcf_issues)
-            if prepared_vcf:
-                prepared_files['vcf'] = prepared_vcf
-        
-        # Prepare FASTA file
-        fasta_issues = [issue for issue in analysis['issues'] 
-                       if issue.get('type', '').startswith('fasta')]
-        
-        if fasta_issues:
-            prepared_fasta = self._prepare_fasta_file(fasta_file, fasta_issues)
-            if prepared_fasta:
-                prepared_files['fasta'] = prepared_fasta
-        
-        # Prepare GFF file
-        if gff_file:
-            gff_issues = [issue for issue in analysis['issues'] 
-                         if issue.get('type', '').startswith('gff')]
-            
-            if gff_issues:
-                prepared_gff = self._prepare_gff_file(gff_file, gff_issues)
-                if prepared_gff:
-                    prepared_files['gff'] = prepared_gff
-        
-        return prepared_files
+    #############################################################################
+    #                           Reference File Management
+    #############################################################################
     
-    def _prepare_vcf_file(self, vcf_file: str, issues: List[Dict]) -> Optional[str]:
-        """
-        Prepare corrected VCF file with immediate cleanup to minimize disk usage.
+    def set_reference_file(self, reference_file: str):
+        """Set reference FASTA file for operations that require it."""
+        if not os.path.exists(reference_file):
+            raise FileError(f"Reference FASTA file not found: {reference_file}")
         
-        Args:
-            vcf_file: Original VCF file path
-            issues: List of VCF-related issues to fix
-            
-        Returns:
-            Path to prepared VCF file, or None if preparation failed
-        """
-        logger.debug("=== VCF PREPARATION DEBUG ===")
-        logger.debug("Preparing VCF file with optimized disk usage...")
-        
-        try:
-            # Create output path
-            base_name = Path(vcf_file).stem
-            if base_name.endswith('.vcf'):
-                base_name = base_name[:-4]
-            
-            output_dir = os.path.dirname(os.path.abspath(vcf_file))
-            output_path = os.path.join(output_dir, f"{base_name}_prepared.vcf.gz")
-            
-            logger.debug(f"Input VCF: {vcf_file}")
-            logger.debug(f"Output VCF: {output_path}")
-            
-            # Clean up any existing broken prepared file
-            if os.path.exists(output_path):
-                logger.debug("Removing existing prepared file")
-                os.unlink(output_path)
-                for ext in ['.tbi', '.csi']:
-                    idx_file = f"{output_path}{ext}"
-                    if os.path.exists(idx_file):
-                        os.unlink(idx_file)
-            
-            # Start with the original file
-            current_file = vcf_file
-            previous_temp_file = None  # Track only the immediately previous temp file
-            
-            # Helper function for immediate cleanup
-            def cleanup_previous_temp():
-                nonlocal previous_temp_file
-                if previous_temp_file and previous_temp_file != vcf_file and os.path.exists(previous_temp_file):
-                    try:
-                        os.unlink(previous_temp_file)
-                        # Clean up any associated index files
-                        for ext in ['.tbi', '.csi']:
-                            idx_file = f"{previous_temp_file}{ext}"
-                            if os.path.exists(idx_file):
-                                os.unlink(idx_file)
-                        logger.debug(f"Cleaned up intermediate file: {previous_temp_file}")
-                    except OSError as e:
-                        logger.debug(f"Could not clean up {previous_temp_file}: {e}")
-                    previous_temp_file = None
-            
-            # Check available disk space before starting
-            available_space = self._get_available_disk_space(self.temp_dir)
-            file_size = os.path.getsize(vcf_file)
-            
-            # Estimate space needed (current file + 2 temp files worth of space for safety)
-            estimated_space_needed = file_size * 3
-            if available_space < estimated_space_needed:
-                logger.warning(f"Low disk space detected. Available: {available_space / (1024**3):.1f}GB, "
-                            f"Estimated needed: {estimated_space_needed / (1024**3):.1f}GB")
-                # Continue anyway but warn user
-            
-            # Step 1: Ensure proper compression (ALWAYS do this for .vcf files)
-            needs_compression = (
-                not vcf_file.endswith('.gz') or 
-                any(issue['type'] == 'vcf_compression' for issue in issues)
-            )
-            
-            if needs_compression:
-                logger.debug("Step 1: Applying bgzip compression")
-                new_file = self._bgzip_vcf(current_file)
-                previous_temp_file = current_file if current_file != vcf_file else None
-                current_file = new_file
-                cleanup_previous_temp()  # Clean up immediately
-                logger.debug(f"Compression complete: {current_file}")
-            
-            # Step 2: Create initial index
-            index_issues = [issue for issue in issues if issue['type'] == 'vcf_index']
-            if index_issues or needs_compression:
-                logger.debug("Step 2: Creating initial index")
-                try:
-                    self._index_vcf(current_file)
-                    logger.debug("Initial indexing complete")
-                except ExternalToolError as e:
-                    logger.warning(f"Initial indexing failed: {e}. Will retry after processing.")
-            
-            # Step 3: Add AF field if missing
-            af_issues = [issue for issue in issues if issue['type'] == 'vcf_af_field']
-            if af_issues:
-                logger.debug("Step 3: Adding INFO/AF field")
-                new_file = self._add_af_field(current_file)
-                previous_temp_file = current_file if current_file != vcf_file else None
-                current_file = new_file
-                cleanup_previous_temp()  # Clean up immediately
-                logger.debug(f"AF field addition complete: {current_file}")
-                
-                # Re-index after AF field addition
-                try:
-                    self._index_vcf(current_file)
-                except ExternalToolError:
-                    logger.debug("Re-indexing after AF addition failed, will continue")
-            
-            # Step 4: Apply chromosome mapping if needed
-            mapping_issues = [issue for issue in issues if issue['type'] == 'chromosome_mapping']
-            if mapping_issues:
-                logger.debug("Step 4: Applying chromosome mapping")
-                mapping = mapping_issues[0].get('mapping', {})
-                if mapping:
-                    new_file = self._apply_chromosome_mapping(current_file, mapping)
-                    previous_temp_file = current_file if current_file != vcf_file else None
-                    current_file = new_file
-                    cleanup_previous_temp()  # Clean up immediately
-                    logger.debug(f"Chromosome mapping complete: {current_file}")
-                    
-                    # Re-index after chromosome mapping
-                    try:
-                        self._index_vcf(current_file)
-                    except ExternalToolError:
-                        logger.debug("Re-indexing after mapping failed, will continue")
-            
-            # Step 5: Normalize VCF (after chromosome mapping)
-            norm_issues = [issue for issue in issues if issue['type'] == 'vcf_normalization']
-            if norm_issues:
-                logger.debug("Step 5: Normalizing VCF")
-                try:
-                    new_file = self._normalize_vcf(current_file)
-                    previous_temp_file = current_file if current_file != vcf_file else None
-                    current_file = new_file
-                    cleanup_previous_temp()  # Clean up immediately
-                    logger.debug(f"Normalization complete: {current_file}")
-                except ExternalToolError as e:
-                    if "chromosome not found" in str(e).lower():
-                        logger.warning("VCF normalization failed due to chromosome mismatch, skipping")
-                    else:
-                        cleanup_previous_temp()  # Clean up on error too
-                        raise
-            
-            # Step 6: Copy to final location
-            logger.debug("Step 6: Copying to final location")
-            shutil.copy2(current_file, output_path)
-
-            # Remove temporary file after successful copy
-            if current_file != vcf_file:
-                try:
-                    os.unlink(current_file)
-                    # Also clean up any associated index files
-                    for ext in ['.tbi', '.csi']:
-                        idx_file = f"{current_file}{ext}"
-                        if os.path.exists(idx_file):
-                            os.unlink(idx_file)
-                    logger.debug(f"Cleaned up final temporary file: {current_file}")
-                except OSError as e:
-                    logger.debug(f"Could not clean up final temp file {current_file}: {e}")
-            
-            # Step 7: Create final index and verify
-            logger.debug("Step 7: Creating final index")
-            try:
-                self._index_vcf(output_path)
-            except ExternalToolError as e:
-                error_msg = f"VCF indexing failed, file preparation incomplete: {str(e)}"
-                logger.error(error_msg)
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-                cleanup_previous_temp()
-                raise ExternalToolError(error_msg, tool_name="tabix")
-            
-            # Step 8: Final verification
-            logger.debug("Step 8: Final verification")
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                error_msg = f"Prepared VCF file is missing or empty: {output_path}"
-                logger.error(error_msg)
-                cleanup_previous_temp()
-                return None
-            
-            # Test that bcftools can read the final file
-            test_cmd = ['bcftools', 'view', '-h', output_path]
-            test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
-            if test_result.returncode != 0:
-                error_msg = f"Final VCF file cannot be read by bcftools: {test_result.stderr}"
-                logger.error(error_msg)
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-                cleanup_previous_temp()
-                return None
-            
-            # Final cleanup of the last temporary file
-            cleanup_previous_temp()
-            
-            logger.info(f"Prepared VCF file: {output_path}")
-            logger.debug("=== END VCF PREPARATION DEBUG ===")
-            return output_path
-            
-        except Exception as e:
-            error_msg = f"Error preparing VCF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            
-            # Clean up on error
-            if 'output_path' in locals() and os.path.exists(output_path):
-                try:
-                    os.unlink(output_path)
-                except OSError:
-                    pass
-            
-            # Clean up current temp file
-            if 'previous_temp_file' in locals():
-                try:
-                    cleanup_previous_temp()
-                except:
-                    pass
-            
-            logger.debug("=== END VCF PREPARATION DEBUG ===")
-            return None
-
-    def _get_available_disk_space(self, path: str) -> int:
-        """
-        Get available disk space in bytes for the given path.
-        
-        Args:
-            path: Directory path to check
-            
-        Returns:
-            Available space in bytes
-        """
-        try:
-            statvfs = os.statvfs(path)
-            # Available space = fragment size * available fragments
-            return statvfs.f_frsize * statvfs.f_bavail
-        except Exception as e:
-            logger.debug(f"Could not determine disk space for {path}: {e}")
-            return float('inf')  # Assume unlimited if we can't check
-
-    def _check_disk_space_before_operation(self, input_file: str, multiplier: float = 2.0) -> bool:
-        """
-        Check if there's enough disk space for an operation.
-        
-        Args:
-            input_file: Path to input file
-            multiplier: Safety multiplier for space estimation
-            
-        Returns:
-            True if enough space, False otherwise
-        """
-        try:
-            file_size = os.path.getsize(input_file)
-            available_space = self._get_available_disk_space(self.temp_dir)
-            needed_space = file_size * multiplier
-            
-            if available_space < needed_space:
-                logger.warning(f"Insufficient disk space. Available: {available_space / (1024**3):.1f}GB, "
-                            f"Needed: {needed_space / (1024**3):.1f}GB")
-                return False
-            return True
-        except Exception:
-            return True  # If we can't check, assume it's fine
-
-
-    
-    def _prepare_fasta_file(self, fasta_file: str, issues: List[Dict]) -> Optional[str]:
-        """
-        Prepare FASTA file (mainly indexing).
-        
-        Args:
-            fasta_file: Original FASTA file path
-            issues: List of FASTA-related issues to fix
-            
-        Returns:
-            Path to prepared FASTA file, or None if preparation failed
-        """
-        logger.debug("=== FASTA PREPARATION DEBUG ===")
-        logger.debug("Preparing FASTA file...")
-        
-        try:
-            # For FASTA, we usually just need to create index
-            # Copy file is not necessary unless we need to modify it
-            
-            index_issues = [issue for issue in issues if issue['type'] == 'fasta_index']
-            if index_issues:
-                logger.debug("Creating FASTA index")
-                self._index_fasta(fasta_file)
-            
-            logger.info("FASTA file preparation completed")
-            logger.debug("=== END FASTA PREPARATION DEBUG ===")
-            return fasta_file  # Return original file as no copy was needed
-            
-        except Exception as e:
-            error_msg = f"Error preparing FASTA file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            logger.debug("=== END FASTA PREPARATION DEBUG ===")
-            return None
-    
-    def _prepare_gff_file(self, gff_file: str, issues: List[Dict]) -> Optional[str]:
-        """
-        Prepare GFF file (sorting and indexing).
-        
-        Args:
-            gff_file: Original GFF file path
-            issues: List of GFF-related issues to fix
-            
-        Returns:
-            Path to prepared GFF file, or None if preparation failed
-        """
-        logger.debug("=== GFF PREPARATION DEBUG ===")
-        logger.debug("Preparing GFF file...")
-        
-        try:
-            # For GFF, we might need to sort and index
-            index_issues = [issue for issue in issues if issue['type'] == 'gff_index']
-            
-            if index_issues:
-                # Create sorted and compressed version
-                base_name = Path(gff_file).stem
-                if base_name.endswith('.gff'):
-                    base_name = base_name[:-4]
-                elif base_name.endswith('.gff3'):
-                    base_name = base_name[:-5]
-                
-                # Use same directory as original file for output
-                output_dir = os.path.dirname(os.path.abspath(gff_file))
-                output_path = os.path.join(output_dir, f"{base_name}_prepared.gff.gz")
-                
-                logger.debug(f"Original GFF: {gff_file}")
-                logger.debug(f"Prepared GFF will be: {output_path}")
-                
-                # Check if the prepared file already exists
-                if os.path.exists(output_path):
-                    logger.debug(f"Prepared GFF file already exists: {output_path}")
-                    user_input = input(f"\nPrepared GFF file already exists: {output_path}\nOverwrite? [y/n]: ").strip().lower()
-                    if user_input not in ['y', 'yes']:
-                        logger.info("Using existing prepared GFF file")
-                        self._index_gff(output_path)  # Ensure it's indexed
-                        return output_path
-                    else:
-                        os.unlink(output_path)  # Remove existing file
-                
-                logger.debug("Sorting and compressing GFF file")
-                self._sort_and_compress_gff(gff_file, output_path)
-                
-                # Verify the file was actually created
-                if not os.path.exists(output_path):
-                    error_msg = f"GFF preparation failed - output file not created: {output_path}"
-                    logger.error(error_msg)
-                    return None
-                
-                logger.debug("Creating tabix index")
-                self._index_gff(output_path)
-                
-                # Verify index was created
-                index_files = [f"{output_path}.tbi", f"{output_path}.csi"]
-                if not any(os.path.exists(idx) for idx in index_files):
-                    logger.warning("GFF index file was not created, but continuing")
-                
-                logger.info(f"Prepared GFF file: {output_path}")
-                logger.debug("=== END GFF PREPARATION DEBUG ===")
-                return output_path
-            
-            logger.info("GFF file preparation completed (no changes needed)")
-            logger.debug("=== END GFF PREPARATION DEBUG ===")
-            return gff_file  # Return original file as no changes needed
-            
-        except Exception as e:
-            error_msg = f"Error preparing GFF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            logger.debug("=== END GFF PREPARATION DEBUG ===")
-            return None
-        
-
-    def _bgzip_vcf(self, vcf_file: str) -> str:
-        """
-        Compress VCF file with bgzip.
-        
-        Args:
-            vcf_file: Path to input VCF file
-            
-        Returns:
-            Path to bgzipped VCF file
-            
-        Raises:
-            ExternalToolError: If bgzip compression fails
-        """
-        try:
-            # Create temporary output file
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=".vcf.gz",
-                prefix="ddprimer_bgzip_",
-                dir=self.temp_dir
-            )
-            os.close(temp_fd)
-            
-            logger.debug(f"Input file: {vcf_file}")
-            logger.debug(f"Output file: {temp_path}")
-            logger.debug(f"Input file exists: {os.path.exists(vcf_file)}")
-            logger.debug(f"Input file size: {os.path.getsize(vcf_file) if os.path.exists(vcf_file) else 'N/A'}")
-            
-            # Check if input is already compressed
-            if vcf_file.endswith('.gz'):
-                logger.debug("Input is already compressed, checking if it's bgzip...")
-                
-                # Test if it's already properly bgzipped
-                test_cmd = ['bcftools', 'view', '-h', vcf_file]
-                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
-                
-                if test_result.returncode == 0:
-                    logger.debug("Input is already properly bgzipped, just copying")
-                    shutil.copy2(vcf_file, temp_path)
-                    return temp_path
-                else:
-                    logger.debug("Input is compressed but not bgzip, will recompress")
-                    # Decompress and recompress with bgzip
-                    with gzip.open(vcf_file, 'rt') as input_file:
-                        compress_cmd = ['bgzip', '-c']
-                        
-                        with open(temp_path, 'wb') as output_file:
-                            compress_proc = subprocess.run(
-                                compress_cmd, 
-                                input=input_file.read(), 
-                                stdout=output_file,
-                                stderr=subprocess.PIPE,
-                                text=True
-                            )
-                        
-                        if compress_proc.returncode != 0:
-                            os.unlink(temp_path)
-                            error_msg = f"Failed to recompress with bgzip: {compress_proc.stderr}"
-                            logger.error(error_msg)
-                            raise ExternalToolError(error_msg, tool_name="bgzip")
-            else:
-                logger.debug("Input is uncompressed, compressing with bgzip...")
-                # Compress uncompressed VCF
-                compress_cmd = ['bgzip', '-c', vcf_file]
-                
-                with open(temp_path, 'wb') as output_file:
-                    result = subprocess.run(
-                        compress_cmd, 
-                        stdout=output_file,
-                        stderr=subprocess.PIPE
-                    )
-                
-                if result.returncode != 0:
-                    os.unlink(temp_path)
-                    error_msg = f"Failed to compress VCF with bgzip: {result.stderr.decode()}"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bgzip")
-            
-            # Verify the output is properly bgzipped
-            logger.debug("Verifying bgzip compression...")
-            verify_cmd = ['bcftools', 'view', '-h', temp_path]
-            verify_result = subprocess.run(verify_cmd, capture_output=True, text=True, timeout=30)
-            
-            if verify_result.returncode != 0:
-                os.unlink(temp_path)
-                error_msg = f"bgzip verification failed: {verify_result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="bgzip")
-            
-            # Verify file is not empty
-            if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
-                error_msg = "bgzipped VCF file is empty or was not created"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="bgzip")
-            
-            logger.debug(f"Successfully bgzipped VCF: {temp_path}")
-            logger.debug(f"Output file size: {os.path.getsize(temp_path)} bytes")
-            return temp_path
-            
-        except subprocess.TimeoutExpired:
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            error_msg = "bgzip compression timed out"
-            logger.error(error_msg)
-            raise ExternalToolError(error_msg, tool_name="bgzip")
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            error_msg = f"Error bgzipping VCF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="bgzip") from e
-
-    def _add_af_field(self, vcf_file: str) -> str:
-        """
-        Add INFO/AF field to VCF file using bcftools +fill-tags.
-        
-        Args:
-            vcf_file: Path to input VCF file
-            
-        Returns:
-            Path to VCF file with AF field added
-            
-        Raises:
-            ExternalToolError: If bcftools execution fails
-        """
-        try:
-            # Create temporary output file
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=".vcf.gz",
-                prefix="ddprimer_af_",
-                dir=self.temp_dir
-            )
-            os.close(temp_fd)
-            
-            # Use bcftools +fill-tags to add AF field
-            cmd = [
-                'bcftools', '+fill-tags', vcf_file,
-                '-Oz', '-o', temp_path,
-                '--', '-t', 'AF'
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                os.unlink(temp_path)
-                error_msg = f"bcftools +fill-tags failed: {result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="bcftools")
-            
-            logger.debug(f"Successfully added AF field: {temp_path}")
-            return temp_path
-            
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error adding AF field to VCF: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="bcftools") from e
-    
-    def _normalize_vcf(self, vcf_file: str) -> str:
-        """
-        Normalize VCF file using bcftools norm.
-        
-        IMPROVED: Better error handling and reference file validation.
-        
-        Args:
-            vcf_file: Path to input VCF file
-            
-        Returns:
-            Path to normalized VCF file
-            
-        Raises:
-            ExternalToolError: If bcftools normalization fails
-        """
-        try:
-            # Create temporary output file
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=".vcf.gz",
-                prefix="ddprimer_norm_",
-                dir=self.temp_dir
-            )
-            os.close(temp_fd)
-            
-            # Get reference file
-            reference_file = self._get_reference_file()
-            logger.debug(f"Using reference file for normalization: {reference_file}")
-            
-            # Verify reference file is indexed
-            if not os.path.exists(f"{reference_file}.fai"):
-                logger.debug("Reference file not indexed, creating index")
-                self._index_fasta(reference_file)
-            
-            # Normalize with bcftools norm
-            cmd = [
-                'bcftools', 'norm', vcf_file,
-                '-f', reference_file,
-                '-m', '-any',  # Split multiallelic variants
-                '-N',          # Do not normalize indels
-                '-Oz', '-o', temp_path
-            ]
-            
-            logger.debug(f"Normalization command: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                os.unlink(temp_path)
-                error_msg = f"bcftools norm failed: {result.stderr}"
-                logger.error(error_msg)
-                # Include more context about the error
-                if "sequence not found" in result.stderr.lower():
-                    error_msg += "\nThis may indicate chromosome name mismatch between VCF and reference FASTA"
-                raise ExternalToolError(error_msg, tool_name="bcftools")
-            
-            # Log normalization stats if available
-            if result.stderr:
-                logger.debug(f"Normalization output: {result.stderr}")
-            
-            logger.debug(f"Successfully normalized VCF: {temp_path}")
-            return temp_path
-            
-        except subprocess.TimeoutExpired:
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            error_msg = "VCF normalization timed out"
-            logger.error(error_msg)
-            raise ExternalToolError(error_msg, tool_name="bcftools")
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
-            error_msg = f"Error normalizing VCF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="bcftools") from e
-    
-    def _apply_chromosome_mapping(self, vcf_file: str, mapping: Dict[str, str]) -> str:
-        """
-        Apply chromosome name mapping to VCF file.
-        
-        Args:
-            vcf_file: Path to input VCF file
-            mapping: Dictionary mapping VCF chromosome names to FASTA names
-            
-        Returns:
-            Path to VCF file with renamed chromosomes
-            
-        Raises:
-            ExternalToolError: If chromosome renaming fails
-        """
-        try:
-            # Create temporary output file
-            temp_fd, temp_path = tempfile.mkstemp(
-                suffix=".vcf.gz",
-                prefix="ddprimer_remap_",
-                dir=self.temp_dir
-            )
-            os.close(temp_fd)
-            
-            # Create chromosome renaming file
-            rename_fd, rename_file = tempfile.mkstemp(
-                suffix=".txt",
-                prefix="ddprimer_chrmap_",
-                dir=self.temp_dir
-            )
-            
-            try:
-                with os.fdopen(rename_fd, 'w') as f:
-                    for old_name, new_name in mapping.items():
-                        f.write(f"{old_name}\t{new_name}\n")
-                
-                # Apply chromosome renaming
-                cmd = [
-                    'bcftools', 'annotate', vcf_file,
-                    '--rename-chrs', rename_file,
-                    '-Oz', '-o', temp_path
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    os.unlink(temp_path)
-                    error_msg = f"bcftools annotate (rename-chrs) failed: {result.stderr}"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bcftools")
-                
-                logger.debug(f"Successfully remapped chromosomes: {temp_path}")
-                return temp_path
-                
-            finally:
-                # Clean up rename file
-                if os.path.exists(rename_file):
-                    os.unlink(rename_file)
-            
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error applying chromosome mapping: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="bcftools") from e
-    
-    def _index_vcf(self, vcf_file: str):
-        """
-        Create tabix index for VCF file.
-        
-        Args:
-            vcf_file: Path to VCF file to index
-            
-        Raises:
-            ExternalToolError: If indexing fails
-        """
-        try:
-            cmd = ['tabix', '-p', 'vcf', vcf_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                error_msg = f"tabix indexing failed: {result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="tabix")
-            
-            logger.debug(f"Successfully indexed VCF: {vcf_file}")
-            
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error indexing VCF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="tabix") from e
-    
-    def _index_fasta(self, fasta_file: str):
-        """
-        Create samtools index for FASTA file.
-        
-        Args:
-            fasta_file: Path to FASTA file to index
-            
-        Raises:
-            ExternalToolError: If indexing fails
-        """
-        try:
-            cmd = ['samtools', 'faidx', fasta_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                error_msg = f"samtools faidx failed: {result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="samtools")
-            
-            logger.debug(f"Successfully indexed FASTA: {fasta_file}")
-            
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error indexing FASTA file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="samtools") from e
-        
-    def _sort_and_compress_gff(self, gff_file: str, output_path: str):
-        """
-        Sort and compress GFF file for tabix indexing.
-        
-        Args:
-            gff_file: Path to input GFF file
-            output_path: Path for output compressed GFF
-            
-        Raises:
-            ExternalToolError: If sorting/compression fails
-        """
-        try:
-            logger.debug(f"Input GFF file: {gff_file}")
-            logger.debug(f"Output path: {output_path}")
-            logger.debug(f"Input file exists: {os.path.exists(gff_file)}")
-            logger.debug(f"Output directory exists: {os.path.exists(os.path.dirname(output_path))}")
-            
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            
-            # Create a temporary intermediate file for sorted GFF
-            temp_sorted_fd, temp_sorted_path = tempfile.mkstemp(
-                suffix=".gff",
-                prefix="ddprimer_sorted_",
-                dir=self.temp_dir
-            )
-            os.close(temp_sorted_fd)
-            
-            try:
-                # First, sort the GFF file with explicit temporary directory
-                logger.debug("Sorting GFF file...")
-                sort_cmd = [
-                    'sort', 
-                    '-k1,1', '-k4,4n',  # Sort by chromosome, then by start position
-                    '-T', self.temp_dir,  # Specify temporary directory
-                    '-o', temp_sorted_path,  # Output to temporary file
-                    gff_file
-                ]
-                
-                logger.debug(f"Sort command: {' '.join(sort_cmd)}")
-                sort_result = subprocess.run(sort_cmd, capture_output=True, text=True)
-                
-                if sort_result.returncode != 0:
-                    error_msg = f"Failed to sort GFF file: {sort_result.stderr}"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="sort")
-                
-                # Verify sorted file was created
-                if not os.path.exists(temp_sorted_path) or os.path.getsize(temp_sorted_path) == 0:
-                    error_msg = "Sorted GFF file was not created or is empty"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="sort")
-                
-                logger.debug(f"Successfully sorted GFF file: {temp_sorted_path}")
-                logger.debug(f"Sorted file size: {os.path.getsize(temp_sorted_path)} bytes")
-                
-                # Now compress with bgzip
-                logger.debug("Compressing sorted GFF file...")
-                compress_cmd = ['bgzip', '-c', temp_sorted_path]
-                
-                logger.debug(f"Compress command: {' '.join(compress_cmd)}")
-                with open(output_path, 'wb') as output_file:
-                    compress_result = subprocess.run(compress_cmd, stdout=output_file,
-                                                stderr=subprocess.PIPE, text=False)
-                
-                if compress_result.returncode != 0:
-                    if os.path.exists(output_path):
-                        os.unlink(output_path)
-                    error_msg = f"Failed to compress GFF file: {compress_result.stderr.decode()}"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bgzip")
-                
-                # Verify compressed file was created
-                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                    error_msg = "Compressed GFF file was not created or is empty"
-                    logger.error(error_msg)
-                    raise ExternalToolError(error_msg, tool_name="bgzip")
-                
-                logger.debug(f"Successfully compressed GFF file: {output_path}")
-                logger.debug(f"Compressed file size: {os.path.getsize(output_path)} bytes")
-                
-            finally:
-                # Clean up temporary sorted file
-                if os.path.exists(temp_sorted_path):
-                    os.unlink(temp_sorted_path)
-            
-            logger.debug(f"Successfully sorted and compressed GFF: {output_path}")
-            
-        except subprocess.TimeoutExpired:
-            if os.path.exists(output_path):
-                os.unlink(output_path)
-            error_msg = "GFF sorting/compression timed out"
-            logger.error(error_msg)
-            raise ExternalToolError(error_msg, tool_name="sort/bgzip")
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            if os.path.exists(output_path):
-                os.unlink(output_path)
-            error_msg = f"Error sorting and compressing GFF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="sort/bgzip") from e
-    
-    def _index_gff(self, gff_file: str):
-        """
-        Create tabix index for GFF file.
-        
-        Args:
-            gff_file: Path to compressed GFF file to index
-            
-        Raises:
-            ExternalToolError: If indexing fails
-        """
-        try:
-            cmd = ['tabix', '-p', 'gff', gff_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                error_msg = f"tabix indexing of GFF failed: {result.stderr}"
-                logger.error(error_msg)
-                raise ExternalToolError(error_msg, tool_name="tabix")
-            
-            logger.debug(f"Successfully indexed GFF: {gff_file}")
-            
-        except ExternalToolError:
-            raise
-        except Exception as e:
-            error_msg = f"Error indexing GFF file: {str(e)}"
-            logger.error(error_msg)
-            logger.debug(f"Error details: {str(e)}", exc_info=True)
-            raise ExternalToolError(error_msg, tool_name="tabix") from e
+        self._reference_file = reference_file
+        if DebugLogLimiter.should_log('reference_file_set', interval=1, max_initial=1):
+            logger.debug(f"Set reference file: {reference_file}")
     
     def _get_reference_file(self) -> str:
-        """
-        Get reference FASTA file for normalization.
-        
-        This method needs to be called in context where reference file is available.
-        For now, it raises an error if called outside proper context.
-        
-        Returns:
-            Path to reference FASTA file
-            
-        Raises:
-            FileError: If reference file is not available in current context
-        """
-        # This will be set by the calling code when needed
+        """Get reference FASTA file for normalization."""
         if hasattr(self, '_reference_file') and self._reference_file:
             return self._reference_file
         
-        error_msg = "Reference FASTA file not available for normalization"
-        logger.error(error_msg)
-        raise FileError(error_msg)
-    
-    def set_reference_file(self, reference_file: str):
-        """
-        Set reference FASTA file for operations that require it.
-        
-        Args:
-            reference_file: Path to reference FASTA file
-            
-        Raises:
-            FileError: If reference file does not exist
-        """
-        if not os.path.exists(reference_file):
-            error_msg = f"Reference FASTA file not found: {reference_file}"
-            logger.error(error_msg)
-            raise FileError(error_msg)
-        
-        self._reference_file = reference_file
-        logger.debug(f"Set reference file: {reference_file}")
+        raise FileError("Reference FASTA file not available for normalization")
     
     def cleanup(self):
-        """
-        Clean up any temporary files created during preparation.
-        
-        Should be called when file preparation is complete to ensure
-        no temporary files are left behind.
-        """
+        """Clean up any temporary files created during preparation."""
         logger.debug("Cleaning up FilePreparator resources")
-        
-        # Clean up any tracked prepared files if needed
         if hasattr(self, 'prepared_files'):
             self.prepared_files.clear()
-        
-        # Note: Individual temporary files are cleaned up in their respective methods
-        logger.debug("FilePreparator cleanup completed")
-
-    def _validate_prepared_vcf(self, vcf_file: str, original_issues: List[Dict]) -> List[str]:
-        """
-        Validate that a prepared VCF file actually addresses the original issues.
-        
-        Args:
-            vcf_file: Path to prepared VCF file
-            original_issues: List of issues that should have been fixed
-            
-        Returns:
-            List of remaining issues (empty if all fixed)
-        """
-        remaining_issues = []
-        
-        try:
-            # Check compression
-            if any(issue['type'] == 'vcf_compression' for issue in original_issues):
-                if not self._is_properly_bgzipped(vcf_file):
-                    remaining_issues.append("VCF still not properly bgzipped")
-            
-            # Check indexing
-            if any(issue['type'] == 'vcf_index' for issue in original_issues):
-                if not self._is_vcf_indexed(vcf_file):
-                    remaining_issues.append("VCF still not indexed")
-            
-            # Check AF field
-            if any(issue['type'] == 'vcf_af_field' for issue in original_issues):
-                if not self._has_af_field(vcf_file):
-                    remaining_issues.append("VCF still missing INFO/AF field")
-            
-            # Check normalization
-            if any(issue['type'] == 'vcf_normalization' for issue in original_issues):
-                if not self._is_vcf_normalized(vcf_file):
-                    remaining_issues.append("VCF still not normalized")
-            
-            # Check chromosome mapping
-            mapping_issues = [issue for issue in original_issues if issue['type'] == 'chromosome_mapping']
-            if mapping_issues:
-                # Verify chromosomes were actually renamed
-                vcf_chroms = set(self._get_vcf_chromosomes(vcf_file).keys())
-                mapping = mapping_issues[0].get('mapping', {})
-                expected_chroms = set(mapping.values()) if mapping else set()
-                
-                if expected_chroms and not expected_chroms.issubset(vcf_chroms):
-                    remaining_issues.append("Chromosome mapping was not applied correctly")
-            
-            return remaining_issues
-            
-        except Exception as e:
-            logger.warning(f"Error validating prepared VCF: {str(e)}")
-            return ["Could not validate prepared VCF file"]

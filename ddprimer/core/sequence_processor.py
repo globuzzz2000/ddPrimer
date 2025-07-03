@@ -392,7 +392,7 @@ class SequenceProcessor:
                     logger.error(f"Error processing sequence {seq_id} for restriction sites: {str(e)}")
                 continue
 
-        logger.info(f"Generated {len(fragments)} fragments after restriction site cutting")
+        logger.info(f"Generated {len(fragments)} fragments after restriction site cutting\n")
         logger.debug(f"Restriction site cutting summary:")
         logger.debug(f"  Total sequences processed: {len(sequences)}")
         logger.debug(f"  Sequences with restriction sites: {sequences_with_sites}")

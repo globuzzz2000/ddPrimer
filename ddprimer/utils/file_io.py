@@ -596,10 +596,16 @@ class FileIO:
         if 'Length' not in output_df.columns:
             if 'Amplicon Length' in output_df.columns:
                 output_df['Length'] = output_df['Amplicon Length']
-            elif 'Sequence (A)' in output_df.columns:  # Use final column name
+            elif 'Sequence (A)' in output_df.columns:
                 output_df['Length'] = output_df['Sequence (A)'].apply(lambda x: len(str(x)) if pd.notna(x) else 0)
 
-        # 2. LOCATION: Use only 'Start' coordinate
+        # 2. Calculate GC% for amplicons using existing FilterProcessor method
+        if 'GC%' not in output_df.columns and 'Sequence (A)' in output_df.columns:
+            from ..core.filter_processor import FilterProcessor
+            logger.debug("Calculating GC% for amplicon sequences")
+            output_df['GC%'] = output_df['Sequence (A)'].apply(FilterProcessor.calculate_gc)
+
+        # 3. LOCATION: Use only 'Start' coordinate
         if 'Start' in output_df.columns:
             output_df['Location'] = output_df['Start'].apply(
                 lambda start: str(int(start)) if pd.notna(start) else ""
@@ -895,18 +901,22 @@ class FileIO:
         root, _ = os.path.splitext(basename)
         output_filename = f"Primers_{root}.xlsx"
         output_file = os.path.join(output_dir, output_filename)
+        
+        # Prepare dataframe
         df = FileIO._prepare_output_dataframe(df, mode)
 
-        # Define final column order
+        # Define final column order with new column names
         if mode == 'direct':
             columns = [
-                "Gene", "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
+                "Gene", 
+                "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
                 "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
                 "Sequence (A)", "Length", "GC%", "dG (A)"
             ]
         else:
             columns = [
-                "Gene", "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
+                "Gene",
+                "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
                 "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
                 "Sequence (A)", "Length", "GC%", "dG (A)",
                 "Chr", "Location"
@@ -926,7 +936,15 @@ class FileIO:
                     if col in df.columns:
                         columns.append(col)
         
+        # Only select columns that actually exist in the DataFrame
         available_columns = [col for col in columns if col in df.columns]
+        missing_columns = [col for col in columns if col not in df.columns]
+        
+        if missing_columns:
+            logger.warning(f"Missing expected columns: {missing_columns}")
+            logger.debug(f"Available columns: {df.columns.tolist()}")
+        
+        logger.debug(f"Final column selection: {available_columns}")
         df = df[available_columns]
         
         # Save with formatting

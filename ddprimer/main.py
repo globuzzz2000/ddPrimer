@@ -5,19 +5,20 @@ Primer Design Pipeline
 
 A streamlined script that:
 1. Prompts the user to provide a FASTA and a VCF file
-2. Extracts variants from VCF and masks the FASTA file
-3. Filters sequences based on restriction sites and gene overlap
-4. Runs Primer3 on masked and filtered sequences
-5. Filters primers and oligos 
-6. Runs ViennaRNA for thermodynamic properties
-7. BLASTs primers and oligos for specificity
-8. Saves results to an Excel file
+2. Cuts sequences at restriction sites to create fragments
+3. Filters fragments based on gene overlap (before SNP processing)
+4. Applies SNP masking to filtered fragments
+5. Runs Primer3 on processed fragments
+6. Filters primers and oligos 
+7. Runs ViennaRNA for thermodynamic properties
+8. BLASTs primers and oligos for specificity
+9. Saves results to an Excel file
 
 Contains functionality for:
 1. Command line argument parsing and validation
 2. Configuration management and display
 3. Database creation and verification
-4. Complete primer design workflow execution
+4. Complete primer design workflow execution with fragment-based SNP processing
 5. Temporary directory management
 6. Unified pipeline orchestration and error handling
 
@@ -171,109 +172,129 @@ def parse_arguments():
 #                           Primer Design Workflow
 #############################################################################
 
-def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
+def run_primer_design_workflow(sequences, output_dir, reference_file, vcf_file,
                               genes=None, gff_file=None, skip_annotation_filtering=False,
                               enable_internal_oligo=True, chromosome_map=None):
     """
-    Unified primer design workflow using clean separation of concerns.
+    Complete primer design workflow with annotation filtering before SNP processing.
     
-    Each processor has a single responsibility:
-    - SequenceProcessor: Handle restriction sites and fragments
-    - AnnotationProcessor: Handle gene filtering
-    - Primer3Processor: Design primers with Primer3
-    - PrimerProcessor: Create primer records (no filtering)
-    - FilterProcessor: Filter primer records (no creation)
-    - ThermoProcessor: Calculate thermodynamics
-    - BlastProcessor: Check specificity
+    This workflow implements a processing approach where gene annotation filtering
+    happens before SNP masking, reducing the number of fragments that need SNP processing
+    and improving overall performance.
+    
+    Processing Order:
+    1. Cut sequences at restriction sites FIRST (creates small fragments)
+    2. Load gene annotations if needed
+    3. Filter fragments based on gene overlap (reduces fragments to process)
+    4. Apply SNP masking to filtered fragments only (much faster)
+    5. Design primers with Primer3
+    6. Filter primers, calculate thermodynamics, check specificity
+    7. Save results to Excel file
     
     Args:
-        processed_sequences: Dictionary of processed sequences (masked/substituted)
+        sequences: Dictionary of raw sequences from FASTA (no SNP processing applied)
         output_dir: Output directory path
-        reference_file: Path to reference file (FASTA)
-        genes: Gene annotations
-        gff_file: Path to GFF file
-        skip_annotation_filtering: Skip gene annotation filtering
+        reference_file: Path to reference FASTA file
+        vcf_file: Path to VCF file for SNP processing on fragments
+        genes: Gene annotations for overlap filtering (optional, will be loaded if None)
+        gff_file: Path to GFF file (optional)
+        skip_annotation_filtering: Skip gene annotation filtering if True
         enable_internal_oligo: Whether to design internal oligos (probes)
+        chromosome_map: Chromosome mapping information for output formatting
         
     Returns:
         True if workflow completed successfully, False otherwise
         
     Raises:
-        SequenceProcessingError: If sequence processing fails
+        SequenceProcessingError: If sequence or fragment processing fails
         PrimerDesignError: If primer design fails
     """
     logger.debug("=== MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
-    logger.debug(f"Processing {len(processed_sequences)} sequences")
+    logger.debug(f"Processing {len(sequences)} raw sequences")
+    logger.debug(f"VCF file for fragment-based SNP processing: {vcf_file}")
     logger.debug(f"Skip annotation filtering: {skip_annotation_filtering}")
     logger.debug(f"Internal oligo design: {enable_internal_oligo}")
     
     from .utils import FileIO
-    from .core import PrimerProcessor, BlastProcessor, SequenceProcessor, Primer3Processor, ThermoProcessor, AnnotationProcessor
+    from .core import PrimerProcessor, BlastProcessor, SequenceProcessor, Primer3Processor, ThermoProcessor, AnnotationProcessor, SNPMaskingProcessor
 
     try:
-        # Step 1: Cut sequences at restriction sites using workflow wrapper
-        logger.debug("MAIN: Delegating restriction site processing")
-        restriction_fragments = SequenceProcessor.process_restriction_sites_workflow(processed_sequences)
+        # Step 1: Cut sequences at restriction sites FIRST (before any other processing)
+        logger.debug("MAIN: Cutting sequences at restriction sites")
+        restriction_fragments = SequenceProcessor.process_restriction_sites_workflow(sequences)
         
         if not restriction_fragments:
             logger.warning("No valid fragments after restriction site filtering. Exiting.")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # Step 2: Filter fragments based on gene overlap using workflow wrapper
-        logger.debug("MAIN: Delegating gene overlap filtering")
+        # Step 2: Load gene annotations if needed (before filtering)
+        if not skip_annotation_filtering and genes is None and gff_file:
+            logger.debug("Loading gene annotations from GFF file...")
+            logger.debug("MAIN: Loading gene annotations for filtering")
+            try:
+                genes = AnnotationProcessor.load_genes_from_gff(gff_file)
+            except Exception as e:
+                error_msg = f"Error loading gene annotations: {str(e)}"
+                logger.error(error_msg)
+                return False
+        
+        # Step 3: Filter fragments based on gene overlap BEFORE SNP processing
+        # This reduces the number of fragments that need SNP processing
+        logger.debug("MAIN: Delegating gene overlap filtering before SNP processing")
         filtered_fragments = AnnotationProcessor.filter_fragments_by_gene_overlap_workflow(
-            restriction_fragments, 
+            restriction_fragments,  # Use raw restriction fragments
             genes, 
             skip_annotation_filtering
         )
         
-        # Check if filtering returned empty list or None
-        if not filtered_fragments:  # This handles both None and empty list
-            logger.warning("No fragments passed filtering. Exiting.")
+        if not filtered_fragments:
+            logger.warning("No fragments passed gene overlap filtering. Exiting.")
             if not skip_annotation_filtering:
                 logger.info("Suggestion: Try using --noannotation flag to skip gene filtering")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # Step 3: Design primers with Primer3 using workflow wrapper
-        # NOTE: This already creates primer records internally!
+        # Step 4: Apply SNP masking to filtered fragments only
+        logger.debug("MAIN: Applying SNP masking to gene-filtered fragments")
+        snp_processed_fragments = SNPMaskingProcessor.process_fragments_with_vcf(
+            restriction_fragments=filtered_fragments,  # Use filtered fragments, not all restriction fragments
+            vcf_file=vcf_file,
+            reference_file=reference_file
+        )
+        
+        if not snp_processed_fragments:
+            logger.warning("No fragments after SNP processing. Exiting.")
+            return False
+        
+        # Step 5: Design primers with Primer3 using workflow wrapper
         logger.debug("MAIN: Delegating primer design and record creation")
         primer3_processor = Primer3Processor(Config, enable_internal_oligo=enable_internal_oligo)
-        primer_records = primer3_processor.design_primers_workflow(filtered_fragments)
+        primer_records = primer3_processor.design_primers_workflow(snp_processed_fragments)
         
         if not primer_records:
             logger.warning("No primers were designed by Primer3. Exiting.")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # REMOVED: Step 4 - Create primer records (already done in step 3)
-        # The primer3_processor.design_primers_workflow() already returns primer records,
-        # not raw Primer3 results, so we don't need to create them again.
-        
-        # Step 5: Filter primers using workflow wrapper
+        # Step 6: Filter primers using workflow wrapper
         logger.debug("MAIN: Delegating primer filtering")
         df = PrimerProcessor.filter_primers_workflow(primer_records)
         
         if df is None or len(df) == 0:
             logger.warning("No primers passed filtering criteria. Exiting.")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # Step 6: Calculate thermodynamic properties using workflow wrapper
+        # Step 7: Calculate thermodynamic properties using workflow wrapper
         logger.debug("MAIN: Delegating thermodynamic calculations")
         df = ThermoProcessor.calculate_thermodynamics_workflow(df)
         
-        # Step 7: Run BLAST for specificity using workflow wrapper
+        # Step 8: Run BLAST for specificity using workflow wrapper
         logger.debug("MAIN: Delegating BLAST specificity checking")
         df = BlastProcessor.run_blast_specificity_workflow(df)
         
         if df is None or len(df) == 0:
             logger.warning("No primers passed BLAST filtering. Exiting.")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
         
-        # Step 8: Save results to Excel file, passing the chromosome map for formatting
+        # Step 9: Save results to Excel file, passing the chromosome map for formatting
         logger.debug("MAIN: Delegating results saving")
         output_path = FileIO.save_results(
             df,
@@ -289,25 +310,23 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
             return True
         else:
             logger.error("Failed to save results.")
-            logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
             return False
             
     except SequenceProcessingError as e:
         error_msg = f"Sequence processing error: {str(e)}"
         logger.error(error_msg)
-        logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
         return False
     except PrimerDesignError as e:
         error_msg = f"Primer design error: {str(e)}"
         logger.error(error_msg)
-        logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
         return False
     except Exception as e:
         error_msg = f"Error in primer design workflow: {str(e)}"
         logger.error(error_msg)
         logger.debug(f"Error details: {str(e)}", exc_info=True)
-        logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
         return False
+    finally:
+        logger.debug("=== END MAIN WORKFLOW: PRIMER DESIGN PIPELINE ===")
 
 
 #############################################################################
@@ -316,16 +335,26 @@ def run_primer_design_workflow(processed_sequences, output_dir, reference_file,
 
 def run_standard_mode(args):
     """
-    Run the standard mode primer design workflow with file preparation.
+    Run the standard mode primer design workflow with annotation filtering before SNP processing.
     
-    Modified version that includes automatic file preparation before
-    proceeding with the primer design pipeline.
+    This function handles file selection, preparation, and coordinates the complete
+    primer design pipeline. Gene annotation filtering is performed before SNP processing
+    to reduce the computational load.
+    
+    Args:
+        args: Parsed command line arguments containing file paths and options
+        
+    Returns:
+        True if standard mode completed successfully, False otherwise
+        
+    Raises:
+        SequenceProcessingError: If sequence loading or processing fails
+        FileSelectionError: If required file selection fails
     """
     logger.info("=== Standard Mode Workflow ===")
     logger.debug("=== MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
     
     from .utils import FileIO
-    from .core import SNPMaskingProcessor, AnnotationProcessor
 
     try:
         # Get input files if not provided in args
@@ -364,32 +393,33 @@ def run_standard_mode(args):
                 logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
                 return False
 
-            # GFF file selection
-            if not args.noannotation and not args.gff:
-                logger.info("\n>>> Please select GFF annotation file <<<")
-                try:
-                    args.gff = FileIO.select_file(
-                        "Select GFF annotation file", 
-                        [
-                            ("GFF Files", "*.gff"),
-                            ("GFF3 Files", "*.gff3"), 
-                            ("Compressed GFF Files", "*.gff.gz"),
-                            ("Compressed GFF3 Files", "*.gff3.gz"),
-                            ("All Files", "*.*")
-                        ]
-                    )
-                except FileSelectionError as e:
-                    error_msg = f"GFF file selection failed: {str(e)}"
-                    logger.error(error_msg)
-                    logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
-                    return False
+        # GFF file selection
+        if not args.noannotation and not args.gff:
+            logger.info("\n>>> Please select GFF annotation file <<<")
+            try:
+                args.gff = FileIO.select_file(
+                    "Select GFF annotation file", 
+                    [
+                        ("GFF Files", "*.gff"),
+                        ("GFF3 Files", "*.gff3"), 
+                        ("Compressed GFF Files", "*.gff.gz"),
+                        ("Compressed GFF3 Files", "*.gff3.gz"),
+                        ("All Files", "*.*")
+                    ]
+                )
+            except FileSelectionError as e:
+                error_msg = f"GFF file selection failed: {str(e)}"
+                logger.error(error_msg)
+                logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
+                return False
         elif args.noannotation:
             logger.info("\nSkipping GFF annotation file selection")
             args.gff = None
 
         # Signal that all file selections are complete
         FileIO.mark_selection_complete()
-        chromosome_map = None # Initialize map
+        chromosome_map = None
+        
         # File preparation step
         try:
             from .utils import FilePreparator
@@ -424,7 +454,6 @@ def run_standard_mode(args):
             logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
             return False
 
-        
         # Set up output directory
         if args.output:
             output_dir = args.output
@@ -436,52 +465,28 @@ def run_standard_mode(args):
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
         
-        # Extract variants from VCF file and process sequences using workflow wrapper
-        logger.info("\nProcessing sequences with VCF variants...")
-        logger.debug("MAIN: Delegating VCF sequence processing")
+        # Load sequences from FASTA file (NO SNP processing applied yet)
+        # Gene annotation filtering will happen before SNP processing for efficiency
+        logger.debug("MAIN: Loading raw sequences from FASTA file")
         try:
-            # Load sequences from FASTA file first
             sequences = FileIO.load_fasta(args.fasta)
-            
-            # Process sequences with VCF using the workflow wrapper
-            processed_sequences = SNPMaskingProcessor.process_sequences_with_vcf_batch(
-                sequences=sequences,
-                vcf_file=args.vcf,  # This is now the prepared VCF
-                reference_file=args.fasta  # This might be the original or prepared FASTA
-            )
-            
+            logger.info(f"Loaded {len(sequences)} sequences from FASTA file")
         except Exception as e:
-            error_msg = f"Error processing sequences with VCF: {str(e)}"
+            error_msg = f"Error loading sequences from FASTA: {str(e)}"
             logger.error(error_msg)
             logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
             raise SequenceProcessingError(error_msg) from e
         
-        # Load gene annotations if needed
-        if not args.noannotation:
-            logger.info("\nLoading gene annotations from GFF file...")
-            logger.debug("MAIN: Delegating gene annotation loading")
-            try:
-                genes = AnnotationProcessor.load_genes_from_gff(args.gff)
-            except Exception as e:
-                error_msg = f"Error loading gene annotations: {str(e)}"
-                logger.error(error_msg)
-                logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
-                return False
-        else:
-            logger.info("\nSkipping gene annotation loading (--noannotation specified)")
-            genes = None
-            
-        # Determine internal oligo setting from args
-        enable_internal_oligo = not args.nooligo
-        
-        # Run the primer design workflow
+        # Run the primer design workflow with raw sequences
+        # Gene annotation loading and filtering will happen within the workflow before SNP processing
         logger.debug("MAIN: Delegating to primer design workflow")
         success = run_primer_design_workflow(
-            processed_sequences=processed_sequences,
+            sequences=sequences,          # Raw sequences, NOT SNP-processed
             output_dir=output_dir,
             reference_file=args.fasta,
-            genes=genes,
-            gff_file=args.gff,
+            vcf_file=args.vcf,           # Pass VCF file to workflow for fragment-based processing
+            genes=None,                  # Will be loaded in workflow if needed
+            gff_file=args.gff,           # Pass GFF file path for loading in workflow
             skip_annotation_filtering=args.noannotation,
             enable_internal_oligo=not args.nooligo,
             chromosome_map=chromosome_map
@@ -489,7 +494,6 @@ def run_standard_mode(args):
         
         logger.debug("=== END MAIN WORKFLOW: STANDARD MODE EXECUTION ===")
         return success
-            
             
     except SequenceProcessingError as e:
         error_msg = f"Sequence processing error: {str(e)}"
@@ -510,10 +514,11 @@ def run_standard_mode(args):
 
 def run_pipeline():
     """
-    Run the primer design pipeline.
+    Run the primer design pipeline with complete error handling and validation.
     
-    Main entry point for pipeline execution. Handles argument parsing,
-    configuration loading, database verification, and workflow execution.
+    Main entry point for pipeline execution. Handles argument parsing, configuration
+    loading, database verification, and workflow execution. Coordinates between
+    different pipeline modes (standard vs direct) and manages the overall flow.
     
     Returns:
         True if the pipeline completed successfully, False otherwise
@@ -713,16 +718,15 @@ def run_pipeline():
             # Mark file selection as complete
             FileIO.mark_selection_complete()
             logger.debug("=== END MAIN WORKFLOW: PIPELINE EXECUTION ===")
-            raise ExternalToolError(error_msg, tool_name="blastn") from e
         
-        # Validate direct mode arguments
+        # Validate direct mode arguments and execute appropriate workflow
         if args.direct:
             # Execute direct mode workflow
             logger.debug("MAIN: Delegating to direct mode workflow")
             from .utils.direct_mode import run_direct_mode
             success = run_direct_mode(args)
         else:
-            # Execute standard mode workflow
+            # Execute standard mode workflow with annotation filtering before SNP processing
             logger.debug("MAIN: Delegating to standard mode workflow")
             success = run_standard_mode(args)
             

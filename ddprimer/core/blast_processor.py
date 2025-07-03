@@ -66,34 +66,18 @@ class BlastProcessor:
         logger.debug(f"DataFrame columns: {df.columns.tolist()}")
         
         try:
-            # Detect column naming convention
-            if "Sequence (F)" in df.columns:
-                forward_col = "Sequence (F)"
-                reverse_col = "Sequence (R)"
-                probe_col = "Sequence (P)"
-                forward_blast1_col = "Sequence (F) BLAST1"
-                forward_blast2_col = "Sequence (F) BLAST2"
-                reverse_blast1_col = "Sequence (R) BLAST1"
-                reverse_blast2_col = "Sequence (R) BLAST2"
-                probe_blast1_col = "Sequence (P) BLAST1"
-                probe_blast2_col = "Sequence (P) BLAST2"
-            elif "Primer F" in df.columns:
-                forward_col = "Primer F"
-                reverse_col = "Primer R"
-                probe_col = "Probe"
-                forward_blast1_col = "Primer F BLAST1"
-                forward_blast2_col = "Primer F BLAST2"
-                reverse_blast1_col = "Primer R BLAST1"
-                reverse_blast2_col = "Primer R BLAST2"
-                probe_blast1_col = "Probe BLAST1"
-                probe_blast2_col = "Probe BLAST2"
-            else:
-                error_msg = "No primer sequence columns found (expected 'Sequence (F)' or 'Primer F')"
+            # Use new column naming convention
+            forward_col = "Sequence (F)"
+            reverse_col = "Sequence (R)"
+            probe_col = "Sequence (P)"
+            
+            if forward_col not in df.columns or reverse_col not in df.columns:
+                error_msg = f"Required columns not found: {forward_col}, {reverse_col}"
                 logger.error(error_msg)
                 logger.debug(f"Available columns: {df.columns.tolist()}")
                 raise PrimerDesignError(error_msg)
             
-            logger.debug(f"Using column naming convention: forward='{forward_col}', reverse='{reverse_col}', probe='{probe_col}'")
+            logger.debug(f"Using new column naming convention")
             
             # Run BLAST for forward primers
             blast_results_f = []
@@ -107,7 +91,9 @@ class BlastProcessor:
                 blast1, blast2 = cls.blast_short_seq(primer_f)
                 blast_results_f.append((blast1, blast2))
             
-            df[forward_blast1_col], df[forward_blast2_col] = zip(*blast_results_f)
+            # Add both BLAST values to DataFrame for filtering
+            df["BLAST (F)"] = [result[0] for result in blast_results_f]   # Best e-value
+            df["BLAST (F2)"] = [result[1] for result in blast_results_f]  # Second best e-value
             
             # Run BLAST for reverse primers
             blast_results_r = []
@@ -121,7 +107,9 @@ class BlastProcessor:
                 blast1, blast2 = cls.blast_short_seq(primer_r)
                 blast_results_r.append((blast1, blast2))
             
-            df[reverse_blast1_col], df[reverse_blast2_col] = zip(*blast_results_r)
+            # Add both reverse BLAST values for filtering
+            df["BLAST (R)"] = [result[0] for result in blast_results_r]   # Best e-value
+            df["BLAST (R2)"] = [result[1] for result in blast_results_r]  # Second best e-value
             
             # Run BLAST for probes if present
             if probe_col in df.columns:
@@ -135,15 +123,35 @@ class BlastProcessor:
                 for probe in probes_iter:
                     if pd.notnull(probe) and probe:
                         blast1, blast2 = cls.blast_short_seq(probe)
+                        blast_results_p.append((blast1, blast2))
                     else:
-                        blast1, blast2 = None, None
-                    blast_results_p.append((blast1, blast2))
+                        blast_results_p.append((None, None))
                 
-                df[probe_blast1_col], df[probe_blast2_col] = zip(*blast_results_p)
+                # Add both probe BLAST values for filtering
+                df["BLAST (P)"] = [result[0] for result in blast_results_p]   # Best e-value
+                df["BLAST (P2)"] = [result[1] for result in blast_results_p]  # Second best e-value
             
-            # Filter by BLAST specificity using FilterProcessor
+            # Filter by BLAST specificity using FilterProcessor (uses both values)
             initial_count = len(df)
             df = FilterProcessor.filter_by_blast(df)
+            
+            if len(df) == 0:
+                logger.warning("No primers passed BLAST specificity filtering.")
+                logger.debug("=== END WORKFLOW: BLAST SPECIFICITY CHECKING ===")
+                return None
+            
+            # REMOVE the second BLAST columns before returning (keep only best e-values in output)
+            columns_to_remove = []
+            if "BLAST (F2)" in df.columns:
+                columns_to_remove.append("BLAST (F2)")
+            if "BLAST (R2)" in df.columns:
+                columns_to_remove.append("BLAST (R2)")
+            if "BLAST (P2)" in df.columns:
+                columns_to_remove.append("BLAST (P2)")
+            
+            if columns_to_remove:
+                df = df.drop(columns=columns_to_remove)
+                logger.debug(f"Removed temporary BLAST columns: {columns_to_remove}")
             
             if len(df) == 0:
                 logger.warning("No primers passed BLAST specificity filtering.")

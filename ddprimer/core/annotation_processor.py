@@ -51,21 +51,12 @@ class AnnotationProcessor:
     
     @classmethod
     def filter_fragments_by_gene_overlap_workflow(cls, restriction_fragments: List[Dict], 
-                                                 genes: List[Dict], 
-                                                 skip_annotation_filtering: bool = False) -> List[Dict]:
+                                                genes: List[Dict], 
+                                                skip_annotation_filtering: bool = False) -> List[Dict]:
         """
         Filter fragments based on gene overlap for workflow integration.
         
-        Args:
-            restriction_fragments: List of restriction fragments (0-based coordinates)
-            genes: Gene annotations (0-based coordinates)
-            skip_annotation_filtering: Skip gene annotation filtering
-            
-        Returns:
-            List of filtered fragments (0-based coordinates)
-            
-        Raises:
-            SequenceProcessingError: If there's an error in fragment filtering
+        Removed SNP processing statistics logging - that should be handled by SNP processor.
         """
         logger.info("Extracting annotation-filtered regions...")    
         logger.debug("=== WORKFLOW: GENE OVERLAP FILTERING ===")
@@ -82,6 +73,7 @@ class AnnotationProcessor:
                         logger.warning(f"Fragment {fragment.get('id', 'unknown')} has invalid coordinates: {validation_result['errors']}")
                         continue
                     
+                    # Create simplified fragment, preserving SNP processing stats if present
                     simplified_fragment = {
                         "id": fragment["id"],
                         "sequence": fragment["sequence"],
@@ -91,6 +83,11 @@ class AnnotationProcessor:
                         "length": len(fragment["sequence"]),
                         "Gene": fragment["id"].split("_")[-1]
                     }
+                    
+                    # Preserve SNP processing statistics if they exist (but don't log them here)
+                    if '_processing_stats' in fragment:
+                        simplified_fragment['_processing_stats'] = fragment['_processing_stats']
+                    
                     filtered_fragments.append(simplified_fragment)
                     
                 logger.debug(f"Created {len(filtered_fragments)} simplified fragments (no annotation filtering)")
@@ -111,7 +108,7 @@ class AnnotationProcessor:
 
                 filtered_fragments = cls.filter_by_gene_overlap(restriction_fragments, valid_genes)
             
-            logger.info(f"Generated {len(filtered_fragments)} annotation-filtered fragments")
+            logger.info(f"Generated {len(filtered_fragments)} annotation-filtered fragments\n")
             logger.debug("=== END WORKFLOW: GENE OVERLAP FILTERING ===")
             
             return filtered_fragments
@@ -365,18 +362,7 @@ class AnnotationProcessor:
         Extract gene information from a GFF file with coordinate conversion.
         
         Handles both compressed (.gz) and uncompressed GFF files.
-        Uses parallel processing for large files.
-        Converts GFF coordinates (1-based inclusive) to internal coordinates (0-based half-open).
-        
-        Args:
-            gff_path: Path to the GFF file (prepared or standard)
-            
-        Returns:
-            List of gene dictionaries with 0-based internal coordinates
-            
-        Raises:
-            FileError: If GFF file cannot be read
-            SequenceProcessingError: If GFF processing fails
+        Uses parallel processing for large files without progress bar.
         """
         if not os.path.exists(gff_path):
             error_msg = f"GFF file not found: {gff_path}"
@@ -391,7 +377,6 @@ class AnnotationProcessor:
             with opener(gff_path, mode) as f:
                 all_lines = f.readlines()
             
-            logger.debug(f"=== GFF PROCESSING DEBUG ===")
             logger.debug(f"Read {len(all_lines)} lines from GFF file")
             logger.debug("COORDINATE SYSTEM: Converting GFF (1-based inclusive) to Internal (0-based half-open)")
             
@@ -404,14 +389,9 @@ class AnnotationProcessor:
             with concurrent.futures.ProcessPoolExecutor(max_workers=Config.NUM_PROCESSES) as executor:
                 futures = [executor.submit(cls.process_gff_chunk, chunk) for chunk in chunks]
                 
-                if Config.SHOW_PROGRESS:
-                    for future in tqdm(concurrent.futures.as_completed(futures), 
-                                    total=len(futures), 
-                                    desc="Processing GFF file"):
-                        genes.extend(future.result())
-                else:
-                    for future in concurrent.futures.as_completed(futures):
-                        genes.extend(future.result())
+                # Process without progress bar
+                for future in concurrent.futures.as_completed(futures):
+                    genes.extend(future.result())
             
             logger.debug(f"Extracted {len(genes)} total genes from GFF file (0-based coordinates)")
             
@@ -421,11 +401,10 @@ class AnnotationProcessor:
                     original_start = gene.get('_original_gff_start', 'N/A')
                     original_end = gene.get('_original_gff_end', 'N/A')
                     logger.debug(f"  {i+1}. {gene['id']} at {gene['chr']}:{gene['start']}-{gene['end']} "
-                               f"(was GFF:{original_start}-{original_end})")
+                            f"(was GFF:{original_start}-{original_end})")
                 if len(genes) > 5:
                     logger.debug(f"  ... and {len(genes) - 5} more genes")
             
-            logger.debug("=== END GFF PROCESSING DEBUG ===")
             return genes
         
         except Exception as e:
@@ -638,12 +617,12 @@ class AnnotationProcessor:
                             overlap_margin: int = 0) -> Optional[Dict]:
         """
         Create a new fragment for a specific gene overlap region.
-        
+
         Uses 0-based half-open coordinates throughout. Creates a fragment that represents
         the intersection of the original fragment and the gene region (with margin).
         
         Args:
-            fragment: Original restriction fragment (0-based coordinates)
+            fragment: Original restriction fragment (0-based coordinates, may have SNP stats)
             gene: Gene annotation that overlaps with the fragment (0-based coordinates)
             gene_idx: Index of this gene (for unique naming)
             overlap_margin: Overlap margin used
@@ -683,7 +662,7 @@ class AnnotationProcessor:
             if (logger.isEnabledFor(logging.DEBUG) and 
                 DebugLogLimiter.should_log('gene_fragment_validation_errors', interval=200, max_initial=2)):
                 logger.debug(f"Invalid sequence boundaries for gene {gene_id}: "
-                              f"seq_start={seq_start}, seq_end={seq_end}, fragment_len={len(fragment_seq)}")
+                            f"seq_start={seq_start}, seq_end={seq_end}, fragment_len={len(fragment_seq)}")
             return None
         
         gene_sequence = fragment_seq[seq_start:seq_end]
@@ -718,9 +697,35 @@ class AnnotationProcessor:
             }
         }
         
+        # UPDATED: Preserve SNP processing statistics if they exist in the original fragment
+        if '_processing_stats' in fragment:
+            # Calculate proportional statistics for the gene fragment
+            original_length = fragment_end - fragment_start
+            gene_fragment_length = len(gene_sequence)
+            
+            if original_length > 0:
+                # Scale the statistics proportionally to the fragment size
+                proportion = gene_fragment_length / original_length
+                original_stats = fragment['_processing_stats']
+                
+                scaled_stats = {
+                    'applied': int(original_stats.get('applied', 0) * proportion),
+                    'substituted': int(original_stats.get('substituted', 0) * proportion),
+                    'masked': int(original_stats.get('masked', 0) * proportion),
+                    'validation_failures': int(original_stats.get('validation_failures', 0) * proportion),
+                    'inherited_from': original_id,
+                    'scaling_factor': proportion
+                }
+                
+                gene_fragment['_processing_stats'] = scaled_stats
+        
         if (logger.isEnabledFor(logging.DEBUG) and 
             DebugLogLimiter.should_log('gene_fragment_creation_success', interval=500, max_initial=3)):
+            stats_info = ""
+            if '_processing_stats' in gene_fragment:
+                stats = gene_fragment['_processing_stats']
+                stats_info = f" (inherited {stats['applied']} SNP variants)"
             logger.debug(f"Created gene fragment {new_id}: {len(gene_sequence)} bp "
-                       f"(coordinates: {overlap_start}-{overlap_end})")
+                    f"(coordinates: {overlap_start}-{overlap_end}){stats_info}")
         
         return gene_fragment

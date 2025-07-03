@@ -82,33 +82,17 @@ class ThermoProcessor:
                 reverse_col = "Sequence (R)"
                 probe_col = "Sequence (P)"
                 amplicon_col = "Sequence (A)"
-                forward_dg_col = "Sequence (F) dG"
-                reverse_dg_col = "Sequence (R) dG"
-                probe_dg_col = "Sequence (P) dG"
-                amplicon_dg_col = "Sequence (A) dG"
-            elif "Primer F" in df.columns:
-                forward_col = "Primer F"
-                reverse_col = "Primer R"
-                probe_col = "Probe"
-                amplicon_col = "Amplicon"
-                forward_dg_col = "Primer F dG"
-                reverse_dg_col = "Primer R dG"
-                probe_dg_col = "Probe dG"
-                amplicon_dg_col = "Amplicon dG"
+                forward_dg_col = "dG (F)"
+                reverse_dg_col = "dG (R)"
+                probe_dg_col = "dG (P)"
+                amplicon_dg_col = "dG (A)"
             else:
-                error_msg = "No primer sequence columns found (expected 'Sequence (F)' or 'Primer F')"
+                error_msg = "No primer sequence columns found (expected 'Sequence (F)')"
                 logger.error(error_msg)
                 logger.debug(f"Available columns: {df.columns.tolist()}")
                 raise PrimerDesignError(error_msg)
             
             logger.debug(f"Using column naming convention: forward='{forward_col}', reverse='{reverse_col}', amplicon='{amplicon_col}'")
-            
-            # Initialize ΔG columns
-            df[forward_dg_col] = None
-            df[reverse_dg_col] = None
-            if probe_col in df.columns:
-                df[probe_dg_col] = None
-            df[amplicon_dg_col] = None
             
             # Calculate deltaG for forward primers
             if Config.SHOW_PROGRESS:

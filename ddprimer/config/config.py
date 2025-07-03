@@ -74,7 +74,7 @@ class Config:
     PREFER_PROBE_MORE_C_THAN_G = True         # for Probe reversing, recommended for ddPCR
     SEQUENCE_MIN_GC = 50.0                    # for amplicon
     SEQUENCE_MAX_GC = 60.0                    # for amplicon
-    MIN_CHROMOSOME_SIZE = 1_000_000           # Minimum size to consider as nuclear chromosome, for file_preparator
+    MIN_CHROMOSOME_SIZE = 2_000_000           # Minimum size of input sequence to use, for file_preparator and snp_processor
 
     #############################################################################
     #                           VCF/SNP Processing Parameters  
