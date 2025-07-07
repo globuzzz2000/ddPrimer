@@ -69,7 +69,8 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         usage='ddprimer [-h] [--debug [MODULE...]] [--config [.json]] [--db [.fasta, .fna, .fa] [DB_NAME]]\n'
             '                [--cli]  [--nooligo] [--noannotation]\n'
-            '                [--direct [.csv, .xlsx]] [--snp]\n'        
+            '                [--direct [.csv, .xlsx]] [--snp]\n'
+            '                [--remap [.csv, .xlsx]]\n'        
             '                [--fasta [.fasta, .fna, .fa]] [--gff [.gff, .gff3]] [--vcf [.vcf, .vcf.gz]]\\n'
             '                [--output <output_dir>]'
     )
@@ -102,6 +103,8 @@ def parse_arguments():
                             help=   'Enable target-sequence based primer design workflow using CSV/Excel input.')
     option_group.add_argument('--snp', action='store_true', 
                             help=   'Enable SNP masking in direct mode. Requires VCF and FASTA files.')
+    option_group.add_argument('--remap', metavar='[.csv, .xlsx]', nargs='?', const=True, 
+                            help=   'Enable primer remapping and re-evaluation workflow using CSV/Excel input.')
 
     # Input files
     input_group.add_argument('--fasta', metavar='[.fasta, .fna, .fa]', 
@@ -127,19 +130,26 @@ def parse_arguments():
         # --debug not specified
         args.debug = False
 
+    # Validate argument combinations
+    if sum([bool(args.direct), bool(args.remap)]) > 1:
+        logger.error("Cannot use --direct and --remap modes simultaneously.")
+        sys.exit(1)
+            
     # Validate direct mode arguments
     if args.direct:
-        # Direct mode cannot use GFF files
         if args.gff:
             logger.error("Direct mode cannot use GFF files (--gff). Gene filtering is automatically disabled.")
             sys.exit(1)
         
     # SNP mode enables filtering in direct mode
-    if args.snp:
-        if not args.direct:
-            logger.error("--snp flag can only be used with --direct mode.")
-            sys.exit(1)
+    if args.snp and not args.direct:
+        logger.error("--snp flag can only be used with --direct mode.")
+        sys.exit(1)
             
+    # Validate remap mode arguments
+    if args.remap and args.vcf:
+        logger.warning("The --vcf argument is not used in --remap mode and will be ignored.")
+
     # Process --db arguments (existing code remains the same)
     if args.db is not None:
         # Set the db output directory if provided
@@ -725,6 +735,11 @@ def run_pipeline():
             logger.debug("MAIN: Delegating to direct mode workflow")
             from .utils.direct_mode import run_direct_mode
             success = run_direct_mode(args)
+        elif args.remap:
+            # Execute remap mode workflow
+            logger.debug("MAIN: Delegating to remap mode workflow")
+            from .utils.primer_remapper import run_remap_mode
+            success = run_remap_mode(args)
         else:
             # Execute standard mode workflow with annotation filtering before SNP processing
             logger.debug("MAIN: Delegating to standard mode workflow")

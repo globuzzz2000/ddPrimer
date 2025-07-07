@@ -11,6 +11,7 @@ from .file_io import FileIO
 from .blast_db_manager import BlastDatabaseManager
 from .file_preparator import FilePreparator
 from .direct_mode import DirectModeProcessor, run_direct_mode
+from .primer_remapper import PrimerRemapperProcessor
 
 __all__ = [
     'BlastDatabaseManager',
@@ -20,5 +21,6 @@ __all__ = [
     'SequenceAnalyzer', 
     'DirectMode',
     'DirectModeProcessor',
-    'run_direct_mode'
+    'run_direct_mode',
+    'PrimerRemapperProcessor'
 ]

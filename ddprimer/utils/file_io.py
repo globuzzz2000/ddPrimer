@@ -653,6 +653,7 @@ class FileIO:
                 end_color='D9D9D9',
                 fill_type='solid'
             )
+
             centered_alignment = Alignment(horizontal='center', vertical='center')
             left_alignment = Alignment(horizontal='left', vertical='center')
             
@@ -690,10 +691,12 @@ class FileIO:
                     # Set wider width for Gene column
                     worksheet.column_dimensions[col_letter].width = 15
                 else:
-                    # Set narrower width for non-Gene, non-sequence columns
+                    # Set column widths based on content type
                     header_text = cell2.value
                     if header_text in ["Sequence (F)", "Sequence (R)", "Sequence (P)", "Sequence (A)"]:
                         worksheet.column_dimensions[col_letter].width = 15
+                    elif header_text == "Match_Quality":
+                        worksheet.column_dimensions[col_letter].width = 12
                     else:
                         worksheet.column_dimensions[col_letter].width = 10
 
@@ -701,7 +704,7 @@ class FileIO:
                 header_texts.append(header_text)
                 column_map[header_text] = col_num
                 
-                # Apply number formatting based on column type
+                # Apply number formatting and special styling based on column type
                 for row_num in range(3, max_row + 1):
                     cell = worksheet.cell(row=row_num, column=col_num)
                     
@@ -710,7 +713,7 @@ class FileIO:
                         cell.fill = sequence_fill
                     
                     # Apply number formatting
-                    if header_text and "BLAST" in header_text:
+                    elif header_text and "BLAST" in header_text:
                         # Scientific notation for BLAST columns (e.g., 1.23E-05)
                         cell.number_format = '0.00E+00'
                         cell.alignment = centered_alignment
@@ -743,18 +746,24 @@ class FileIO:
                 "Reverse Primer": ["Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)"],
                 "Probe": ["Sequence (P)", "Tm (P)", "Penalty (P)", "dG (P)", "BLAST (P)"],
                 "Amplicon": ["Sequence (A)", "Length", "GC%", "dG (A)"],
-                "Location": ["Chr", "Location"]
+                "Location": ["Chr", "Location", "Match_Quality"]
             }
             
             # Track group boundaries for border application
             group_boundaries = []
+            # Track which columns have been assigned to groups to avoid duplicates
+            assigned_columns = set()
             
             for group_name, headers in header_groups.items():
-                existing_headers = [h for h in headers if h in header_texts]
+                # Only include headers that exist in the DataFrame and haven't been assigned yet
+                existing_headers = [h for h in headers if h in header_texts and h not in assigned_columns]
                 
                 if not existing_headers:
                     continue
                     
+                # Mark these columns as assigned
+                assigned_columns.update(existing_headers)
+                
                 col_indices = [column_map[h] for h in existing_headers]
                 
                 if col_indices:
@@ -862,7 +871,6 @@ class FileIO:
             logger.error(error_msg)
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             raise FileFormatError(error_msg) from e
-            
 
     @staticmethod
     def save_results(df, output_dir, input_file, mode='standard', chromosome_map=None):
@@ -896,53 +904,66 @@ class FileIO:
             logger.debug("Applying standardized chromosome names to output.")
             df['Chr'] = df['Chr'].map(chromosome_map).fillna(df['Chr'])
 
-        # Set output filename
+        # Set output filename based on mode
         basename = os.path.basename(input_file)
         root, _ = os.path.splitext(basename)
-        output_filename = f"Primers_{root}.xlsx"
+        
+        if mode == 'remap':
+            output_filename = f"{root}_remapped.xlsx"
+        else:
+            output_filename = f"Primers_{root}.xlsx"
+            
         output_file = os.path.join(output_dir, output_filename)
         
         # Prepare dataframe
         df = FileIO._prepare_output_dataframe(df, mode)
 
-        # Define final column order with new column names
-        if mode == 'direct':
-            columns = [
-                "Gene", 
-                "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
-                "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
-                "Sequence (A)", "Length", "GC%", "dG (A)"
-            ]
-        else:
-            columns = [
-                "Gene",
-                "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
-                "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)",
-                "Sequence (A)", "Length", "GC%", "dG (A)",
-                "Chr", "Location"
-            ]
+        # Define final column order with new column names - include probe columns from the start
+        base_columns = [
+            "Gene",
+            "Sequence (F)", "Tm (F)", "Penalty (F)", "dG (F)", "BLAST (F)",
+            "Sequence (R)", "Tm (R)", "Penalty (R)", "dG (R)", "BLAST (R)"
+        ]
         
         # Add probe columns if present
         if "Sequence (P)" in df.columns:
             probe_cols = ["Sequence (P)", "Tm (P)", "Penalty (P)", "dG (P)", "BLAST (P)"]
-            # Insert probe columns after reverse primer columns
-            try:
-                idx = columns.index("BLAST (R)") + 1
-                for col in reversed(probe_cols):
-                    if col in df.columns:
-                        columns.insert(idx, col)
-            except ValueError:
-                for col in probe_cols:
-                    if col in df.columns:
-                        columns.append(col)
+            base_columns.extend(probe_cols)
+        
+        # Add amplicon columns
+        amplicon_cols = ["Sequence (A)", "Length", "GC%", "dG (A)"]
+        base_columns.extend(amplicon_cols)
+        
+        # Define final column order based on mode
+        if mode == 'direct':
+            expected_columns = base_columns
+        elif mode == 'remap':
+            # More flexible column ordering for remap mode - include all available columns
+            expected_columns = base_columns + ["Chr", "Location", "Match_Quality"]
+            
+            # Add any additional columns that exist in the DataFrame but aren't in expected_columns
+            additional_columns = [col for col in df.columns 
+                                if col not in expected_columns 
+                                and col != "Start"]  # Explicitly exclude "Start" column
+            if additional_columns:
+                logger.debug(f"Including additional columns in remap output: {additional_columns}")
+                expected_columns.extend(additional_columns)
+                
+        else:  # standard mode
+            expected_columns = base_columns + ["Chr", "Location"]
         
         # Only select columns that actually exist in the DataFrame
-        available_columns = [col for col in columns if col in df.columns]
-        missing_columns = [col for col in columns if col not in df.columns]
+        available_columns = [col for col in expected_columns if col in df.columns]
+        missing_columns = [col for col in expected_columns if col not in df.columns]
         
-        if missing_columns:
+        if missing_columns and mode != 'remap':
+            # Only warn about missing columns in non-remap modes
             logger.warning(f"Missing expected columns: {missing_columns}")
             logger.debug(f"Available columns: {df.columns.tolist()}")
+        elif mode == 'remap':
+            # In remap mode, just inform about what's available
+            logger.debug(f"Remap mode: Using {len(available_columns)} available columns")
+            logger.debug(f"Available columns: {available_columns}")
         
         logger.debug(f"Final column selection: {available_columns}")
         df = df[available_columns]

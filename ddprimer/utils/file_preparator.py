@@ -73,18 +73,11 @@ class FilePreparator:
     #############################################################################
     
     @classmethod
-    def prepare_pipeline_files_workflow(cls, vcf_file: str, fasta_file: str,
+    def prepare_pipeline_files_workflow(cls, vcf_file: Optional[str], fasta_file: str,
                                        gff_file: Optional[str] = None) -> Dict:
         """
         Prepare and validate all pipeline input files for workflow integration.
-
-        Args:
-            vcf_file: Path to VCF file
-            fasta_file: Path to FASTA file
-            gff_file: Optional path to GFF file
-
-        Returns:
-            Dictionary with preparation results and final file paths
+        This version is updated to gracefully handle optional VCF files.
         """
         logger.debug("=== WORKFLOW: FILE PREPARATION ===")
         preparator = None
@@ -92,14 +85,19 @@ class FilePreparator:
             preparator = cls()
             preparator.set_reference_file(fasta_file)
 
-            # Generate chromosome mapping for output
-            vcf_chroms = preparator._get_file_chromosomes(vcf_file, 'vcf')
-            fasta_seqs = preparator._get_file_chromosomes(fasta_file, 'fasta')
-            chromosome_map = preparator._generate_standardized_chromosome_map(vcf_chroms, fasta_seqs)
-
-            # Run file preparation
+            # Run the main preparation logic, which is now robust to None inputs
             result = preparator.prepare_files(vcf_file, fasta_file, gff_file)
-            result['chromosome_map'] = chromosome_map
+
+            # If a VCF file was involved, generate the chromosome map for output formatting
+            if vcf_file:
+                # Use the potentially corrected VCF file path from the result
+                processed_vcf = result.get('vcf_file', vcf_file)
+                vcf_chroms = preparator._get_file_chromosomes(processed_vcf, 'vcf')
+                fasta_seqs = preparator._get_file_chromosomes(fasta_file, 'fasta')
+                chromosome_map = preparator._generate_standardized_chromosome_map(vcf_chroms, fasta_seqs)
+                result['chromosome_map'] = chromosome_map
+            else:
+                result['chromosome_map'] = None  # No VCF, so no map needed
 
             logger.debug("=== END WORKFLOW: FILE PREPARATION ===")
             return result
@@ -111,13 +109,13 @@ class FilePreparator:
             if preparator:
                 preparator.cleanup()
     
-    def prepare_files(self, vcf_file: str, fasta_file: str, 
+    def prepare_files(self, vcf_file: Optional[str], fasta_file: str, 
                      gff_file: Optional[str] = None) -> Dict:
         """
         Main entry point for file preparation workflow.
         
         Args:
-            vcf_file: Path to VCF file
+            vcf_file: Optional path to VCF file
             fasta_file: Path to FASTA file  
             gff_file: Optional path to GFF file
             
@@ -128,7 +126,7 @@ class FilePreparator:
         logger.info("\nAnalyzing input files for compatibility...")
         
         try:
-            # Validate input files exist
+            # Validate input files exist (now handles optional vcf_file)
             self._validate_input_files(vcf_file, fasta_file, gff_file)
             self.set_reference_file(fasta_file)
             
@@ -149,8 +147,8 @@ class FilePreparator:
             logger.info("\nCorrecting files...")
             prepared_files = self._prepare_all_files(vcf_file, fasta_file, gff_file, analysis)
             
-            # Validate VCF preparation success
-            if not self._validate_vcf_preparation(prepared_files, analysis):
+            # Validate VCF preparation success if a VCF was provided
+            if vcf_file and not self._validate_vcf_preparation(prepared_files, analysis):
                 return self._create_failure_result('VCF file preparation failed', analysis['issues'])
             
             logger.info("File preparation completed successfully!\n")
@@ -170,21 +168,25 @@ class FilePreparator:
     #                           File Analysis Methods
     #############################################################################
     
-    def _analyze_all_files(self, vcf_file: str, fasta_file: str, 
+    def _analyze_all_files(self, vcf_file: Optional[str], fasta_file: str, 
                           gff_file: Optional[str] = None) -> Dict:
         """Analyze all files to determine what preparation is needed."""
         logger.debug("=== FILE ANALYSIS ===")
         
         issues = []
         
-        # Analyze each file type
-        issues.extend(self._analyze_single_file(vcf_file, 'vcf'))
+        # Analyze each file type, checking for None
+        if vcf_file:
+            issues.extend(self._analyze_single_file(vcf_file, 'vcf'))
+        
         issues.extend(self._analyze_single_file(fasta_file, 'fasta'))
+
         if gff_file:
             issues.extend(self._analyze_single_file(gff_file, 'gff'))
         
-        # Check chromosome compatibility
-        issues.extend(self._analyze_chromosome_compatibility(vcf_file, fasta_file, gff_file))
+        # Check chromosome compatibility only if VCF is provided
+        if vcf_file:
+            issues.extend(self._analyze_chromosome_compatibility(vcf_file, fasta_file, gff_file))
         
         logger.debug(f"Analysis complete: {len(issues)} issues found")
         return {
@@ -224,7 +226,6 @@ class FilePreparator:
                                                'Create samtools faidx index'))
         
         elif file_type == 'gff':
-            # Check if GFF needs compression and/or indexing
             if not file_path.endswith('.gz'):
                 issues.append(self._create_issue('gff_index', file_path,
                                                'GFF file needs compression and tabix indexing',
@@ -242,6 +243,7 @@ class FilePreparator:
         issues = []
         
         try:
+            # This method is only called if vcf_file is not None
             vcf_chroms = set(self._get_file_chromosomes(vcf_file, 'vcf').keys())
             fasta_chroms = set(self._get_file_chromosomes(fasta_file, 'fasta').keys())
             
@@ -634,9 +636,14 @@ class FilePreparator:
             )
             raise ExternalToolError(error_msg, tool_name=missing_tools[0])
     
-    def _validate_input_files(self, vcf_file: str, fasta_file: str, gff_file: Optional[str] = None):
+    def _validate_input_files(self, vcf_file: Optional[str], fasta_file: str, gff_file: Optional[str] = None):
         """Validate that input files exist and are accessible."""
-        files_to_check = [(vcf_file, "VCF"), (fasta_file, "FASTA")]
+        # Start with the always-required FASTA file
+        files_to_check = [(fasta_file, "FASTA")]
+        
+        # Add optional files only if they are provided
+        if vcf_file:
+            files_to_check.append((vcf_file, "VCF"))
         if gff_file:
             files_to_check.append((gff_file, "GFF"))
         

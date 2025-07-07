@@ -268,6 +268,10 @@ class ExternalToolError(DDPrimerError):
         ...     stderr="Invalid temperature parameter"
         ... )
     """
+    def __init__(self, message: str, tool_name: str = None):
+        super().__init__(message)
+        self.tool_name = tool_name
+
 
 class PipelineError(DDPrimerError):
     """
