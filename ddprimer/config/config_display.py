@@ -58,20 +58,21 @@ def display_config(config_cls):
                 "PRIMER_MIN_GC", "PRIMER_MAX_GC", "PRIMER_PRODUCT_SIZE_RANGE",
             ],
             "Pipeline parameters": [                
-                "MIN_SEGMENT_LENGTH", "RETAIN_TYPES", "GENE_OVERLAP_MARGIN", "RESTRICTION_SITE", "PENALTY_MAX", "MAX_PRIMER_PAIRS_PER_SEGMENT",
-                "PREFER_PROBE_MORE_C_THAN_G", "SEQUENCE_MIN_GC", "SEQUENCE_MAX_GC"
+                "MIN_SEGMENT_LENGTH", "RETAIN_TYPES", "GENE_OVERLAP_MARGIN", "RESTRICTION_SITE", 
+                "PENALTY_MAX", "MAX_PRIMER_PAIRS_PER_SEGMENT", "PREFER_PROBE_MORE_C_THAN_G", 
+                "SEQUENCE_MIN_GC", "SEQUENCE_MAX_GC", "MIN_CHROMOSOME_SIZE"
             ],
-            "SNP-Masking parameters": [    
-                    "SNP_ALLELE_FREQUENCY_THRESHOLD", "SNP_QUALITY_THRESHOLD", "SNP_FLANKING_MASK_SIZE", "SNP_USE_SOFT_MASKING"
+            "VCF/SNP Processing parameters": [    
+                "VCF_ALLELE_FREQUENCY_THRESHOLD", "VCF_QUALITY_THRESHOLD", 
+                "VCF_FLANKING_MASK_SIZE", "VCF_USE_SOFT_MASKING"
             ],
             "ViennaRNA Parameters": [
                 "THERMO_TEMPERATURE", "THERMO_SODIUM", "THERMO_MAGNESIUM"
             ],
             "BLAST Database Options": [
-                "DB_FASTA", "DB_OUTPUT_DIR", "DB_NAME", "USE_CUSTOM_DB", 
-                "DB_PATH", "BLAST_WORD_SIZE", "BLAST_EVALUE", "BLAST_MAX_TARGET_SEQS",
-                "BLAST_REWARD", "BLAST_PENALTY", "BLAST_GAPOPEN", "BLAST_GAPEXTEND",
-                "BLAST_FILTER_FACTOR"
+                "BLAST_WORD_SIZE", "BLAST_EVALUE", 
+                "BLAST_MAX_TARGET_SEQS", "BLAST_REWARD", "BLAST_PENALTY", 
+                "BLAST_GAPOPEN", "BLAST_GAPEXTEND", "BLAST_FILTER_FACTOR"
             ]
         }
         

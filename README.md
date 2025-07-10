@@ -16,13 +16,31 @@ A comprehensive pipeline for designing primers and probes specifically optimized
 - **File Preparation**: Automatic VCF normalization, chromosome mapping, and file indexing
 - **Excel output format**: Results saved as comprehensive files with primer sequences, coordinates, thermodynamics, and quality metrics
 
+
+## Quick Start
+
+### Command Line Usage
+
+```bash
+# Basic primer design with file preparation
+ddprimer --fasta genome.fasta --vcf variants.vcf --gff annotations.gff
+
+# Basic primer design without annotation filtering
+ddprimer --noannotation --fasta genome.fasta --vcf variants.vcf
+```
+
+### Interactive Mode
+
+Simply run `ddprimer` without arguments to launch the interactive mode, which will guide you through file selection with a graphical interface.
+
+
 ## Project Structure
 
 ```
 ddPrimer/
-├── ddprimer/                      # Main package directory
+├── ddprimer/                         # Main package directory
 │   ├── __init__.py
-│   ├── main.py                    # Main entry point for the pipeline
+│   ├── main.py                       # Main entry point for the pipeline
 │   ├── core/                         # Core processing modules
 │   │   ├── __init__.py
 │   │   ├── annotation_processor.py   # GFF-based annotaion filtering
@@ -33,21 +51,21 @@ ddPrimer/
 │   │   ├── filter_processor.py       # Primer quality filtering
 │   │   ├── thermo_processor.py       # ViennaRNA thermodynamic processor
 │   │   └── blast_processor.py        # Primer specificity filtering
-│   ├── utils/                     # Utility functions
+│   ├── utils/                        # Utility functions
 │   │   ├── __init__.py
-│   │   ├── file_preparator.py     # File validation and preparation
-│   │   ├── file_io.py             # File I/O and Excel formatting
-│   │   ├── blast_db_manager.py    # Unified BLAST database management
-│   │   ├── direct_mode.py         # Target List-based Primer design
-│   │   └── primer_remapper        # Primer coordinate remapping to different genome
+│   │   ├── file_preparator.py        # File validation and preparation
+│   │   ├── file_io.py                # File I/O and Excel formatting
+│   │   ├── blast_db_manager.py       # Unified BLAST database management
+│   │   ├── direct_mode.py            # Target List-based Primer design
+│   │   └── primer_remapper           # Primer coordinate remapping to different genome
 │   └── config/                       # Configuration and settings
 │       ├── __init__.py
 │       ├── config.py                 # Core configuration settings
 │       ├── config_display.py         # Configuration display
-│       ├── exceptions.py             # Custom exceptions
+│       ├── exceptions.py             # Error handeling
 │       ├── logging_config.py         # Logging setup
 │       └── template_generator.py     # Configuration template generation
-├── pyproject.toml                 # Package configuration and dependencies
+├── pyproject.toml                    # Package configuration and dependencies
 └── README.md                  
 ```
 
@@ -77,22 +95,6 @@ pip install -e .
 - **bcftools and samtools**: For file processing  
 
 Python dependencies are automatically installed via pip.
-
-## Quick Start
-
-### Command Line Usage
-
-```bash
-# Basic primer design with file preparation
-ddprimer --fasta genome.fasta --vcf variants.vcf --gff annotations.gff
-
-# Basic primer design without annotation filtering
-ddprimer --noannotation --fasta genome.fasta --vcf variants.vcf
-```
-
-### Interactive Mode
-
-Simply run `ddprimer` without arguments to launch the interactive mode, which will guide you through file selection with a graphical interface.
 
 ## Workflow Overview
 
@@ -191,17 +193,10 @@ ddprimer --remap primers.xlsx --fasta ref.fa --noannotation
 Common issues and solutions:
 
 - **Missing BLAST database**: Run with `--db` to create or select a database
-- **Memory errors**: Try reducing `NUM_PROCESSES` in your configuration file
 - **GUI errors**: Use `--cli` to force command-line mode
-- **macOS GUI issues**: Ensure pyobjc-core and pyobjc-framework-Cocoa are installed
-- **VCF processing errors**: Verify bcftools is correctly installed
-- **ViennaRNA installation issues**: 
-  - Try installing via conda: `conda install -c bioconda viennarna`
-  - If pip fails, install from source following ViennaRNA documentation
-  - Ensure ViennaRNA is properly linked to your Python environment
 - **File compatibility errors**: The pipeline will attempt automatic file preparation
 
-For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
+For more detailed output, run `ddprimer --debug` or check the logs in `~/.ddPrimer/logs/`.
 
 ## License
 

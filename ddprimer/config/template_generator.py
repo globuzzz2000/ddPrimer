@@ -92,21 +92,10 @@ def generate_config_template(config_cls, filename=None, output_dir=None):
         template = _build_template_dict(config_cls)
         logger.debug(f"Built template with {len(template)} settings")
         
-        # Add comments as string values at the top of the template
-        template_with_comments = {
-            "# ddPrimer Configuration Template": "Generated on " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "# Instructions": "Modify the values below and save this file. Use it with: ddprimer --config your_config.json",
-            "# For full settings list": "Run 'ddprimer --config all'",
-            "# Documentation": "Visit https://github.com/yourusername/ddprimer for full documentation",
-        }
-        
-        # Merge comments with actual settings
-        template_with_comments.update(template)
-        
         # Write to file
         try:
             with open(filepath, 'w') as f:
-                json.dump(template_with_comments, f, indent=4)
+                json.dump(template, f, indent=4)
             print(f"\n{Fore.WHITE}{'='*80}{Style.RESET_ALL}")
             print(f"{Fore.WHITE}Configuration Template File Generator")
             print(f"{Fore.WHITE}{'='*80}{Style.RESET_ALL}")
@@ -163,7 +152,6 @@ def _build_template_dict(config_cls):
         template = {
             # Performance Settings
             "NUM_PROCESSES": safe_get_attr(config_cls, "NUM_PROCESSES", 4),
-            "BATCH_SIZE": safe_get_attr(config_cls, "BATCH_SIZE", 100),
             "SHOW_PROGRESS": safe_get_attr(config_cls, "SHOW_PROGRESS", True),
             
             # Design Parameters
@@ -176,36 +164,57 @@ def _build_template_dict(config_cls):
             "PRIMER_MIN_GC": safe_get_attr(config_cls, "PRIMER_MIN_GC", 50.0),
             "PRIMER_MAX_GC": safe_get_attr(config_cls, "PRIMER_MAX_GC", 60.0),
             "PRIMER_PRODUCT_SIZE_RANGE": safe_get_attr(config_cls, "PRIMER_PRODUCT_SIZE_RANGE", [[90, 200]]),
+            
+            # Pipeline parameters
+            "MIN_SEGMENT_LENGTH": safe_get_attr(config_cls, "MIN_SEGMENT_LENGTH", 90),
+            "RETAIN_TYPES": safe_get_attr(config_cls, "RETAIN_TYPES", ["gene"]),
+            "GENE_OVERLAP_MARGIN": safe_get_attr(config_cls, "GENE_OVERLAP_MARGIN", 25),
+            "RESTRICTION_SITE": safe_get_attr(config_cls, "RESTRICTION_SITE", "GGCC"),
+            "PENALTY_MAX": safe_get_attr(config_cls, "PENALTY_MAX", 5.0),
             "MAX_PRIMER_PAIRS_PER_SEGMENT": safe_get_attr(config_cls, "MAX_PRIMER_PAIRS_PER_SEGMENT", 3),
+            "PREFER_PROBE_MORE_C_THAN_G": safe_get_attr(config_cls, "PREFER_PROBE_MORE_C_THAN_G", True),
+            "SEQUENCE_MIN_GC": safe_get_attr(config_cls, "SEQUENCE_MIN_GC", 50.0),
+            "SEQUENCE_MAX_GC": safe_get_attr(config_cls, "SEQUENCE_MAX_GC", 60.0),
+            "MIN_CHROMOSOME_SIZE": safe_get_attr(config_cls, "MIN_CHROMOSOME_SIZE", 2000000),
+            
+            # VCF/SNP Processing parameters
+            "VCF_ALLELE_FREQUENCY_THRESHOLD": safe_get_attr(config_cls, "VCF_ALLELE_FREQUENCY_THRESHOLD", None),
+            "VCF_QUALITY_THRESHOLD": safe_get_attr(config_cls, "VCF_QUALITY_THRESHOLD", None),
+            "VCF_FLANKING_MASK_SIZE": safe_get_attr(config_cls, "VCF_FLANKING_MASK_SIZE", 0),
+            "VCF_USE_SOFT_MASKING": safe_get_attr(config_cls, "VCF_USE_SOFT_MASKING", False),
+            
+            # ViennaRNA Parameters
+            "THERMO_TEMPERATURE": safe_get_attr(config_cls, "THERMO_TEMPERATURE", 37),
+            "THERMO_SODIUM": safe_get_attr(config_cls, "THERMO_SODIUM", 0.05),
+            "THERMO_MAGNESIUM": safe_get_attr(config_cls, "THERMO_MAGNESIUM", 0.0),
+            
+            # BLAST Database Options
+            "DB_PATH": safe_get_attr(config_cls, "DB_PATH", None),
+            "USE_CUSTOM_DB": safe_get_attr(config_cls, "USE_CUSTOM_DB", False),
+            "BLAST_WORD_SIZE": safe_get_attr(config_cls, "BLAST_WORD_SIZE", 7),
+            "BLAST_EVALUE": safe_get_attr(config_cls, "BLAST_EVALUE", 10),
+            "BLAST_MAX_TARGET_SEQS": safe_get_attr(config_cls, "BLAST_MAX_TARGET_SEQS", 100),
+            "BLAST_REWARD": safe_get_attr(config_cls, "BLAST_REWARD", 2),
+            "BLAST_PENALTY": safe_get_attr(config_cls, "BLAST_PENALTY", -3),
+            "BLAST_GAPOPEN": safe_get_attr(config_cls, "BLAST_GAPOPEN", 5),
+            "BLAST_GAPEXTEND": safe_get_attr(config_cls, "BLAST_GAPEXTEND", 2),
+            "BLAST_FILTER_FACTOR": safe_get_attr(config_cls, "BLAST_FILTER_FACTOR", 100),
         }
-        
-        # Add validation options if they exist
-        validation_mode = safe_get_attr(config_cls, "VALIDATION_MODE", None)
-        if validation_mode is not None:
-            template["VALIDATION_MODE"] = validation_mode
-            logger.debug("Added VALIDATION_MODE to template")
-        
-        amp_mismatches = safe_get_attr(config_cls, "ALLOW_AMP_MISMATCHES", None)
-        if amp_mismatches is not None:
-            template["ALLOW_AMP_MISMATCHES"] = amp_mismatches
-            logger.debug("Added ALLOW_AMP_MISMATCHES to template")
-        
-        # Add BLAST settings if they exist
-        db_path = safe_get_attr(config_cls, "DB_PATH", None)
-        if db_path is not None:
-            template["DB_PATH"] = db_path
-            logger.debug("Added DB_PATH to template")
         
         # Get Primer3 settings if they exist
         primer3_settings = safe_get_attr(config_cls, "PRIMER3_SETTINGS", {})
         if primer3_settings:
-            # Include only a subset of Primer3 settings
+            # Include only a subset of Primer3 settings that users commonly modify
             p3_subset = {}
             important_p3_settings = [
                 "PRIMER_PICK_INTERNAL_OLIGO",
                 "PRIMER_GC_CLAMP",
                 "PRIMER_MAX_POLY_X",
-                "PRIMER_PAIR_MAX_DIFF_TM"
+                "PRIMER_PAIR_MAX_DIFF_TM",
+                "PRIMER_SALT_MONOVALENT",
+                "PRIMER_SALT_DIVALENT",
+                "PRIMER_ANNEALING_TEMP",
+                "PRIMER_DNA_CONC"
             ]
             
             for key in important_p3_settings:
