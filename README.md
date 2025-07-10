@@ -5,6 +5,7 @@
 
 A comprehensive pipeline for designing primers and probes specifically optimized for droplet digital PCR (ddPCR).
 
+
 ## Key Features
 
 - **Complete End-to-End Pipeline**: Design primers from genome sequences through a streamlined workflow using Primer3
@@ -14,7 +15,35 @@ A comprehensive pipeline for designing primers and probes specifically optimized
 - **Thermodynamic Optimization**: Calculate ΔG values using ViennaRNA to prevent unwanted secondary structures
 - **Specificity Verification**: Integrated BLAST validation for both primers and probes
 - **File Preparation**: Automatic VCF normalization, chromosome mapping, and file indexing
-- **Excel output format**: Results saved as comprehensive files with primer sequences, coordinates, thermodynamics, and quality metrics
+- **Output format**: Results saved as Excel file with primer sequences, coordinates, thermodynamics, and quality metrics
+
+
+## Installation
+
+### Quick Install with Conda
+
+```bash
+# Clone and install
+git clone https://github.com/globuzzz2000/ddPrimer
+cd ddPrimer
+
+# Create environment with all dependencies
+conda create -n ddprimer python=3.8
+conda activate ddprimer
+conda install -c bioconda -c conda-forge blast bcftools samtools
+pip install -e .
+
+# Alternatively install external tools via system package manager:
+# macOS: brew install blast bcftools samtools
+# Linux: sudo apt-get install ncbi-blast+ bcftools samtools
+```
+
+### Required External Tools
+
+- **NCBI BLAST+**: For specificity checking
+- **bcftools and samtools**: For file processing  
+
+Python dependencies are automatically installed via pip.
 
 
 ## Quick Start
@@ -69,32 +98,6 @@ ddPrimer/
 └── README.md                  
 ```
 
-## Installation
-
-### Quick Install with Conda
-
-```bash
-# Clone and install
-git clone https://github.com/globuzzz2000/ddPrimer
-cd ddPrimer
-
-# Create environment with all dependencies
-conda create -n ddprimer python=3.8
-conda activate ddprimer
-conda install -c bioconda -c conda-forge blast bcftools samtools
-pip install -e .
-
-# Alternatively install external tools via system package manager:
-# macOS: brew install blast bcftools samtools
-# Linux: sudo apt-get install ncbi-blast+ bcftools samtools
-```
-
-### Required External Tools
-
-- **NCBI BLAST+**: For specificity checking
-- **bcftools and samtools**: For file processing  
-
-Python dependencies are automatically installed via pip.
 
 ## Workflow Overview
 
@@ -107,6 +110,7 @@ Python dependencies are automatically installed via pip.
 7. **Thermodynamic Analysis**: Calculate secondary structure stability using ViennaRNA
 8. **Specificity Checking**: Validate specificity using BLAST
 9. **Result Export**: Generate comprehensive Excel output
+
 
 ## Configuration
 
@@ -146,6 +150,7 @@ ddprimer --config primer3
 # Generate configuration template
 ddprimer --config template
 ```
+
 
 ## Additional Utilities
 
