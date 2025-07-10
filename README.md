@@ -104,7 +104,7 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
 7. **Thermodynamic Analysis**: Calculate secondary structure stability using ViennaRNA
 8. **Specificity Checking**: Validate specificity using BLAST
-9. **Result Export**: Generate comprehensive Excel output with all design information
+9. **Result Export**: Generate comprehensive Excel output
 
 ## Configuration
 
@@ -144,18 +144,6 @@ ddprimer --config primer3
 # Generate configuration template
 ddprimer --config template
 ```
-
-
-## Output Format
-
-The pipeline generates an Excel file with comprehensive information including:
-
-- **Primer Sequences**: Forward, reverse, and probe sequences
-- **Thermodynamic Properties**: Melting temperatures and ΔG values calculated with ViennaRNA
-- **Amplicon Details**: Sequence, length, and GC content
-- **Location Data**: Genomic coordinates of primers
-- **Specificity Results**: BLAST hit for all oligonucleotides
-
 
 ## Additional Utilities
 
