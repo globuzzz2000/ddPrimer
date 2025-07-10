@@ -3,7 +3,7 @@
 """
 Sequence processing module for ddPrimer pipeline.
 
-Handles sequence processing and filtering operations including restriction site cutting,
+Handles sequence processing operations including restriction site cutting,
 gene overlap filtering, sequence validation and coordinate handling for primer design workflows.
 
 Contains functionality for:

@@ -8,12 +8,13 @@ A comprehensive pipeline for designing primers and probes specifically optimized
 ## Key Features
 
 - **Complete End-to-End Pipeline**: Design primers from genome sequences through a streamlined workflow using Primer3
-- **Smart SNP Masking**: Avoid designing primers across variant positions using VCF files with intelligent AF-based processing
+- **ddPCR-specific utilities**: Restriction cutting, GC% filtering, and optimized design parameters for ddPCR applications
+- **Gene annotation filtering**: Filter fragments based on gene overlap using GFF files for targeted design
+- **SNP Masking**: Avoid designing primers across variant positions using VCF files with AF-based processing
 - **Thermodynamic Optimization**: Calculate ΔG values using ViennaRNA to prevent unwanted secondary structures
 - **Specificity Verification**: Integrated BLAST validation for both primers and probes
 - **File Preparation**: Automatic VCF normalization, chromosome mapping, and file indexing
-- **Standard Workflow**: Design from genome, variant and annotation files with comprehensive processing
-- **Comprehensive Results**: Detailed Excel output with key metrics and sequence information
+- **Excel output format**: Results saved as comprehensive files with primer sequences, coordinates, thermodynamics, and quality metrics
 
 ## Project Structure
 
@@ -22,64 +23,58 @@ ddPrimer/
 ├── ddprimer/                      # Main package directory
 │   ├── __init__.py
 │   ├── main.py                    # Main entry point for the pipeline
-│   ├── core/                      # Core processing modules
+│   ├── core/                         # Core processing modules
 │   │   ├── __init__.py
-│   │   ├── snp_processor.py       # VCF-based variant processing
-│   │   ├── annotation_processor.py
-│   │   ├── blast_processor.py
-│   │   ├── vienna_processor.py    # ViennaRNA thermodynamic processor
-│   │   ├── primer3_processor.py
-│   │   ├── primer_processor.py
-│   │   └── sequence_processor.py
+│   │   ├── annotation_processor.py   # GFF-based annotaion filtering
+│   │   ├── sequence_processor.py     # Sequence porcessing
+│   │   ├── snp_processor.py          # VCF-based variant masking
+│   │   ├── primer3_processor.py      # Primer3-based primer design
+│   │   ├── primer_processor.py       # Primer parsing
+│   │   ├── filter_processor.py       # Primer quality filtering
+│   │   ├── thermo_processor.py       # ViennaRNA thermodynamic processor
+│   │   └── blast_processor.py        # Primer specificity filtering
 │   ├── utils/                     # Utility functions
 │   │   ├── __init__.py
-│   │   ├── blast_db_manager.py    # Unified BLAST database management
+│   │   ├── file_preparator.py     # File validation and preparation
 │   │   ├── file_io.py             # File I/O and Excel formatting
-│   │   └── file_preparator.py     # File validation and preparation
-│   └── config/                    # Configuration and settings
+│   │   ├── blast_db_manager.py    # Unified BLAST database management
+│   │   ├── direct_mode.py         # Target List-based Primer design
+│   │   └── primer_remapper        # Primer coordinate remapping to different genome
+│   └── config/                       # Configuration and settings
 │       ├── __init__.py
-│       ├── config.py              # Core configuration settings
-│       ├── config_display.py      # Configuration display utilities
-│       ├── exceptions.py          # Custom exceptions
-│       ├── logging_config.py      # Logging setup
-│       └── template_generator.py  # Configuration template generation
+│       ├── config.py                 # Core configuration settings
+│       ├── config_display.py         # Configuration display
+│       ├── exceptions.py             # Custom exceptions
+│       ├── logging_config.py         # Logging setup
+│       └── template_generator.py     # Configuration template generation
 ├── pyproject.toml                 # Package configuration and dependencies
-└── README.md                      # This file
+└── README.md                  
 ```
 
 ## Installation
 
-### Quick Install with Conda (Recommended)
+### Quick Install with Conda
 
 ```bash
 # Clone and install
-git clone https://github.com/jakobmueller/ddPrimer
+git clone https://github.com/globuzzz2000/ddPrimer
 cd ddPrimer
 
 # Create environment with all dependencies
 conda create -n ddprimer python=3.8
 conda activate ddprimer
-conda install -c bioconda -c conda-forge blast bcftools samtools viennarna
-pip install -e .
-```
-
-### Alternative: pip install
-
-```bash
-git clone https://github.com/jakobmueller/ddPrimer
-cd ddPrimer
+conda install -c bioconda -c conda-forge blast bcftools samtools
 pip install -e .
 
-# Then install external tools via system package manager:
-# macOS: brew install blast bcftools samtools viennarna
+# Alternatively install external tools via system package manager:
+# macOS: brew install blast bcftools samtools
 # Linux: sudo apt-get install ncbi-blast+ bcftools samtools
 ```
 
 ### Required External Tools
 
 - **NCBI BLAST+**: For specificity checking
-- **bcftools/samtools**: For file processing  
-- **ViennaRNA**: For thermodynamic calculations
+- **bcftools and samtools**: For file processing  
 
 Python dependencies are automatically installed via pip.
 
@@ -91,7 +86,7 @@ Python dependencies are automatically installed via pip.
 # Basic primer design with file preparation
 ddprimer --fasta genome.fasta --vcf variants.vcf --gff annotations.gff
 
-# Basic primer design without gene filtering
+# Basic primer design without annotation filtering
 ddprimer --noannotation --fasta genome.fasta --vcf variants.vcf
 ```
 
@@ -103,8 +98,8 @@ Simply run `ddprimer` without arguments to launch the interactive mode, which wi
 
 1. **Input Selection**: Choose genome FASTA, variant VCF, and annotation GFF files
 2. **File Preparation**: Validate and prepare files (bgzip compression, indexing, normalization, chromosome mapping)
-3. **Variant Processing**: Apply VCF variants to sequences with intelligent AF-based masking/substitution
-4. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
+3. **Sequence Preparation**: Filter sequences based on restriction sites and gene boundaries
+4. **Variant Processing**: Apply VCF variants to sequences with intelligent AF-based masking/substitution
 5. **Primer Design**: Design primer and probe candidates using Primer3
 6. **Quality Filtering**: Apply filters for penalties, repeats, GC content, and more
 7. **Thermodynamic Analysis**: Calculate secondary structure stability using ViennaRNA
@@ -123,35 +118,18 @@ Example configuration:
 
 ```json
 {
-  "DEBUG_MODE": true,
-  "NUM_PROCESSES": 8,
-  "PRIMER_MIN_SIZE": 19,
-  "PRIMER_OPT_SIZE": 22,
-  "PRIMER_MAX_SIZE": 25,
-  "PRIMER_PRODUCT_SIZE_RANGE": [[90, 200]],
-  "BLAST_WORD_SIZE": 7,
+  "NUM_PROCESSES": 6,
+  "SHOW_PROGRESS": true,
+  "PRIMER_MIN_SIZE": 18,
+  "PRIMER_OPT_SIZE": 20,
+  "PRIMER_MAX_SIZE": 23,
+  "PRIMER_MIN_GC": 50.0,
+  "PRIMER_MAX_GC": 60.0,
+  "MIN_SEGMENT_LENGTH": 90,
+  "RETAIN_TYPES": "['gene']",
   "RESTRICTION_SITE": "GGCC",
-  "THERMO_TEMPERATURE": 37,
-  "THERMO_SODIUM": 0.05,
-  "THERMO_MAGNESIUM": 0.002,
-  "VCF_ALLELE_FREQUENCY_THRESHOLD": 0.05,
-  "VCF_USE_SOFT_MASKING": false
+  "PENALTY_MAX": 5.0,
 }
-```
-
-## Additional Utilities
-
-### Managing a BLAST Database
-
-```bash
-# Create a BLAST database from a genome file
-ddprimer --db genome.fasta
-
-# Create a BLAST database with a custom name
-ddprimer --db genome.fasta my_custom_name
-
-# Launch the model organism selection menu
-ddprimer --db
 ```
 
 ### Configuration Management
@@ -167,6 +145,7 @@ ddprimer --config primer3
 ddprimer --config template
 ```
 
+
 ## Output Format
 
 The pipeline generates an Excel file with comprehensive information including:
@@ -175,25 +154,49 @@ The pipeline generates an Excel file with comprehensive information including:
 - **Thermodynamic Properties**: Melting temperatures and ΔG values calculated with ViennaRNA
 - **Amplicon Details**: Sequence, length, and GC content
 - **Location Data**: Genomic coordinates of primers
-- **Specificity Results**: Two best BLAST hits for all oligonucleotides
+- **Specificity Results**: BLAST hit for all oligonucleotides
 
-## File Preparation
 
-ddPrimer automatically analyzes and prepares input files:
+## Additional Utilities
 
-- **VCF Processing**: bgzip compression, tabix indexing, AF field addition, normalization
-- **FASTA Indexing**: samtools faidx indexing for efficient access
-- **Chromosome Mapping**: Intelligent chromosome name harmonization between files
-- **GFF Processing**: Sorting and indexing for optimal performance
+### Direct Mode
+Target-sequence based primer design using CSV/Excel input, bypassing genome-based processing:
 
-## SNP Processing
+**CSV/Excel format**: Two-column table with sequence ID and DNA sequence
 
-The pipeline intelligently handles variants:
+```bash
+# Basic direct mode with sequence table
+ddprimer --direct sequences.csv
 
-- **Fixed Variants (AF=1.0)**: Substituted into reference sequence
-- **Variable Variants (AF<1.0)**: Masked to avoid primer placement
-- **Quality Filtering**: QUAL score thresholds for variant inclusion
-- **Flanking Masking**: Optional masking around variant positions
+# Direct mode with SNP masking
+ddprimer --direct sequences.xlsx --snp --vcf variants.vcf --fasta reference.fa
+```
+
+### BLAST Database Management
+Create and manage BLAST databases for primer specificity checking:
+
+```bash
+# Create BLAST database from FASTA file
+ddprimer --db genome.fasta
+
+# Select from existing databases model organisms (E. coli, S. cerevisiae, etc.)
+ddprimer --db
+
+# Use custom database name
+ddprimer --db genome.fasta my_custom_db
+```
+
+### Primer Remapping
+Update existing ddprimer output coordinates and annotations against a new reference genome:
+
+```bash
+# With gene annotation updates
+ddprimer --remap primers.csv --fasta ref.fa --gff annotations.gff
+
+# Skip annotation updates
+ddprimer --remap primers.xlsx --fasta ref.fa --noannotation
+```
+
 
 ## Troubleshooting
 
@@ -211,36 +214,6 @@ Common issues and solutions:
 - **File compatibility errors**: The pipeline will attempt automatic file preparation
 
 For more help, run `ddprimer --help` or check the logs in `~/.ddPrimer/logs/`.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Development Installation
-
-```bash
-```bash
-# Clone the repository
-git clone https://github.com/jakobmueller/ddPrimer.git
-cd ddPrimer
-
-# Create and activate a conda environment
-conda create -n ddprimer-dev python=3.8
-conda activate ddprimer-dev
-
-# Install external tools via conda
-conda install -c bioconda -c conda-forge blast lastz bcftools samtools viennarna
-
-# Install the package in development mode with ALL dependencies
-pip install -e ".[dev]"
-```
-
-### Running Tests
-
-```bash
-# Run tests with coverage report
-pytest --cov=ddprimer tests/
-```
 
 ## License
 

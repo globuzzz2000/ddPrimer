@@ -24,7 +24,7 @@ import shutil
 import re
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 # Import package modules
 from ..config import Config, FileError, ExternalToolError, SequenceProcessingError

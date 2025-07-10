@@ -54,10 +54,10 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jakobmueller/ddPrimer"
-Documentation = "https://github.com/jakobmueller/ddPrimer#readme"
-"Bug Tracker" = "https://github.com/jakobmueller/ddPrimer/issues"
-Repository = "https://github.com/jakobmueller/ddPrimer.git"
+Homepage = "https://github.com/globuzzz2000/ddPrimer"
+Documentation = "https://github.com/globuzzz2000/ddPrimer#readme"
+"Bug Tracker" = "https://github.com/globuzzz2000/ddPrimer/issues"
+Repository = "https://github.com/globuzzz2000/ddPrimer.git"
 
 [project.scripts]
 ddprimer = "ddprimer.pipeline:main"
