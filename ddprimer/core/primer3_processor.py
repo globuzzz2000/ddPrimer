@@ -210,7 +210,7 @@ class Primer3Processor:
                 except Exception as e:
                     processing_stats['failed'] += 1
                     if DebugLogLimiter.should_log('primer3_processing_errors', interval=20, max_initial=3):
-                        logger.error(f"Primer3 design failed for sequence {sequence_id}")
+                        logger.debug(f"Primer3 design failed for sequence {sequence_id}")
                         logger.debug(f"Primer3 error details: {str(e)}", exc_info=True)
                     
                     results.append(f"SEQUENCE_ID={sequence_id}\nPRIMER_PAIR_NUM_RETURNED=0\n=")
