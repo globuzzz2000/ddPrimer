@@ -99,13 +99,14 @@ class Config:
     
     # BLAST+ parameters
     BLAST_WORD_SIZE = 7
-    BLAST_EVALUE = 10
+    BLAST_EVALUE = 1000
     BLAST_MAX_TARGET_SEQS = 100
     BLAST_REWARD = 2
     BLAST_PENALTY = -3
     BLAST_GAPOPEN = 5
     BLAST_GAPEXTEND = 2
-    BLAST_FILTER_FACTOR = 100  # E-value filtering factor
+
+    BLAST_FILTER_FACTOR = 50  # E-value filtering factor
 
     #############################################################################
     #                           Unified Configuration Storage

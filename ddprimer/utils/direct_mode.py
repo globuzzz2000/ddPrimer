@@ -156,8 +156,8 @@ class DirectModeProcessor:
         """
         Load sequences from CSV or Excel file with flexible column detection.
         
-        Automatically detects sequence ID and sequence columns, validates
-        sequences, and returns a dictionary compatible with the pipeline.
+        Simple approach: Assume no headers first, but if first row doesn't contain
+        recognizable DNA sequences, try again treating first row as headers.
         
         Args:
             file_path: Path to CSV or Excel file containing sequences
@@ -181,18 +181,19 @@ class DirectModeProcessor:
         try:
             # Load DataFrame based on file extension
             file_ext = Path(file_path).suffix.lower()
+            df = None
             
             if file_ext == '.csv':
                 # Try different encodings and separators for CSV
                 for encoding in ['utf-8', 'latin-1', 'cp1252']:
                     for sep in [',', ';', '\t']:
                         try:
-                            df = pd.read_csv(file_path, encoding=encoding, sep=sep)
-                            if len(df.columns) > 1 or (len(df.columns) == 1 and len(df) > 0):
-                                logger.debug(f"Successfully loaded CSV with encoding={encoding}, sep='{sep}'")
+                            df = pd.read_csv(file_path, encoding=encoding, sep=sep, header=None)
+                            if len(df.columns) > 0 and len(df) > 0:
+                                logger.debug(f"Successfully loaded CSV using encoding={encoding}, sep='{sep}'")
                                 break
                         except Exception as e:
-                            logger.debug(f"Failed to load CSV with encoding={encoding}, sep='{sep}': {str(e)}")
+                            logger.debug(f"Failed to load CSV using encoding={encoding}, sep='{sep}': {str(e)}")
                             continue
                     else:
                         continue
@@ -203,38 +204,89 @@ class DirectModeProcessor:
                     raise FileFormatError(error_msg)
                     
             elif file_ext in ['.xlsx', '.xls']:
-                df = pd.read_excel(file_path)
-                logger.debug(f"Successfully loaded Excel file")
+                try:
+                    df = pd.read_excel(file_path, header=None)
+                    logger.debug(f"Successfully loaded Excel file")
+                except Exception as e:
+                    error_msg = f"Could not load Excel file: {str(e)}"
+                    logger.error(error_msg)
+                    raise FileFormatError(error_msg)
             else:
                 error_msg = f"Unsupported file format: {file_ext}. Supported formats: .csv, .xlsx, .xls"
                 logger.error(error_msg)
                 raise FileFormatError(error_msg)
             
-            if df.empty:
+            if df is None or df.empty:
                 error_msg = f"No data found in file: {file_path}"
                 logger.error(error_msg)
                 raise FileFormatError(error_msg)
             
             logger.debug(f"Loaded DataFrame with {len(df)} rows and {len(df.columns)} columns")
-            logger.debug(f"Columns: {list(df.columns)}")
             
-            # Detect sequence columns
-            id_column, seq_column = cls.detect_columns(df)
+            # Check if first row contains DNA sequences
+            has_header = not cls._first_row_has_dna(df)
+            logger.debug(f"First row contains DNA: {not has_header}")
             
-            if not seq_column:
-                error_msg = (f"Could not detect sequence column in file: {file_path}. "
-                           f"Available columns: {list(df.columns)}")
-                logger.error(error_msg)
-                raise FileFormatError(error_msg)
+            # If we think there's a header, reload with headers
+            if has_header:
+                logger.debug("Reloading with headers...")
+                try:
+                    if file_ext == '.csv':
+                        # Use the same encoding/separator that worked
+                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                            for sep in [',', ';', '\t']:
+                                try:
+                                    test_df = pd.read_csv(file_path, encoding=encoding, sep=sep, header=None)
+                                    if len(test_df.columns) == len(df.columns) and len(test_df) == len(df):
+                                        df = pd.read_csv(file_path, encoding=encoding, sep=sep)
+                                        logger.debug(f"Reloaded CSV with headers using encoding={encoding}, sep='{sep}'")
+                                        break
+                                except:
+                                    continue
+                            else:
+                                continue
+                            break
+                    elif file_ext in ['.xlsx', '.xls']:
+                        df = pd.read_excel(file_path)
+                        logger.debug(f"Reloaded Excel with headers")
+                except Exception as e:
+                    logger.warning(f"Failed to reload with headers: {str(e)}, continuing without headers")
+                    has_header = False
             
-            logger.debug(f"Using columns - ID: '{id_column}', Sequence: '{seq_column}'")
+            # Assign columns based on whether we have headers
+            if has_header:
+                # Use existing column detection logic
+                logger.debug(f"Columns: {list(df.columns)}")
+                id_column, seq_column = cls.detect_columns(df)
+                
+                if not seq_column:
+                    error_msg = (f"Could not detect sequence column in file: {file_path}. "
+                            f"Available columns: {list(df.columns)}")
+                    logger.error(error_msg)
+                    raise FileFormatError(error_msg)
+                
+                logger.debug(f"Using columns - ID: '{id_column}', Sequence: '{seq_column}'")
+            else:
+                # Assume positional columns (no headers)
+                if len(df.columns) >= 2:
+                    id_column = df.columns[0]  # Column 0
+                    seq_column = df.columns[1]  # Column 1
+                    logger.debug(f"No headers: Using column 0 as ID, column 1 as sequence")
+                elif len(df.columns) == 1:
+                    id_column = None
+                    seq_column = df.columns[0]  # Column 0
+                    logger.debug(f"No headers: Single column treated as sequences, will generate IDs")
+                else:
+                    error_msg = f"No columns found in file: {file_path}"
+                    logger.error(error_msg)
+                    raise FileFormatError(error_msg)
             
             # Extract sequences
             sequences = {}
             
             for idx, row in df.iterrows():
                 # Get sequence ID
-                if id_column:
+                if id_column is not None:
                     seq_id = str(row[id_column]).strip()
                     if not seq_id or seq_id.lower() in ['nan', 'none', '']:
                         seq_id = f"Sequence_{idx + 1}"
@@ -282,6 +334,69 @@ class DirectModeProcessor:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             logger.debug("=== END DIRECT MODE: SEQUENCE TABLE LOADING ===")
             raise FileFormatError(error_msg) from e
+
+    @classmethod
+    def _first_row_has_dna(cls, df: pd.DataFrame) -> bool:
+        """
+        Check if the first row contains recognizable DNA sequences (IUPAC characters).
+        
+        Args:
+            df: DataFrame to check
+            
+        Returns:
+            True if first row appears to contain DNA sequences, False otherwise
+        """
+        if df.empty:
+            return False
+        
+        first_row = df.iloc[0]
+        
+        for value in first_row:
+            if pd.isna(value):
+                continue
+                
+            value_str = str(value).strip().upper()
+            
+            # Skip very short values
+            if len(value_str) < 10:
+                continue
+                
+            # Check if it looks like DNA using IUPAC characters
+            if cls._is_dna_sequence(value_str):
+                logger.debug(f"Found DNA sequence in first row: {value_str[:20]}...")
+                return True
+        
+        logger.debug("No DNA sequences found in first row")
+        return False
+
+    @staticmethod
+    def _is_dna_sequence(sequence: str) -> bool:
+        """
+        Check if a string is a DNA sequence using IUPAC nucleotide codes.
+        
+        Args:
+            sequence: String to check
+            
+        Returns:
+            True if it appears to be a DNA sequence, False otherwise
+        """
+        if len(sequence) < 10:
+            return False
+        
+        # IUPAC nucleotide codes
+        iupac_chars = set('ATCGRYSWKMBDHVN')
+        
+        # Remove any whitespace
+        clean_seq = ''.join(sequence.split())
+        
+        if len(clean_seq) < 10:
+            return False
+        
+        # Count valid IUPAC characters
+        valid_chars = sum(1 for char in clean_seq if char in iupac_chars)
+        
+        # If more than 90% are valid IUPAC characters, consider it DNA
+        return (valid_chars / len(clean_seq)) > 0.9
 
     @staticmethod
     def validate_sequence(sequence: str) -> bool:

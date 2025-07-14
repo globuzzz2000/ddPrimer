@@ -175,6 +175,7 @@ class PrimerProcessor:
             # Process probe
             probe_seq = self._process_probe_sequence_safe(pair_data, pair_index)
             probe_tm = pair_data.get("internal_tm", 0.0) if probe_seq else 0.0
+            probe_penalty = pair_data.get("internal_penalty", 0.0) if probe_seq else 0.0  # ✅ ADDED THIS LINE
 
             # --- CORRECTED GENOMIC COORDINATE CALCULATION ---
             # Get the TRUE 0-based genomic start position of this fragment.
@@ -222,6 +223,7 @@ class PrimerProcessor:
             if probe_seq:
                 primer_record["Sequence (P)"] = probe_seq
                 primer_record["Tm (P)"] = probe_tm
+                primer_record["Penalty (P)"] = probe_penalty  # ✅ ADDED THIS LINE
 
             # Add amplicon
             primer_record["Sequence (A)"] = amplicon_result["amplicon"]
