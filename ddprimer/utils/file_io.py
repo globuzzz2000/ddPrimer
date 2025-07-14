@@ -420,7 +420,7 @@ class FileIO:
             Selected file path
             
         Raises:
-            FileSelectionError: If file selection fails or user cancels
+            FileSelectionError: If file selection fails or user cancels in CLI mode
         """
         last_directory = cls.get_last_directory()
 
@@ -474,9 +474,10 @@ class FileIO:
                     dlg.Destroy()
 
                 if not file_path:
-                    error_msg = "No file was selected in the dialog"
-                    logger.error(error_msg)
-                    raise FileSelectionError(error_msg)
+                    # Dialog was canceled - fall back to CLI instead of raising error
+                    logger.warning("File dialog was canceled, falling back to CLI mode")
+                    cls.use_cli = True
+                    return cls.select_file(prompt, filetypes)  # Recursive call in CLI mode
 
                 cls.save_last_directory(os.path.dirname(file_path))
                 return file_path
@@ -490,6 +491,7 @@ class FileIO:
         
         # Fallback to CLI
         logger.warning("Falling back to CLI mode for file selection")
+        cls.use_cli = True
         return cls.select_file(prompt, filetypes)
         
     @staticmethod

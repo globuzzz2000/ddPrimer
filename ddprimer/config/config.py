@@ -105,8 +105,7 @@ class Config:
     BLAST_PENALTY = -3
     BLAST_GAPOPEN = 5
     BLAST_GAPEXTEND = 2
-
-    BLAST_FILTER_FACTOR = 50  # E-value filtering factor
+    BLAST_FILTER_FACTOR = 100  # E-value filtering factor
 
     #############################################################################
     #                           Unified Configuration Storage
