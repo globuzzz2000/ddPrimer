@@ -163,8 +163,9 @@ Target-sequence based primer design using CSV/Excel input, bypassing genome-base
 # Basic direct mode with sequence table
 ddprimer --direct sequences.csv
 
-# Direct mode with SNP masking
+# Direct mode with SNP masking (Target sequences should exactly match reference sequence)
 ddprimer --direct sequences.xlsx --snp --vcf variants.vcf --fasta reference.fa
+
 ```
 
 ### BLAST Database Management
