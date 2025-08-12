@@ -1,7 +1,7 @@
 # ddPrimer: Advanced Droplet Digital PCR Primer Design
 
-[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
-![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 
 A comprehensive pipeline for designing primers and probes specifically optimized for droplet digital PCR (ddPCR).
 
@@ -72,8 +72,8 @@ ddPrimer/
 │   ├── main.py                       # Main entry point for the pipeline
 │   ├── core/                         # Core processing modules
 │   │   ├── __init__.py
-│   │   ├── annotation_processor.py   # GFF-based annotaion filtering
-│   │   ├── sequence_processor.py     # Sequence porcessing
+│   │   ├── annotation_processor.py   # GFF-based annotation filtering
+│   │   ├── sequence_processor.py     # Sequence processing
 │   │   ├── snp_processor.py          # VCF-based variant masking
 │   │   ├── primer3_processor.py      # Primer3-based primer design
 │   │   ├── primer_processor.py       # Primer parsing
@@ -91,7 +91,7 @@ ddPrimer/
 │       ├── __init__.py
 │       ├── config.py                 # Core configuration settings
 │       ├── config_display.py         # Configuration display
-│       ├── exceptions.py             # Error handeling
+│       ├── exceptions.py             # Error handling
 │       ├── logging_config.py         # Logging setup
 │       └── template_generator.py     # Configuration template generation
 ├── pyproject.toml                    # Package configuration and dependencies
@@ -206,4 +206,4 @@ For more detailed output, run `ddprimer --debug` or check the logs in `~/.ddPrim
 
 ## License
 
-This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
