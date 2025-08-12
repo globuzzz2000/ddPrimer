@@ -1,6 +1,6 @@
 # ddPrimer: Advanced Droplet Digital PCR Primer Design
 
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 
 A comprehensive pipeline for designing primers and probes specifically optimized for droplet digital PCR (ddPCR).
