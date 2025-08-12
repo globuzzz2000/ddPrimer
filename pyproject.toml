@@ -1,28 +1,27 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ddprimer"
-version = "0.1.0"
+version = "0.1.1"
 description = "A pipeline for designing primers optimized for droplet digital PCR"
 readme = "README.md"
 authors = [
     {name = "Jakob Wimmer", email = "globuds133@gmail.com"}
 ]
-requires-python = ">=3.7"
-license = {text = "MIT"}
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.12"
 ]
 dependencies = [
     "biopython>=1.78",
@@ -60,7 +59,7 @@ Documentation = "https://github.com/globuzzz2000/ddPrimer#readme"
 Repository = "https://github.com/globuzzz2000/ddPrimer.git"
 
 [project.scripts]
-ddprimer = "ddprimer.pipeline:main"
+ddprimer = "ddprimer.main:main"
 
 [tool.setuptools]
 packages = ["ddprimer", "ddprimer.core", "ddprimer.utils", "ddprimer.config"]
@@ -111,7 +110,7 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 
 [tool.black]
 line-length = 100
-target-version = ["py37", "py38", "py39", "py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312"]
 include = '\.pyi?$'
 extend-exclude = '''
 /(
