@@ -20,30 +20,46 @@ A comprehensive pipeline for designing primers and probes specifically optimized
 
 ## Installation
 
-### Quick Install with Conda
+### Install via Conda (Bioconda)
+
+To install ddPrimer along with all required external dependencies (blast, bcftools, samtools), use the following one-liner in your currently active conda environment:
 
 ```bash
-# Clone and install
-git clone https://github.com/globuzzz2000/ddPrimer
-cd ddPrimer
-
-# Create environment with all dependencies
-conda create -n ddprimer python=3.8
-conda activate ddprimer
-conda install -c bioconda -c conda-forge blast bcftools samtools
-pip install -e .
-
-# Alternatively install external tools via system package manager:
-# macOS: brew install blast bcftools samtools
-# Linux: sudo apt-get install ncbi-blast+ bcftools samtools
+conda install -c bioconda -c conda-forge ddprimer
 ```
+
+This will install ddPrimer and all necessary external tools into the active conda environment.
+
+### Install via pip
+
+You can also install ddPrimer using pip:
+
+```bash
+pip install ddprimer
+```
+
+Note that when installing via pip, you must separately install the required external tools (blast, bcftools, samtools) using your system package manager.
+
+Examples:
+
+- macOS (using Homebrew):
+
+  ```bash
+  brew install blast bcftools samtools
+  ```
+
+- Linux (using apt):
+
+  ```bash
+  sudo apt-get install ncbi-blast+ bcftools samtools
+  ```
 
 ### Required External Tools
 
+The following external tools are required for full functionality of ddPrimer. If you installed ddPrimer via Conda (Bioconda), these are included automatically. If you installed via pip, please ensure these are installed separately:
+
 - **NCBI BLAST+**: For specificity checking
 - **bcftools and samtools**: For file processing  
-
-Python dependencies are automatically installed via pip.
 
 
 ## Quick Start
